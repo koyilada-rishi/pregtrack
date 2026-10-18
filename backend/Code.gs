@@ -150,6 +150,17 @@ function routeAction(action, payload) {
     case 'files.delete':
       return filesDelete(payload);
 
+    case 'countdowns.list':
+      return countdownsList(payload);
+    case 'countdowns.add':
+      return countdownsAdd(payload);
+    case 'countdowns.update':
+      return countdownsUpdate(payload);
+    case 'countdowns.delete':
+      return countdownsDelete(payload);
+    case 'countdowns.markDone':
+      return countdownsMarkDone(payload);
+
     default:
       throw new Error('Unknown action: ' + action);
   }
@@ -316,6 +327,12 @@ function incrementDataVersion() {
 // ---------------------------------------------------------------------------
 
 function bootstrap() {
+  // Safe, additive schema migration on every bootstrap call, so a redeploy
+  // (new Code.gs, same Sheet) upgrades automatically without re-running
+  // setup() by hand. Cheap in the steady state (no missing tabs/columns to
+  // add): a handful of header-row reads, no writes. See "Schema migration".
+  ensureTabs();
+
   return {
     data_version: getDataVersion(),
     settings: settingsGet(),
@@ -326,8 +343,37 @@ function bootstrap() {
     contacts: listRows('Contacts'),
     foodlog: listRows('FoodLog'),
     checklist: listRows('Checklist'),
-    files: filesList({})
+    files: filesList({}),
+    countdowns: listRows('Countdowns'),
+    // Most recent *taken* dose per medicine — enough for the frontend to
+    // compute "next dose" for interval-kind countdowns pinned to Home,
+    // without shipping the full MedicineLog on every load.
+    latest_medicine_doses: getLatestMedicineDoses()
   };
+}
+
+function getLatestMedicineDoses() {
+  var latestByMedicine = {};
+  sheetToObjects('MedicineLog').forEach(function (log) {
+    if (!isTruthy(log.taken)) return;
+    var sortKey = dateStrOf(log.date) + ' ' + normalizeTimeForSort(log.time);
+    var current = latestByMedicine[log.medicine_id];
+    if (!current || sortKey > current._sortKey) {
+      latestByMedicine[log.medicine_id] = { medicine_id: log.medicine_id, date: dateStrOf(log.date), time: log.time, _sortKey: sortKey };
+    }
+  });
+  return Object.keys(latestByMedicine).map(function (medicineId) {
+    var entry = latestByMedicine[medicineId];
+    return { medicine_id: entry.medicine_id, date: entry.date, time: entry.time };
+  });
+}
+
+// "9:00" and "09:00" must sort identically to "09:00" — a plain string
+// comparison of unpadded hours (e.g. "9:00" vs "10:00") sorts wrong.
+function normalizeTimeForSort(timeStr) {
+  var match = /^(\d{1,2}):(\d{2})$/.exec(String(timeStr || '').trim());
+  if (!match) return String(timeStr || '');
+  return (match[1].length === 1 ? '0' + match[1] : match[1]) + ':' + match[2];
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +525,23 @@ function medicineFields(payload, isCreate) {
   } else if (payload.hasOwnProperty('active')) {
     fields.active = sanitizeBoolean(payload.active);
   }
+  // Stock tracking — all optional (sanitizeNumber leaves '' as '' rather
+  // than erroring); a medicine with no stock_count just never shows a
+  // "days of stock left" figure (see countdown.js's computeStock()).
+  if (isCreate || payload.hasOwnProperty('stock_count')) {
+    fields.stock_count = sanitizeNumber(payload.stock_count, 'stock_count');
+  }
+  if (isCreate || payload.hasOwnProperty('doses_per_day')) {
+    fields.doses_per_day = sanitizeNumber(payload.doses_per_day, 'doses_per_day');
+  }
+  if (isCreate) {
+    fields.refill_alert_days = (payload.refill_alert_days === undefined || payload.refill_alert_days === '')
+      ? 3
+      : sanitizeNumber(payload.refill_alert_days, 'refill_alert_days');
+  } else if (payload.hasOwnProperty('refill_alert_days')) {
+    var value = sanitizeNumber(payload.refill_alert_days, 'refill_alert_days');
+    fields.refill_alert_days = value === '' ? 3 : value; // never leave it blank once set
+  }
   return fields;
 }
 
@@ -499,11 +562,13 @@ function medicinesLogTaken(payload) {
     var timeCol = headers.indexOf('time');
     var takenCol = headers.indexOf('taken');
     var result;
+    var wasTaken = false; // no prior row at all counts as "wasn't taken"
 
     for (var i = 1; i < values.length; i++) {
       if (String(values[i][medCol]) === String(payload.medicine_id) &&
           dateStrOf(values[i][dateCol]) === targetDate &&
           String(values[i][timeCol]) === String(payload.time)) {
+        wasTaken = isTruthy(values[i][takenCol]);
         sheet.getRange(i + 1, takenCol + 1).setValue(taken);
         result = { id: values[i][idCol], medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
         break;
@@ -514,10 +579,40 @@ function medicinesLogTaken(payload) {
       sheet.appendRow([id, payload.medicine_id, targetDate, payload.time, taken]);
       result = { id: id, medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
     }
+
+    // Stock only moves on an actual state transition, so toggling the same
+    // dose taken->taken (a duplicate/retried call) never double-decrements,
+    // and un-checking a dose correctly gives the stock back.
+    if (taken !== wasTaken) {
+      adjustMedicineStock(payload.medicine_id, taken ? -1 : 1);
+    }
+
     incrementDataVersion();
     return result;
   } finally {
     lock.releaseLock();
+  }
+}
+
+// Adjusts a medicine's stock_count by delta (+1/-1), clamped to never go
+// negative. No-ops silently if the medicine has no numeric stock_count set
+// (stock tracking is opt-in) or doesn't exist. Must be called from inside
+// a lock already held by the caller — same reasoning as incrementDataVersion.
+function adjustMedicineStock(medicineId, delta) {
+  var sheet = getSheetByName('Medicines');
+  var headers = getHeaders('Medicines');
+  var idCol = headers.indexOf('id');
+  var stockCol = headers.indexOf('stock_count');
+  if (stockCol === -1) return; // schema not migrated yet on this sheet
+
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][idCol]) !== String(medicineId)) continue;
+    var current = values[i][stockCol];
+    if (current === '' || current === null || current === undefined || isNaN(Number(current))) return;
+    var next = Math.max(0, Number(current) + delta);
+    sheet.getRange(i + 1, stockCol + 1).setValue(next);
+    return;
   }
 }
 
@@ -818,6 +913,147 @@ function driveFolderForType(type) {
 }
 
 // ---------------------------------------------------------------------------
+// Countdowns — custom countdown/timer entries (events, medicine courses,
+// interval-based doses, recurring occasions, count-up timers). The "how
+// many days/hours/minutes left" math is entirely client-side
+// (js/countdown.js, computed locally from the device clock) — this backend
+// just stores the configuration and does light, kind-aware sanity checks.
+// ---------------------------------------------------------------------------
+
+var COUNTDOWN_KINDS = ['event', 'course', 'interval', 'recurring', 'countup'];
+var COUNTDOWN_REPEATS = ['none', 'daily', 'weekly', 'monthly'];
+
+function countdownsList(payload) {
+  var rows = listRows('Countdowns');
+  if (payload && payload.kind) rows = rows.filter(function (r) { return r.kind === payload.kind; });
+  if (payload && payload.show_on_home) rows = rows.filter(function (r) { return isTruthy(r.show_on_home); });
+  return rows;
+}
+
+function countdownsAdd(payload) {
+  requireFields(payload, ['title', 'kind']);
+  validateCountdownKind(payload.kind);
+  var fields = countdownFields(payload, true);
+  validateCountdownFieldsForKind(fields, payload.kind, false);
+  fields.created_at = new Date().toISOString();
+  return createRow('Countdowns', fields);
+}
+
+function countdownsUpdate(payload) {
+  requireId(payload);
+  if (payload.hasOwnProperty('kind')) validateCountdownKind(payload.kind);
+  var fields = countdownFields(payload, false);
+  // Validate against the kind this row will have after the update (the new
+  // kind if one was sent, otherwise whatever is already stored) — but only
+  // the fields actually being changed (partial: true).
+  var existing = getRowById('Countdowns', payload.id);
+  var effectiveKind = payload.kind || (existing && existing.kind);
+  validateCountdownFieldsForKind(fields, effectiveKind, true);
+  return updateRowById('Countdowns', payload.id, fields);
+}
+
+function countdownsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Countdowns', payload.id);
+}
+
+function countdownsMarkDone(payload) {
+  requireId(payload);
+  var done = payload.done === undefined ? true : sanitizeBoolean(payload.done);
+  return updateRowById('Countdowns', payload.id, { done: done });
+}
+
+function validateCountdownKind(kind) {
+  if (COUNTDOWN_KINDS.indexOf(kind) === -1) throw new Error('Invalid countdown kind: ' + kind);
+}
+
+function countdownFields(payload, isCreate) {
+  var fields = {};
+  if (isCreate || payload.hasOwnProperty('title')) fields.title = sanitizeText(payload.title, 200);
+  if (isCreate || payload.hasOwnProperty('kind')) fields.kind = payload.kind;
+
+  if (isCreate || payload.hasOwnProperty('target_datetime')) {
+    if (payload.target_datetime) {
+      var dt = toDateTime(payload.target_datetime);
+      if (!dt) throw new Error('Invalid target_datetime: ' + payload.target_datetime);
+      fields.target_datetime = dt.toISOString();
+    } else {
+      fields.target_datetime = '';
+    }
+  }
+  if (isCreate || payload.hasOwnProperty('start_date')) {
+    fields.start_date = payload.start_date ? sanitizeDate(payload.start_date, 'start_date') : '';
+  }
+  if (isCreate || payload.hasOwnProperty('repeat')) {
+    var repeat = payload.repeat || 'none';
+    if (COUNTDOWN_REPEATS.indexOf(repeat) === -1) throw new Error('Invalid repeat: ' + repeat);
+    fields.repeat = repeat;
+  }
+  if (isCreate || payload.hasOwnProperty('interval_hours')) {
+    fields.interval_hours = sanitizeNumber(payload.interval_hours, 'interval_hours');
+  }
+  if (isCreate || payload.hasOwnProperty('linked_medicine_id')) {
+    fields.linked_medicine_id = sanitizeText(payload.linked_medicine_id, 100);
+  }
+  if (isCreate) {
+    fields.show_on_home = payload.show_on_home === undefined ? false : sanitizeBoolean(payload.show_on_home);
+  } else if (payload.hasOwnProperty('show_on_home')) {
+    fields.show_on_home = sanitizeBoolean(payload.show_on_home);
+  }
+  if (isCreate) {
+    var initialOrder = sanitizeNumber(payload.pinned_order, 'pinned_order');
+    fields.pinned_order = initialOrder === '' ? 0 : initialOrder;
+  } else if (payload.hasOwnProperty('pinned_order')) {
+    var order = sanitizeNumber(payload.pinned_order, 'pinned_order');
+    fields.pinned_order = order === '' ? 0 : order;
+  }
+  if (isCreate || payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 2000);
+  if (isCreate) {
+    fields.done = payload.done === undefined ? false : sanitizeBoolean(payload.done);
+  } else if (payload.hasOwnProperty('done')) {
+    fields.done = sanitizeBoolean(payload.done);
+  }
+  return fields;
+}
+
+// Light, kind-aware sanity checks — not exhaustive (the real "does this
+// make sense" math lives client-side in countdown.js), just enough to stop
+// obviously incomplete rows from being saved. On a partial update, a field
+// is only checked if this call is actually changing it.
+function validateCountdownFieldsForKind(fields, kind, partial) {
+  function need(field) {
+    if (partial && !fields.hasOwnProperty(field)) return;
+    if (!fields[field]) throw new Error('A "' + kind + '" countdown requires ' + field);
+  }
+
+  if (kind === 'event') {
+    need('target_datetime');
+  } else if (kind === 'course') {
+    need('start_date');
+    need('target_datetime');
+  } else if (kind === 'interval') {
+    need('linked_medicine_id');
+    if (!partial || fields.hasOwnProperty('interval_hours')) {
+      if (!fields.interval_hours || fields.interval_hours <= 0) {
+        throw new Error('An "interval" countdown requires a positive interval_hours');
+      }
+    }
+    if (fields.linked_medicine_id && !getRowById('Medicines', fields.linked_medicine_id)) {
+      throw new Error('linked_medicine_id does not match an existing medicine');
+    }
+  } else if (kind === 'recurring') {
+    need('target_datetime');
+    if (!partial || fields.hasOwnProperty('repeat')) {
+      if (!fields.repeat || fields.repeat === 'none') {
+        throw new Error('A "recurring" countdown requires a repeat value other than "none"');
+      }
+    }
+  } else if (kind === 'countup') {
+    need('start_date');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Generic CRUD helpers — shared by every entity's create/update/delete
 // action above. Writes always go through these so every mutation gets a
 // generated id, a lock, and only ever touches columns that actually exist
@@ -1030,16 +1266,6 @@ function sheetToObjects(sheetName) {
 
 function setup() {
   var props = PropertiesService.getScriptProperties();
-
-  var ss = setupSpreadsheet(props);
-  setupDriveFolders(props, ss);
-
-  Logger.log('Setup complete.');
-  Logger.log('Sheet: ' + ss.getUrl());
-  Logger.log('Next: add the APP_PIN script property (Project Settings > Script properties), then deploy as a web app. See the README.');
-}
-
-function setupSpreadsheet(props) {
   var sheetId = props.getProperty('SHEET_ID');
   var ss;
   if (sheetId) {
@@ -1049,30 +1275,7 @@ function setupSpreadsheet(props) {
     props.setProperty('SHEET_ID', ss.getId());
   }
 
-  var schema = {
-    Settings: ['key', 'value'],
-    Medicines: ['id', 'name', 'dose', 'frequency', 'times', 'start_date', 'end_date', 'prescribed_by', 'notes', 'active'],
-    MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken'],
-    Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
-    HealthLog: ['id', 'date', 'weight_kg', 'bp_sys', 'bp_dia', 'sugar_fasting', 'sugar_pp', 'kicks', 'mood', 'symptoms', 'notes'],
-    Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
-    FoodLog: ['id', 'date', 'meal', 'items', 'craving_or_aversion', 'notes'],
-    Checklist: ['id', 'list', 'item', 'done'],
-    // 'mime' and 'thumb_file_id' are appended at the end (not matching the
-    // spec's listed order) so re-running setup() on an existing sheet never
-    // shifts already-written data into the wrong column — setup() always
-    // rewrites row 1 unconditionally, and sheetToObjects() reads by header
-    // name, so column order doesn't matter functionally.
-    Files: ['id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes', 'mime', 'thumb_file_id']
-  };
-
-  Object.keys(schema).forEach(function (tabName) {
-    var sheet = ss.getSheetByName(tabName);
-    if (!sheet) sheet = ss.insertSheet(tabName);
-    var headers = schema[tabName];
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  });
+  ensureTabs(ss);
 
   // Clean up the blank default tab Google creates with every new Sheet.
   var defaultSheet = ss.getSheetByName('Sheet1');
@@ -1080,19 +1283,84 @@ function setupSpreadsheet(props) {
     ss.deleteSheet(defaultSheet);
   }
 
-  // Seed default Settings keys so settings.get always returns a stable shape.
+  setupDriveFolders(props, ss);
+
+  Logger.log('Setup complete.');
+  Logger.log('Sheet: ' + ss.getUrl());
+  Logger.log('Next: add the APP_PIN script property (Project Settings > Script properties), then deploy as a web app. See the README.');
+}
+
+// ---------------------------------------------------------------------------
+// Schema migration — single source of truth for every tab + its columns.
+// ensureTabs() creates any missing tab (full header row) and APPENDS any
+// column an existing tab is missing; it never rewrites or reorders columns
+// that already exist, so it's safe to run against a sheet that already has
+// real data in it, or one someone hand-edited. Called from setup() (once,
+// by hand) and from bootstrap() (every load), so a Code.gs redeploy alone
+// upgrades the Sheet automatically — no need to re-run setup() by hand
+// after adding a column or a tab.
+// ---------------------------------------------------------------------------
+
+var SHEET_SCHEMA = {
+  Settings: ['key', 'value'],
+  Medicines: [
+    'id', 'name', 'dose', 'frequency', 'times', 'start_date', 'end_date', 'prescribed_by', 'notes', 'active',
+    'stock_count', 'doses_per_day', 'refill_alert_days'
+  ],
+  MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken'],
+  Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
+  HealthLog: ['id', 'date', 'weight_kg', 'bp_sys', 'bp_dia', 'sugar_fasting', 'sugar_pp', 'kicks', 'mood', 'symptoms', 'notes'],
+  Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
+  FoodLog: ['id', 'date', 'meal', 'items', 'craving_or_aversion', 'notes'],
+  Checklist: ['id', 'list', 'item', 'done'],
+  Files: ['id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes', 'mime', 'thumb_file_id'],
+  Countdowns: [
+    'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',
+    'linked_medicine_id', 'show_on_home', 'pinned_order', 'notes', 'done', 'created_at'
+  ]
+};
+
+// ss is optional — pass it explicitly from setup() (where SHEET_ID may only
+// have just been written to Script Properties this same execution); omit it
+// elsewhere and it's read the normal way via getSpreadsheet().
+function ensureTabs(ss) {
+  ss = ss || getSpreadsheet();
+
+  Object.keys(SHEET_SCHEMA).forEach(function (tabName) {
+    var targetHeaders = SHEET_SCHEMA[tabName];
+    var sheet = ss.getSheetByName(tabName);
+
+    if (!sheet) {
+      sheet = ss.insertSheet(tabName);
+      sheet.getRange(1, 1, 1, targetHeaders.length).setValues([targetHeaders]);
+      sheet.setFrozenRows(1);
+      return;
+    }
+
+    var lastCol = sheet.getLastColumn();
+    var existingHeaders = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    var missingHeaders = targetHeaders.filter(function (h) { return existingHeaders.indexOf(h) === -1; });
+    if (missingHeaders.length) {
+      sheet.getRange(1, lastCol + 1, 1, missingHeaders.length).setValues([missingHeaders]);
+    }
+    if (sheet.getFrozenRows() < 1) sheet.setFrozenRows(1);
+  });
+
+  ensureSettingsSeeded(ss);
+}
+
+// Seeds the user-editable Settings keys (empty string) and the data_version
+// counter (0) if they're not already present — additive only, same
+// never-touch-existing-values rule as ensureTabs() itself.
+function ensureSettingsSeeded(ss) {
   var settingsSheet = ss.getSheetByName('Settings');
   var existingKeys = sheetToObjectsFromSheet(settingsSheet).map(function (r) { return r.key; });
   SETTINGS_KEYS.forEach(function (key) {
     if (existingKeys.indexOf(key) === -1) settingsSheet.appendRow([key, '']);
   });
-  // data_version is tracked separately from SETTINGS_KEYS — it's not a
-  // user-editable setting, just the freshness counter (see "Data version").
   if (existingKeys.indexOf('data_version') === -1) {
     settingsSheet.appendRow(['data_version', 0]);
   }
-
-  return ss;
 }
 
 // Same as sheetToObjects, but takes a Sheet object directly — needed inside

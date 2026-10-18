@@ -119,11 +119,17 @@ whenever you change `backend/Code.gs`.
      a published one; click **Advanced > Go to Pregnancy Care Tracker
      (unsafe)** and allow it.
    - Open **View > Logs** (or press `Ctrl+Enter`) to see the new Sheet's URL
-     and Drive folder URL. Open the Sheet and confirm it has 9 tabs with
+     and Drive folder URL. Open the Sheet and confirm it has 10 tabs with
      headers: Settings, Medicines, MedicineLog, Appointments, HealthLog,
-     Contacts, FoodLog, Checklist, Files.
+     Contacts, FoodLog, Checklist, Files, Countdowns.
    - `setup()` is safe to re-run — it reuses the Sheet and folders already
-     recorded in Script Properties instead of making duplicates.
+     recorded in Script Properties instead of making duplicates. Its tab/
+     column creation is handled by `ensureTabs()`, which also runs on every
+     `bootstrap` call — so after you paste in a `Code.gs` update that adds a
+     column or tab and redeploy a **new version**, just loading the app
+     once upgrades the Sheet automatically. No need to re-run `setup()` by
+     hand for a schema-only change (only for the very first run, to create
+     the Sheet and Drive folders at all).
 
 5. **Set the PIN.** Still in Project Settings, scroll to **Script
    properties**, click **Add script property**, and add:
