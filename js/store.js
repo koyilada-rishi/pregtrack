@@ -241,10 +241,17 @@ function uid() {
   return "mock-" + Math.random().toString(36).slice(2, 10);
 }
 
+// Local calendar date, not UTC — toISOString() would be off by a day for
+// part of the day in any timezone ahead of UTC, which matters now that
+// js/schedule.js does real local-date arithmetic (course day counts, due
+// dates) against these same mock fixtures.
 function todayStr(offsetDays) {
   const d = new Date();
   d.setDate(d.getDate() + (offsetDays || 0));
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function clone(obj) {
@@ -265,14 +272,28 @@ const db = {
     language: "en"
   },
   medicines: [
-    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3 },
-    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Twice daily", times: "08:00,20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true, stock_count: 9, doses_per_day: 2, refill_alert_days: 5 },
-    { id: "mock-med-3", name: "Amoxicillin", dose: "500mg", frequency: "3x daily", times: "08:00,14:00,20:00", start_date: todayStr(-2), end_date: todayStr(5), prescribed_by: "Dr. Rao", notes: "Finish full course", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3 }
+    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "before_food", status: "active" },
+    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Twice daily", times: "08:00,20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true, stock_count: 9, doses_per_day: 2, refill_alert_days: 5, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "after_food", status: "active" },
+    // Every-8h, counted from the last dose actually taken (anchor_mode:
+    // from_last) — a real taken dose below gives it something to anchor to.
+    { id: "mock-med-3", name: "Amoxicillin", dose: "500mg", frequency: "Every 8 hours", times: "08:00", start_date: todayStr(-2), end_date: todayStr(5), prescribed_by: "Dr. Rao", notes: "Finish full course", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "interval", anchor_mode: "from_last", interval_hours: 8, grace_minutes: 60, instructions: "with_food", total_doses: 21, status: "active" },
+    // Weekly shot, due every Sunday.
+    { id: "mock-med-4", name: "Iron shot", dose: "1 injection", frequency: "Weekly", times: "10:00", start_date: todayStr(-14), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "weekly", weekdays: "sun", grace_minutes: 240, instructions: "none", status: "active" },
+    // PRN (as-needed) — 6h gap, 3/day cap.
+    { id: "mock-med-5", name: "Paracetamol", dose: "650mg", frequency: "As needed", times: "", start_date: todayStr(-10), end_date: "", prescribed_by: "Dr. Rao", notes: "For headache or fever", active: true, stock_count: 18, doses_per_day: "", refill_alert_days: 5, schedule_type: "prn", prn_min_gap_hours: 6, prn_max_per_day: 3, instructions: "none", status: "active" },
+    // Finished course — shows up only in the Medicines-used history view.
+    { id: "mock-med-6", name: "Doxylamine", dose: "10mg", frequency: "Once daily", times: "21:00", start_date: todayStr(-45), end_date: todayStr(-20), prescribed_by: "Dr. Rao", notes: "For morning sickness", active: false, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", grace_minutes: 60, instructions: "bedtime", status: "finished", stopped_on: todayStr(-20), stop_note: "Symptoms eased" }
   ],
-  // A couple of taken doses for Iron, so the interval-kind mock countdown
-  // below has a real "last dose" to anchor to.
+  // A few taken/skipped doses — mock-med-3's gives the from_last interval
+  // countdown something real to anchor to; the rest make the Home/Meds
+  // status badges (taken/due_now/late/missed) visible without real data.
   medicineLog: [
-    { id: "mock-ml-1", medicine_id: "mock-med-2", date: todayStr(), time: "08:00", taken: true }
+    { id: "mock-ml-1", medicine_id: "mock-med-2", date: todayStr(), time: "08:00", taken: true, status: "taken", taken_at: new Date(new Date().setHours(8, 5, 0, 0)).toISOString(), note: "" },
+    { id: "mock-ml-2", medicine_id: "mock-med-3", date: todayStr(), time: "08:00", taken: true, status: "taken", taken_at: new Date(Date.now() - 3 * 3600000).toISOString(), note: "" },
+    { id: "mock-ml-3", medicine_id: "mock-med-1", date: todayStr(-1), time: "08:00", taken: false, status: "missed", taken_at: "", note: "" }
+  ],
+  packs: [
+    { id: "mock-pack-1", name: "Evening pack", times: "20:00", member_medicine_ids: "mock-med-1,mock-med-2", created_at: new Date(Date.now() - 20 * 86400000).toISOString() }
   ],
   appointments: [
     { id: "mock-appt-1", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Routine checkup", location: "City Women's Hospital", status: "upcoming", notes_after_visit: "" },
@@ -465,6 +486,7 @@ export async function mockCall(action, payload) {
         checklist: clone(db.checklist),
         files: clone(db.files).map(({ _base64, _mimeType, _filename, ...rest }) => rest),
         countdowns: clone(db.countdowns),
+        packs: clone(db.packs),
         latest_medicine_doses: mockLatestMedicineDoses()
       };
 
@@ -472,27 +494,52 @@ export async function mockCall(action, payload) {
       return clone(db.medicines);
     case "medicines.create": {
       requireFields(payload, ["name"]);
-      const row = { id: payload.id || uid(), name: "", dose: "", frequency: "", times: "", start_date: todayStr(), end_date: "", prescribed_by: "", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, ...payload };
+      const row = {
+        id: payload.id || uid(), name: "", dose: "", frequency: "", times: "", start_date: todayStr(), end_date: "",
+        prescribed_by: "", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3,
+        schedule_type: "daily", anchor_mode: "fixed", weekdays: "", interval_hours: "", interval_days: "",
+        month_day: "", every_n_weeks: "", total_doses: "", grace_minutes: 60, instructions: "none",
+        prn_min_gap_hours: "", prn_max_per_day: "", phases: "", reason: "", pack_id: "", status: "active",
+        stopped_on: "", stop_note: "", source: "",
+        ...payload
+      };
       db.medicines.push(row);
       return clone(row);
     }
-    case "medicines.update":
+    case "medicines.update": {
       requireFields(payload, ["id"]);
-      return upsertInto(db.medicines, payload.id, payload);
+      const fields = { ...payload };
+      if (fields.status && !Object.prototype.hasOwnProperty.call(payload, "active")) {
+        fields.active = fields.status === "active";
+      }
+      return upsertInto(db.medicines, payload.id, fields);
+    }
+    case "medicines.stop":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.medicines, payload.id, {
+        status: "stopped", active: false,
+        stopped_on: payload.stopped_on || todayStr(), stop_note: payload.stop_note || ""
+      });
     case "medicines.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.medicines, payload.id);
     case "medicines.logTaken": {
       requireFields(payload, ["medicine_id", "date", "time"]);
-      const taken = payload.taken === undefined ? true : !!payload.taken;
+      const hasStatus = Object.prototype.hasOwnProperty.call(payload, "status");
+      const status = hasStatus ? payload.status : (payload.taken === undefined ? true : !!payload.taken) ? "taken" : "skipped";
+      const taken = status === "taken";
+      const takenAt = taken ? (payload.taken_at || new Date().toISOString()) : "";
       const existing = db.medicineLog.find((l) => l.medicine_id === payload.medicine_id && l.date === payload.date && l.time === payload.time);
       const wasTaken = existing ? !!existing.taken : false;
       let row;
       if (existing) {
         existing.taken = taken;
+        existing.status = status;
+        existing.taken_at = takenAt;
+        if (Object.prototype.hasOwnProperty.call(payload, "note")) existing.note = payload.note;
         row = existing;
       } else {
-        row = { id: payload.id || uid(), medicine_id: payload.medicine_id, date: payload.date, time: payload.time, taken };
+        row = { id: payload.id || uid(), medicine_id: payload.medicine_id, date: payload.date, time: payload.time, taken, status, taken_at: takenAt, note: payload.note || "" };
         db.medicineLog.push(row);
       }
       if (taken !== wasTaken) adjustMockMedicineStock(payload.medicine_id, taken ? -1 : 1);
@@ -502,6 +549,39 @@ export async function mockCall(action, payload) {
       const days = payload.days || 14;
       const cutoff = todayStr(-days);
       return { days, logs: clone(db.medicineLog.filter((l) => l.date >= cutoff)) };
+    }
+    case "medicinelog.list": {
+      let rows = clone(db.medicineLog);
+      if (payload.medicine_id) rows = rows.filter((l) => l.medicine_id === payload.medicine_id);
+      return rows.sort((a, b) => b.date.localeCompare(a.date) || a.time.localeCompare(b.time));
+    }
+
+    case "packs.list":
+      return clone(db.packs);
+    case "packs.create": {
+      requireFields(payload, ["name"]);
+      const ids = Array.isArray(payload.member_medicine_ids) ? payload.member_medicine_ids.join(",") : (payload.member_medicine_ids || "");
+      const row = { id: payload.id || uid(), name: "", times: "", ...payload, member_medicine_ids: ids, created_at: new Date().toISOString() };
+      db.packs.push(row);
+      return clone(row);
+    }
+    case "packs.update": {
+      requireFields(payload, ["id"]);
+      const fields = { ...payload };
+      if (Array.isArray(fields.member_medicine_ids)) fields.member_medicine_ids = fields.member_medicine_ids.join(",");
+      return upsertInto(db.packs, payload.id, fields);
+    }
+    case "packs.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.packs, payload.id);
+    case "packs.tickAll": {
+      requireFields(payload, ["id", "date", "time"]);
+      const pack = db.packs.find((p) => p.id === payload.id);
+      if (!pack) throw new Error("Not found: " + payload.id);
+      const status = payload.status || "taken";
+      const memberIds = String(pack.member_medicine_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+      const logs = memberIds.map((medicineId) => mockCall("medicines.logTaken", { medicine_id: medicineId, date: payload.date, time: payload.time, status }));
+      return Promise.all(logs).then((resolved) => ({ pack_id: payload.id, logs: resolved }));
     }
 
     case "appointments.list":

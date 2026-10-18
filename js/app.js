@@ -11,6 +11,7 @@ import {
   computeCountdown, formatDuration, msUntil, isTimePastToday,
   computeCustomCountdown, computeStockCountdown, classifyCountdownState
 } from "./countdown.js";
+import * as schedule from "./schedule.js";
 
 const appRoot = document.getElementById("app");
 
@@ -18,6 +19,77 @@ const state = {
   locked: true,
   online: navigator.onLine
 };
+
+// ---------------------------------------------------------------------------
+// Shared UI: bottom sheets + 6-second undo toasts.
+//
+// Both are appended to document.body (not the router outlet) so they work
+// identically whether opened from Home, the Meds page, or anywhere else,
+// and survive a route change underneath them (closed explicitly on
+// navigation — see attachNavButtons/renderRoute). Only one of each at a
+// time; opening a new one replaces whatever's already showing.
+//
+// The undo pattern used everywhere a delete/stop happens: apply the change
+// to local state and re-render immediately (optimistic), show a toast with
+// Undo, and only fire the real network call once the toast's 6s expire
+// without Undo being pressed. Pressing Undo this restores local state and
+// never touches the network at all — there's nothing to roll back server-
+// side because nothing was ever sent. This is what "no scary confirm
+// dialogs" means in practice: the action already happened, reversibly.
+// ---------------------------------------------------------------------------
+
+function closeSheet() {
+  const el = document.getElementById("active-sheet-overlay");
+  if (el) el.remove();
+}
+
+// innerHtml is the sheet's own content (its own heading + body + actions);
+// onMount(sheetEl) runs right after it's in the DOM, for attaching handlers.
+function openSheet(innerHtml, onMount) {
+  closeSheet();
+  const overlay = document.createElement("div");
+  overlay.className = "sheet-overlay";
+  overlay.id = "active-sheet-overlay";
+  overlay.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${innerHtml}</div>`;
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeSheet(); });
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("sheet-open"));
+  if (onMount) onMount(overlay.querySelector(".sheet"));
+  return overlay;
+}
+
+let undoToastTimeoutId = null;
+function closeUndoToast() {
+  if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
+  const el = document.getElementById("active-undo-toast");
+  if (el) el.remove();
+}
+
+// message: shown plain text. onUndo(): called if the person taps Undo
+// within the window — nothing else happens. onCommit(): called once the
+// toast expires untouched — this is where the real store.call() actually
+// fires.
+function showUndoToast(message, { onUndo, onCommit }, seconds) {
+  closeUndoToast();
+  const toast = document.createElement("div");
+  toast.className = "undo-toast";
+  toast.id = "active-undo-toast";
+  toast.innerHTML = `<span>${escapeHtml(message)}</span><button type="button" class="btn-link undo-toast-btn">${t("common.undo")}</button>`;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("undo-toast-open"));
+
+  undoToastTimeoutId = setTimeout(async () => {
+    undoToastTimeoutId = null;
+    toast.remove();
+    await onCommit();
+  }, (seconds || 6) * 1000);
+
+  toast.querySelector(".undo-toast-btn").addEventListener("click", () => {
+    if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
+    toast.remove();
+    onUndo();
+  });
+}
 
 const NAV_ITEMS = [
   { key: "home", hash: "#/home", icon: "🏠", label: () => t("nav.home") },
@@ -30,6 +102,7 @@ const NAV_ITEMS = [
 const ROUTES = {
   "/home": { render: renderHomeView, navKey: "home", title: () => t("home.title") },
   "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
+  "/meds/history": { render: renderMedicinesHistoryView, navKey: "meds", title: () => t("meds.history.title") },
   "/visits": { render: renderAppointmentsView, navKey: "visits", title: () => t("nav.visits") },
   "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
@@ -277,21 +350,28 @@ function updateOnlineStatus() {
 // ---------------------------------------------------------------------------
 
 const homeState = {
+  outlet: null,
   bootstrap: null,
+  logs: [], // ~40 days of MedicineLog — enough history for weekly/monthly due-state and PRN averages
   weekEntry: null,
-  tickIntervalId: null,
-  refreshIntervalId: null
+  countdownExpanded: false,
+  refreshIntervalId: null,
+  midnightTimeoutId: null
 };
 
 async function renderHomeView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
+  homeState.outlet = outlet;
 
   const paint = async (boot) => {
     homeState.bootstrap = boot;
     homeState.weekEntry = await weekEntryFor(computeCountdown(boot.settings || {}, new Date())).catch(() => null);
-    outlet.innerHTML = homeMarkup(boot, homeState.weekEntry);
-    attachNavButtons(outlet);
-    startHomeTimers(outlet);
+    try {
+      homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs);
+    } catch {
+      homeState.logs = homeState.logs || [];
+    }
+    renderHomeBody(outlet);
   };
 
   try {
@@ -308,6 +388,25 @@ async function renderHomeView(outlet) {
   }
 }
 
+function renderHomeBody(outlet) {
+  outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.logs, homeState.weekEntry, new Date());
+  attachNavButtons(outlet);
+  attachHomeHandlers(outlet);
+  startHomeTimers(outlet);
+}
+
+async function refreshHome() {
+  if (!homeState.outlet) return;
+  try {
+    const boot = await store.call("bootstrap", {});
+    homeState.bootstrap = boot;
+    homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs).catch(() => homeState.logs);
+  } catch {
+    // Keep showing the last-known state rather than erroring the whole page.
+  }
+  renderHomeBody(homeState.outlet);
+}
+
 // Looks up the matching data/weeks.json entry for the current gestational
 // age (computed locally via countdown.js), clamped to the 4-40 range the
 // content file covers.
@@ -318,87 +417,111 @@ async function weekEntryFor(age) {
   return weeksData.weeks.find((w) => w.week === weekNum) || null;
 }
 
-function homeMarkup(boot, weekEntry) {
+function greetingKey(now) {
+  const h = now.getHours();
+  if (h < 5) return "home.greeting.night";
+  if (h < 12) return "home.greeting.morning";
+  if (h < 17) return "home.greeting.afternoon";
+  if (h < 21) return "home.greeting.evening";
+  return "home.greeting.night";
+}
+
+function activeMedicines(boot) {
+  return (boot.medicines || []).filter((m) => (m.status ? m.status === "active" : isTruthy(m.active)));
+}
+
+function logsForMedicine(logs, medicineId) {
+  return (logs || []).filter((l) => l.medicine_id === medicineId);
+}
+
+// Every calendar-dated dose slot (daily/weekdays/every_n_days) due today,
+// grouped into Morning/Afternoon/Evening/Night. Weekly/monthly medicines are
+// handled by the separate "Coming up" section; interval/PRN medicines don't
+// have fixed slots at all (handled in their own section below).
+function todaysMedicineSlots(boot, logs, now) {
+  const todayStr = schedule.formatLocalDate(now);
+  const buckets = { morning: [], afternoon: [], evening: [], night: [] };
+  activeMedicines(boot).forEach((m) => {
+    const type = schedule.effectiveScheduleType(m);
+    if (type === "interval" || type === "prn" || type === "weekly" || type === "monthly") return;
+    schedule.slotsForDay(m, todayStr, logsForMedicine(logs, m.id), now).forEach((slot) => {
+      buckets[schedule.timeOfDayBucket(slot.time)].push({ medicine: m, slot });
+    });
+  });
+  Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) => a.slot.time.localeCompare(b.slot.time)));
+  return buckets;
+}
+
+function intervalAndPrnMedicines(boot) {
+  return activeMedicines(boot).filter((m) => ["interval", "prn"].includes(schedule.effectiveScheduleType(m)));
+}
+
+// Weekly/monthly medicines that are overdue, due today, or due within 2
+// days — the "Coming up" card. Medicines further out than that just don't
+// show, so the card stays short and relevant.
+function upcomingShots(boot, logs, now) {
+  return activeMedicines(boot)
+    .filter((m) => ["weekly", "monthly"].includes(schedule.effectiveScheduleType(m)))
+    .map((m) => ({ medicine: m, due: schedule.weeklyMonthlyDueState(m, logsForMedicine(logs, m.id), now) }))
+    .filter((row) => ["overdue", "due_today", "due_soon"].includes(row.due.state));
+}
+
+function pinnedCountdownsOf(boot) {
+  return (boot.countdowns || [])
+    .filter((c) => isTruthy(c.show_on_home) && !isTruthy(c.done))
+    .sort((a, b) => Number(a.pinned_order || 0) - Number(b.pinned_order || 0));
+}
+
+function homeMarkup(boot, logs, weekEntry, now) {
   const settings = boot.settings || {};
   const dashboard = boot.dashboard || {};
-  const nextAppt = dashboard.next_appointment;
-  const meds = dashboard.today_medicines || [];
-  const hasCountdown = !!computeCountdown(settings, new Date());
+  const countdown = computeCountdown(settings, now);
+  const buckets = todaysMedicineSlots(boot, logs, now);
+  const bucketOrder = [
+    ["morning", "home.bucket.morning"], ["afternoon", "home.bucket.afternoon"],
+    ["evening", "home.bucket.evening"], ["night", "home.bucket.night"]
+  ];
+  const hasAnyDose = Object.values(buckets).some((b) => b.length);
 
   return `
-    <div class="card countdown-card">
-      <h2>${t("home.dueDate")}</h2>
-      ${
-        hasCountdown
-          ? `
-        <div class="countdown-days" id="countdown-main"></div>
-        <div class="countdown-ticker" id="countdown-ticker"></div>
-        <div class="countdown-meta"><span id="countdown-sub"></span></div>
-      `
-          : `<p class="empty">${t("home.dueDateUnset")}</p>`
-      }
-    </div>
-
-    <div class="dashboard-actions">
-      <button class="btn btn-secondary" data-nav="#/health/new">${t("home.logVitals")}</button>
-      <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
-    </div>
+    ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
 
     <div class="card">
-      <h2>${t("home.babySize.title")}</h2>
+      <div class="card-head">
+        <h2>${t("home.medicines.title")}</h2>
+        <button type="button" class="btn-add" data-add-medicine aria-label="${t("meds.add")}">+</button>
+      </div>
       ${
-        weekEntry
-          ? `
-        <p>${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
-        <p class="empty">${escapeHtml(weekEntry.development)}</p>
-        <a class="card-link" data-nav="#/guide">${t("guide.seeFull")}</a>
-      `
-          : `<p class="empty">${t("home.babySize.comingSoon")}</p>`
+        hasAnyDose
+          ? bucketOrder.map(([key, labelKey]) => bucketOf(buckets[key], key, labelKey)).filter(Boolean).join("")
+          : `<p class="empty">${t("home.medicines.none")}</p>`
       }
+      ${intervalAndPrnMedicines(boot).map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(logs, m.id), now)).join("")}
     </div>
 
+    ${packsCardMarkup(boot, logs, now)}
+
+    ${comingUpCardMarkup(boot, logs, now)}
+
     <div class="card">
-      <h2>${t("home.nextAppointment.title")}</h2>
+      <div class="card-head"><h2>${t("home.nextAppointment.title")}</h2></div>
       ${
-        nextAppt
+        dashboard.next_appointment
           ? `
-        <ul class="appt-list">
-          <li>
-            <span>${escapeHtml(nextAppt.purpose || nextAppt.doctor || "")}</span>
-            <span class="med-time">${formatApptDateTime(nextAppt.datetime)}</span>
-          </li>
-        </ul>
-        <p class="muted" id="appt-ticker"></p>
+        <button type="button" class="tap-row" data-open-appointment="${escapeHtml(dashboard.next_appointment.id || "")}">
+          <span>${escapeHtml(dashboard.next_appointment.purpose || dashboard.next_appointment.doctor || "")}</span>
+          <span class="med-time">${formatApptDateTime(dashboard.next_appointment.datetime)}</span>
+        </button>
       `
           : `<p class="empty">${t("home.nextAppointment.none")}</p>`
       }
     </div>
 
     <div class="card">
-      <h2>${t("home.medicines.title")}</h2>
-      ${
-        meds.length
-          ? `
-        <ul class="med-list" id="home-med-list">
-          ${meds
-            .map(
-              (m) => `
-            <li data-med-time="${escapeHtml(m.time)}">
-              <span>${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
-              <span class="med-time">${escapeHtml(m.time)}</span>
-            </li>
-          `
-            )
-            .join("")}
-        </ul>
-        <p class="empty">${t("home.medicines.hint")}</p>
-      `
-          : `<p class="empty">${t("home.medicines.none")}</p>`
-      }
-    </div>
-
-    <div class="card">
-      <h2>${t("home.pinnedCountdowns.title")}</h2>
+      <div class="card-head">
+        <h2>${t("home.pinnedCountdowns.title")}</h2>
+        <button type="button" class="btn-add" data-add-countdown aria-label="${t("countdowns.add")}">+</button>
+      </div>
       ${
         pinnedCountdownsOf(boot).length
           ? `
@@ -407,8 +530,10 @@ function homeMarkup(boot, weekEntry) {
             .map(
               (cd) => `
             <li data-countdown-id="${escapeHtml(cd.id)}">
-              <span>${escapeHtml(cd.title)}</span>
-              <span class="countdown-ticker" id="pinned-cd-${escapeHtml(cd.id)}"></span>
+              <button type="button" class="tap-row" data-open-countdown="${escapeHtml(cd.id)}">
+                <span>${escapeHtml(cd.title)}</span>
+                <span class="countdown-ticker" id="pinned-cd-${escapeHtml(cd.id)}"></span>
+              </button>
             </li>
           `
             )
@@ -419,62 +544,214 @@ function homeMarkup(boot, weekEntry) {
       }
       <a class="card-link" data-nav="#/countdowns">${t("countdowns.seeAll")}</a>
     </div>
+
+    <div class="dashboard-actions">
+      <button class="btn btn-secondary" data-nav="#/health/new">${t("home.logVitals")}</button>
+      <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
+    </div>
   `;
 }
 
-function pinnedCountdownsOf(boot) {
-  return (boot.countdowns || [])
-    .filter((c) => isTruthy(c.show_on_home) && !isTruthy(c.done))
-    .sort((a, b) => Number(a.pinned_order || 0) - Number(b.pinned_order || 0));
+function bucketOf(items, key, labelKey) {
+  if (!items.length) return "";
+  return `
+    <div class="med-bucket" data-bucket="${key}">
+      <h3 class="med-bucket-label">${t(labelKey)}</h3>
+      <ul class="med-slot-list">
+        ${items.map((it) => medicineSlotRowMarkup(it.medicine, it.slot)).join("")}
+      </ul>
+    </div>
+  `;
 }
 
-// 1s ticker: cheap textContent updates only, no DOM rebuild — keeps the
-// seconds-resolution countdown smooth without disrupting scroll/focus.
-function tickHomeCountdown(outlet) {
-  if (!homeState.bootstrap) return;
-  const mainEl = document.getElementById("countdown-main");
-  if (!mainEl) { stopHomeTimers(); return; } // view no longer mounted — safety net
+const SLOT_STATUS_LABEL_KEYS = {
+  taken: "home.doseStatus.taken", due_now: "home.doseStatus.dueNow", late: "home.doseStatus.late",
+  missed: "home.doseStatus.missed", skipped: "home.doseStatus.skipped", upcoming: "home.doseStatus.upcoming"
+};
+const SLOT_STATUS_STATE_CLASS = {
+  taken: "dose-state-sage", due_now: "dose-state-calm", late: "dose-state-amber",
+  missed: "dose-state-rose", skipped: "dose-state-amber", upcoming: "dose-state-calm"
+};
 
-  const now = new Date();
-  const settings = homeState.bootstrap.settings || {};
+function medicineSlotRowMarkup(m, slot) {
+  const taken = slot.status === "taken";
+  const takenAtLabel = taken && slot.log && slot.log.taken_at
+    ? t("home.doseStatus.takenAt", { time: formatTimeOfDay(new Date(slot.log.taken_at)) })
+    : t(SLOT_STATUS_LABEL_KEYS[slot.status] || "home.doseStatus.upcoming");
+
+  return `
+    <li class="med-slot-row">
+      <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""}"
+        data-tick-med="${escapeHtml(m.id)}" data-tick-time="${escapeHtml(slot.time)}" data-tick-taken="${taken ? "0" : "1"}"
+        aria-label="${escapeHtml(m.name)} ${escapeHtml(slot.time)}">${taken ? "✓" : ""}</button>
+      <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(m.id)}">
+        <span class="med-slot-name">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
+        <span class="muted">${escapeHtml(slot.time)} · <span class="${SLOT_STATUS_STATE_CLASS[slot.status] || ""}">${takenAtLabel}</span></span>
+      </button>
+    </li>
+  `;
+}
+
+function intervalOrPrnRowMarkup(m, logs, now) {
+  const type = schedule.effectiveScheduleType(m);
+  if (type === "interval") {
+    const next = schedule.nextDose(m, logs, now);
+    const msLeft = next ? next.getTime() - now.getTime() : null;
+    return `
+      <div class="med-bucket" data-interval-medicine="${escapeHtml(m.id)}">
+        <ul class="med-slot-list">
+          <li class="med-slot-row">
+            <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(m.id)}">
+              <span class="med-slot-name">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
+              <span class="muted ${msLeft !== null && msLeft <= 0 ? "dose-state-amber" : "dose-state-calm"}">
+                ${msLeft === null ? t("home.doseStatus.noDoseYet") : msLeft <= 0 ? t("home.doseStatus.dueNow") : t("meds.nextDoseIn", formatDuration(msLeft))}
+              </span>
+            </button>
+            <button type="button" class="btn btn-secondary btn-small" data-take-now="${escapeHtml(m.id)}">${t("home.takeNow")}</button>
+          </li>
+        </ul>
+      </div>
+    `;
+  }
+  // PRN
+  const gate = schedule.canTakeNow(m, logs, now);
+  return `
+    <div class="med-bucket" data-prn-medicine="${escapeHtml(m.id)}">
+      <ul class="med-slot-list">
+        <li class="med-slot-row">
+          <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(m.id)}">
+            <span class="med-slot-name">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
+            <span class="muted">${t("home.prnTakenToday", { n: gate.takenToday })}</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-small" data-take-prn="${escapeHtml(m.id)}" data-prn-confirm="0">${t("home.takeOne")}</button>
+        </li>
+        <li class="prn-confirm-row" data-prn-confirm-row="${escapeHtml(m.id)}" hidden>
+          <span class="muted dose-state-amber">${t("home.prnConfirm", { n: gate.takenToday })}</span>
+          <button type="button" class="btn-link" data-take-prn="${escapeHtml(m.id)}" data-prn-confirm="1">${t("home.logAnyway")}</button>
+        </li>
+      </ul>
+    </div>
+  `;
+}
+
+function packsCardMarkup(boot, logs, now) {
+  const packs = boot.packs || [];
+  if (!packs.length) return "";
+  const medicinesById = indexById(boot.medicines || []);
+  const todayStr = schedule.formatLocalDate(now);
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("home.packs.title")}</h2>
+        <button type="button" class="btn-add" data-add-pack aria-label="${t("packs.add")}">+</button>
+      </div>
+      ${packs.map((pack) => packRowMarkup(pack, medicinesById, logs, todayStr)).join("")}
+    </div>
+  `;
+}
+
+function packRowMarkup(pack, medicinesById, logs, todayStr) {
+  const memberIds = String(pack.member_medicine_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const time = (pack.times || "").split(",")[0] || "";
+  const logsByMedicineId = {};
+  memberIds.forEach((id) => { logsByMedicineId[id] = logsForMedicine(logs, id); });
+  const status = schedule.packStatus(memberIds, logsByMedicineId, todayStr, time);
+
+  return `
+    <div class="pack-row" data-pack-id="${escapeHtml(pack.id)}">
+      <button type="button" class="tap-row pack-head" data-edit-pack="${escapeHtml(pack.id)}">
+        <strong>${escapeHtml(pack.name)}</strong>
+        <span class="muted">${escapeHtml(time)}</span>
+      </button>
+      <ul class="med-slot-list">
+        ${memberIds.map((id) => {
+          const m = medicinesById[id];
+          if (!m) return "";
+          const taken = status.memberStatuses[id] === "taken";
+          return `
+            <li class="med-slot-row">
+              <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""}"
+                data-tick-med="${escapeHtml(id)}" data-tick-time="${escapeHtml(time)}" data-tick-taken="${taken ? "0" : "1"}"
+                aria-label="${escapeHtml(m.name)}">${taken ? "✓" : ""}</button>
+              <span class="med-slot-name">${escapeHtml(m.name)}</span>
+            </li>
+          `;
+        }).join("")}
+      </ul>
+      <button type="button" class="btn btn-secondary btn-small" data-tick-all-pack="${escapeHtml(pack.id)}" data-pack-time="${escapeHtml(time)}" ${status.allTaken ? "disabled" : ""}>
+        ${status.allTaken ? t("home.packs.allDone") : t("home.packs.tickAll")}
+      </button>
+    </div>
+  `;
+}
+
+function comingUpCardMarkup(boot, logs, now) {
+  const rows = upcomingShots(boot, logs, now);
+  if (!rows.length) return "";
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("home.comingUp.title")}</h2></div>
+      <ul class="med-slot-list">
+        ${rows.map(({ medicine, due }) => `
+          <li class="med-slot-row">
+            <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(medicine.id)}">
+              <span class="med-slot-name">${escapeHtml(medicine.name)}</span>
+              <span class="muted ${due.state === "overdue" ? "dose-state-rose" : due.state === "due_today" ? "dose-state-amber" : "dose-state-calm"}">
+                ${due.state === "overdue" ? t("home.comingUp.overdue") : due.state === "due_today" ? t("home.comingUp.dueToday") : t("home.comingUp.dueIn", { n: due.daysUntil })}
+              </span>
+            </button>
+            <button type="button" class="btn btn-secondary btn-small" data-mark-given="${escapeHtml(medicine.id)}" data-given-date="${escapeHtml(schedule.formatLocalDate(due.date))}">${t("home.markGiven")}</button>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
+  const greeting = t(greetingKey(now));
+  if (!countdown) {
+    return `
+      <div class="card hero-countdown-card">
+        <p class="hero-greeting">${escapeHtml(greeting)}</p>
+        <p class="empty">${t("home.dueDateUnset")}</p>
+      </div>
+    `;
+  }
+
+  const daysText = countdown.isOverdue
+    ? t("home.daysOverdue", { n: Math.abs(Math.ceil(countdown.msToDueDate / 86400000)) })
+    : Math.ceil(countdown.msToDueDate / 86400000) === 0
+      ? t("home.dueToday")
+      : t("home.daysToGo", { n: Math.ceil(countdown.msToDueDate / 86400000) });
+
+  const weekPct = Math.min(100, Math.max(0, (countdown.weeks / 40) * 100));
+  const dueDateLabel = countdown.dueDate ? formatDisplayDate(formatDateInput(countdown.dueDate)) : "";
+
+  return `
+    <button type="button" class="card hero-countdown-card" id="hero-countdown-card" data-expanded="${homeState.countdownExpanded ? "1" : "0"}">
+      <p class="hero-greeting">${escapeHtml(greeting)}</p>
+      <div class="hero-days" id="hero-days">${daysText}</div>
+      <p class="hero-week-line">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
+      <div class="hero-progress"><div class="hero-progress-fill" style="width:${weekPct}%"></div></div>
+      ${dueDateLabel ? `<p class="hero-due-date">${t("home.dueDateSentence", { date: dueDateLabel })}</p>` : ""}
+      ${weekEntry ? `<p class="hero-baby-size">${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>` : ""}
+      <div class="hero-detail" id="hero-detail" ${homeState.countdownExpanded ? "" : "hidden"}></div>
+    </button>
+  `;
+}
+
+function tickHeroDetail(now) {
+  if (!homeState.countdownExpanded) return;
+  const settings = (homeState.bootstrap && homeState.bootstrap.settings) || {};
   const countdown = computeCountdown(settings, now);
-
-  if (countdown && countdown.msToDueDate !== null) {
-    const dur = formatDuration(countdown.msToDueDate);
-    mainEl.textContent = countdown.isOverdue
-      ? t("home.daysOverdue", { n: dur.days })
-      : dur.days === 0
-        ? t("home.dueToday")
-        : t("home.daysToGo", { n: dur.days });
-
-    const tickerEl = document.getElementById("countdown-ticker");
-    if (tickerEl) {
-      tickerEl.textContent = t("home.ticker", {
-        h: String(dur.hours).padStart(2, "0"),
-        m: String(dur.minutes).padStart(2, "0"),
-        s: String(dur.seconds).padStart(2, "0")
-      });
-    }
-
-    const subEl = document.getElementById("countdown-sub");
-    if (subEl) {
-      subEl.textContent =
-        t("home.weekDay", { weeks: countdown.weeks, days: countdown.days }) + " · " + t("home.trimester", { n: countdown.trimester });
-    }
-  }
-
-  const nextAppt = homeState.bootstrap.dashboard && homeState.bootstrap.dashboard.next_appointment;
-  const apptTickerEl = document.getElementById("appt-ticker");
-  if (apptTickerEl && nextAppt) {
-    const msLeft = msUntil(nextAppt.datetime, now);
-    apptTickerEl.textContent = msLeft !== null && msLeft > 0 ? t("home.apptIn", formatDuration(msLeft)) : "";
-  }
-
-  outlet.querySelectorAll("#home-med-list li[data-med-time]").forEach((li) => {
-    li.classList.toggle("med-overdue", isTimePastToday(li.dataset.medTime, now));
-  });
-
-  tickPinnedCountdowns(outlet, now);
+  const el = document.getElementById("hero-detail");
+  if (!el || !countdown || countdown.msToDueDate === null) return;
+  const dur = formatDuration(countdown.msToDueDate);
+  el.textContent = countdown.isOverdue
+    ? t("home.ticker", { h: String(dur.hours).padStart(2, "0"), m: String(dur.minutes).padStart(2, "0"), s: "" }).replace(/\s*0?s$/, "")
+    : t("home.hoursMinutesToGo", { h: dur.hours, m: dur.minutes });
 }
 
 function tickPinnedCountdowns(outlet, now) {
@@ -503,20 +780,191 @@ function cssEscape(value) {
   return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
+// Deliberately no 1-second ticker any more (problem #1 — a ticking seconds
+// display read as confusing, not reassuring). The day count only needs to
+// change once a day; a 30s refresh plus an explicit midnight rollover and
+// an on-focus refresh are what the spec actually asked for. The expanded
+// hours/minutes detail (tap-to-toggle) still updates every 30s while shown.
 function startHomeTimers(outlet) {
-  tickHomeCountdown(outlet);
-  homeState.tickIntervalId = setInterval(() => tickHomeCountdown(outlet), 1000);
+  tickPinnedCountdowns(outlet, new Date());
+  tickHeroDetail(new Date());
   homeState.refreshIntervalId = setInterval(() => {
-    if (!homeState.bootstrap) return;
-    outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.weekEntry);
-    attachNavButtons(outlet);
-    tickHomeCountdown(outlet);
+    tickPinnedCountdowns(outlet, new Date());
+    tickHeroDetail(new Date());
   }, 30000);
+  scheduleMidnightRefresh();
+  document.addEventListener("visibilitychange", onHomeVisibilityChange);
 }
 
 function stopHomeTimers() {
-  if (homeState.tickIntervalId) { clearInterval(homeState.tickIntervalId); homeState.tickIntervalId = null; }
   if (homeState.refreshIntervalId) { clearInterval(homeState.refreshIntervalId); homeState.refreshIntervalId = null; }
+  if (homeState.midnightTimeoutId) { clearTimeout(homeState.midnightTimeoutId); homeState.midnightTimeoutId = null; }
+  document.removeEventListener("visibilitychange", onHomeVisibilityChange);
+}
+
+function onHomeVisibilityChange() {
+  if (document.visibilityState === "visible" && homeState.outlet && currentPath() === "/home") {
+    renderHomeBody(homeState.outlet);
+  }
+}
+
+function scheduleMidnightRefresh() {
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+  homeState.midnightTimeoutId = setTimeout(() => {
+    if (homeState.outlet && currentPath() === "/home") renderHomeBody(homeState.outlet);
+  }, midnight.getTime() - now.getTime());
+}
+
+function formatTimeOfDay(date) {
+  try {
+    return new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" }).format(date);
+  } catch {
+    return "";
+  }
+}
+
+function attachHomeHandlers(outlet) {
+  const heroCard = outlet.querySelector("#hero-countdown-card");
+  if (heroCard) {
+    heroCard.addEventListener("click", () => {
+      homeState.countdownExpanded = !homeState.countdownExpanded;
+      renderHomeBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-tick-med]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleDoseTaken(btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickTaken === "1");
+    });
+  });
+
+  outlet.querySelectorAll("[data-take-now]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const now = new Date();
+      toggleDoseTaken(btn.dataset.takeNow, formatTimeHHMM(now), true);
+    });
+  });
+
+  outlet.querySelectorAll("[data-take-prn]").forEach((btn) => {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const medicineId = btn.dataset.takePrn;
+      const confirmed = btn.dataset.prnConfirm === "1";
+      const medicine = (homeState.bootstrap.medicines || []).find((m) => m.id === medicineId);
+      const gate = schedule.canTakeNow(medicine, logsForMedicine(homeState.logs, medicineId), new Date());
+      if (gate.needsConfirm && !confirmed) {
+        const row = outlet.querySelector(`[data-prn-confirm-row="${cssEscape(medicineId)}"]`);
+        if (row) row.hidden = false;
+        return;
+      }
+      const now = new Date();
+      try {
+        await store.call("medicines.logTaken", { medicine_id: medicineId, date: schedule.formatLocalDate(now), time: formatTimeHHMM(now), status: "taken" });
+        await refreshHome();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-tick-all-pack]").forEach((btn) => {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await store.call("packs.tickAll", { id: btn.dataset.tickAllPack, date: schedule.formatLocalDate(new Date()), time: btn.dataset.packTime || formatTimeHHMM(new Date()) });
+        await refreshHome();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-mark-given]").forEach((btn) => {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const medicineId = btn.dataset.markGiven;
+      const medicine = (homeState.bootstrap.medicines || []).find((m) => m.id === medicineId);
+      const time = schedule.parseTimesList(medicine)[0] || formatTimeHHMM(new Date());
+      try {
+        await store.call("medicines.logTaken", { medicine_id: medicineId, date: btn.dataset.givenDate, time, status: "taken" });
+        await refreshHome();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-edit-medicine]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const medicine = (homeState.bootstrap.medicines || []).find((m) => m.id === btn.dataset.editMedicine);
+      openMedicineSheet(medicine || "new", refreshHome);
+    });
+  });
+  const addMedicineBtn = outlet.querySelector("[data-add-medicine]");
+  if (addMedicineBtn) addMedicineBtn.addEventListener("click", () => openMedicineSheet("new", refreshHome));
+
+  outlet.querySelectorAll("[data-edit-pack]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const pack = (homeState.bootstrap.packs || []).find((p) => p.id === btn.dataset.editPack);
+      openPackSheet(pack || "new", homeState.bootstrap.medicines || [], refreshHome);
+    });
+  });
+  const addPackBtn = outlet.querySelector("[data-add-pack]");
+  if (addPackBtn) addPackBtn.addEventListener("click", () => openPackSheet("new", homeState.bootstrap.medicines || [], refreshHome));
+
+  outlet.querySelectorAll("[data-open-countdown]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const cd = (homeState.bootstrap.countdowns || []).find((c) => c.id === btn.dataset.openCountdown);
+      openCountdownSheet(cd || "new", homeState.bootstrap.medicines || [], refreshHome);
+    });
+  });
+  const addCountdownBtn = outlet.querySelector("[data-add-countdown]");
+  if (addCountdownBtn) addCountdownBtn.addEventListener("click", () => openCountdownSheet("new", homeState.bootstrap.medicines || [], refreshHome));
+
+  outlet.querySelectorAll("[data-open-appointment]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const appt = homeState.bootstrap.dashboard && homeState.bootstrap.dashboard.next_appointment;
+      openAppointmentSheet(appt || "new", refreshHome);
+    });
+  });
+}
+
+function formatTimeHHMM(date) {
+  return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+}
+
+// Optimistic dose tick: flips local state + re-renders immediately, fires
+// the real call in the background, reverts on failure. Re-tapping undoes
+// it trivially (it's a toggle), so this doesn't need the undo-toast
+// treatment that delete/stop get — tapping again already is the undo.
+async function toggleDoseTaken(medicineId, time, taken) {
+  const outlet = homeState.outlet;
+  if (!outlet) return;
+  const todayStr = schedule.formatLocalDate(new Date());
+  const snapshot = JSON.parse(JSON.stringify(homeState.logs));
+  const existing = homeState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === todayStr && String(l.time) === String(time));
+  if (existing) {
+    existing.taken = taken;
+    existing.status = taken ? "taken" : "skipped";
+  } else {
+    homeState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken, status: taken ? "taken" : "skipped" });
+  }
+  renderHomeBody(outlet);
+
+  try {
+    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status: taken ? "taken" : "skipped" });
+    await refreshHome();
+  } catch (err) {
+    homeState.logs = snapshot;
+    renderHomeBody(outlet);
+    alert(err.message || t("common.error"));
+  }
 }
 
 function formatApptDateTime(iso) {
@@ -796,18 +1244,17 @@ function foodItemMarkup(item) {
 // Medicines
 // ---------------------------------------------------------------------------
 
-const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, formItem: null, refreshIntervalId: null };
+const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, refreshIntervalId: null };
 
 async function renderMedicinesView(outlet) {
   medsState.loading = true;
   medsState.error = null;
-  medsState.formItem = null;
   outlet.innerHTML = genericSkeleton(6);
 
   try {
     const [medicines, history, countdowns] = await Promise.all([
       store.call("medicines.list", {}),
-      store.call("medicines.history", { days: 14 }),
+      store.call("medicines.history", { days: 40 }),
       store.call("countdowns.list", {}).catch(() => [])
     ]);
     medsState.medicines = medicines;
@@ -832,45 +1279,131 @@ function stopMedsTimers() {
 
 function renderMedsBody(outlet) {
   stopMedsTimers();
-  outlet.innerHTML = medsState.formItem !== null ? medicineFormMarkup(medsState.formItem) : medsListMarkup();
+  outlet.innerHTML = medsListMarkup();
   attachMedsHandlers(outlet);
-
-  // Next-dose/course/stock figures refresh every 30s while this view is
-  // open and showing the list (not mid-edit) — Home's pinned items are the
-  // only thing that ticks every 1s, per spec.
-  if (medsState.formItem === null) {
-    medsState.refreshIntervalId = setInterval(() => {
-      outlet.innerHTML = medsListMarkup();
-      attachMedsHandlers(outlet);
-    }, 30000);
-  }
+  medsState.refreshIntervalId = setInterval(() => {
+    outlet.innerHTML = medsListMarkup();
+    attachMedsHandlers(outlet);
+  }, 30000);
 }
 
-// Mirrors the backend's (and mock's) logTaken + stock-adjustment logic
-// client-side, for the optimistic UI update: same upsert-by-(medicine,
-// date, time) rule, same +-1/clamp-at-0/opt-in-only stock rule, so the
-// local guess matches what the server will actually do in the common case.
-function applyOptimisticLogTaken(medicineId, date, time, taken) {
-  const existing = medsState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === date && String(l.time) === String(time));
-  const wasTaken = existing ? isTruthy(existing.taken) : false;
-  if (existing) {
-    existing.taken = taken;
+function activeMedicinesOf(medicines) {
+  return (medicines || []).filter((m) => (m.status ? m.status === "active" : isTruthy(m.active)));
+}
+
+function medsListMarkup() {
+  const now = new Date();
+  const todayStr = schedule.formatLocalDate(now);
+  const active = activeMedicinesOf(medsState.medicines);
+
+  const todaySlotItems = [];
+  active.forEach((m) => {
+    const type = schedule.effectiveScheduleType(m);
+    if (["interval", "prn", "weekly", "monthly"].includes(type)) return;
+    schedule.slotsForDay(m, todayStr, logsForMedicine(medsState.logs, m.id), now).forEach((slot) => {
+      todaySlotItems.push({ medicine: m, slot });
+    });
+  });
+  todaySlotItems.sort((a, b) => a.slot.time.localeCompare(b.slot.time));
+
+  const intervalPrn = active.filter((m) => ["interval", "prn"].includes(schedule.effectiveScheduleType(m)));
+
+  const finishedOrStopped = (medsState.medicines || []).filter((m) => m.status === "finished" || m.status === "stopped");
+
+  return `
+    <div class="card">
+      <h2>${t("meds.today.title")}</h2>
+      ${
+        todaySlotItems.length
+          ? `<ul class="med-slot-list">${todaySlotItems.map((it) => medicineSlotRowMarkup(it.medicine, it.slot)).join("")}</ul>`
+          : `<p class="empty">${t("meds.today.none")}</p>`
+      }
+      ${intervalPrn.map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(medsState.logs, m.id), now)).join("")}
+    </div>
+
+    <button class="btn btn-primary" id="add-med-btn">${t("meds.add")}</button>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("meds.all.title")}</h2>
+      </div>
+      ${
+        active.length
+          ? `<ul class="entity-list">${active.map((m) => medicineRowMarkup(m, medsState.countdowns, medsState.logs)).join("")}</ul>`
+          : `<p class="empty">${t("meds.all.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <h2>${t("meds.history.title")}</h2>
+      <p class="muted">${t("meds.history.usedCount", { n: finishedOrStopped.length })}</p>
+      <a class="card-link" data-nav="#/meds/history">${t("meds.history.seeAll")}</a>
+    </div>
+  `;
+}
+
+function medicineRowMarkup(m, countdowns, logs) {
+  const now = new Date();
+  const extraLines = [];
+
+  if (m.schedule_type) {
+    // v3 medicine — schedule.js is the single source of truth, no need to
+    // look for a separately-managed linked Countdown row at all.
+    const type = schedule.effectiveScheduleType(m);
+    if (type === "interval") {
+      const next = schedule.nextDose(m, logsForMedicine(logs, m.id), now);
+      const msLeft = next ? next.getTime() - now.getTime() : null;
+      extraLines.push(`<span class="muted ${msLeft !== null && msLeft <= 0 ? "dose-state-amber" : "dose-state-calm"}">${msLeft === null ? t("home.doseStatus.noDoseYet") : t("meds.nextDoseIn", formatDuration(Math.max(0, msLeft)))}</span>`);
+    } else if (["weekly", "monthly"].includes(type)) {
+      const due = schedule.weeklyMonthlyDueState(m, logsForMedicine(logs, m.id), now);
+      extraLines.push(`<span class="muted ${due.state === "overdue" ? "dose-state-rose" : due.state === "due_today" ? "dose-state-amber" : "dose-state-calm"}">${due.state === "overdue" ? t("home.comingUp.overdue") : due.state === "due_today" ? t("home.comingUp.dueToday") : t("home.comingUp.dueIn", { n: due.daysUntil })}</span>`);
+    }
+    const progress = schedule.courseProgress(m, now);
+    if (progress && progress.totalDays !== null) {
+      extraLines.push(`<span class="muted">${t("meds.dayOfCourse", { day: progress.dayOfCourse, total: progress.totalDays })}</span>`);
+    }
+    const daysLeft = schedule.stockDaysLeft(m, logsForMedicine(logs, m.id), now);
+    if (daysLeft !== null) {
+      extraLines.push(`<span class="muted ${daysLeft <= 0 ? "dose-state-rose" : daysLeft <= (m.refill_alert_days || 3) ? "dose-state-amber" : "dose-state-calm"}">${daysLeft <= 0 ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(daysLeft) })}</span>`);
+    }
   } else {
-    medsState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date, time, taken });
+    // Pre-v3 row — fall back to the old linked-Countdown-row display.
+    const linked = (countdowns || []).filter((c) => c.linked_medicine_id === m.id && !isTruthy(c.done));
+    const intervalCd = linked.find((c) => c.kind === "interval");
+    const courseCd = linked.find((c) => c.kind === "course");
+    const stock = computeStockCountdown(m);
+    const lastDoseByMedicine = lastDoseByMedicineFrom(logs);
+    if (intervalCd) {
+      const computed = computeCustomCountdown(intervalCd, { lastDose: lastDoseByMedicine[m.id] }, now);
+      extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.nextDose", { text: computed.msRemaining === null ? t("countdowns.display.noDoseYet") : formatRemainingLabel(computed.msRemaining) })}</span>`);
+    }
+    if (courseCd) {
+      const computed = computeCustomCountdown(courseCd, { dosesPerDay: numOrEmpty(m.doses_per_day) }, now);
+      if (computed.daysLeft !== null) extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.courseEnds", { n: computed.daysLeft })}</span>`);
+    }
+    if (stock) {
+      const stateClass = stock.outOfStock ? "dose-state-rose" : stock.needsRefill ? "dose-state-amber" : "dose-state-calm";
+      extraLines.push(`<span class="muted ${stateClass}">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}</span>`);
+    }
   }
-  if (taken === wasTaken) return;
 
-  const medicine = medsState.medicines.find((m) => m.id === medicineId);
-  if (!medicine || medicine.stock_count === "" || medicine.stock_count === undefined || medicine.stock_count === null) return;
-  const current = Number(medicine.stock_count);
-  if (isNaN(current)) return;
-  medicine.stock_count = Math.max(0, current + (taken ? -1 : 1));
+  return `
+    <li class="entity-row tap-row" data-edit-medicine="${escapeHtml(m.id)}">
+      <div class="entity-main">
+        <strong>${escapeHtml(m.name)}</strong>
+        <span class="muted">${escapeHtml([m.dose, m.frequency].filter(Boolean).join(" · "))}</span>
+        ${extraLines.join("")}
+      </div>
+      <div class="entity-actions">
+        <button class="btn-link btn-link--danger" data-delete-med="${escapeHtml(m.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
 }
 
-// Most recent *taken* MedicineLog entry per medicine, computed from this
-// view's own 14-day history fetch (mirrors the backend's
-// getLatestMedicineDoses(), just computed client-side here since this view
-// already has the raw log — no need for bootstrap's summary version of it).
+// Most recent *taken* MedicineLog entry per medicine — used only by the
+// pre-v3 linked-Countdown fallback display above (v3 rows use schedule.js's
+// own log lookups instead).
 function lastDoseByMedicineFrom(logs) {
   const latest = {};
   logs.forEach((l) => {
@@ -884,271 +1417,822 @@ function lastDoseByMedicineFrom(logs) {
   return latest;
 }
 
-function medsListMarkup() {
-  const todayStr = formatDateInput(new Date());
-  const takenToday = new Set(
-    medsState.logs.filter((l) => dateStrEq(l.date, todayStr) && isTruthy(l.taken)).map((l) => l.medicine_id + "|" + l.time)
-  );
+async function toggleMedsPageDoseTaken(outlet, medicineId, time, taken) {
+  const todayStr = schedule.formatLocalDate(new Date());
+  const snapshot = JSON.parse(JSON.stringify(medsState.logs));
+  const existing = medsState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === todayStr && String(l.time) === String(time));
+  if (existing) {
+    existing.taken = taken;
+    existing.status = taken ? "taken" : "skipped";
+  } else {
+    medsState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken, status: taken ? "taken" : "skipped" });
+  }
+  renderMedsBody(outlet);
 
-  const todayDoses = [];
-  medsState.medicines.filter((m) => isMedicineActiveOn(m, todayStr)).forEach((m) => {
-    splitTimes(m.times).forEach((time) => {
-      todayDoses.push({ medicine: m, time, taken: takenToday.has(m.id + "|" + time) });
+  try {
+    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status: taken ? "taken" : "skipped" });
+    await renderMedicinesView(outlet);
+  } catch (err) {
+    medsState.logs = snapshot;
+    renderMedsBody(outlet);
+    alert(err.message || t("common.error"));
+  }
+}
+
+function attachMedsHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-med-btn");
+  if (addBtn) addBtn.addEventListener("click", () => openMedicineSheet("new", () => renderMedicinesView(outlet)));
+
+  outlet.querySelectorAll("[data-edit-medicine]").forEach((el) => {
+    el.addEventListener("click", (event) => {
+      if (event.target.closest("[data-delete-med]")) return;
+      const medicine = medsState.medicines.find((m) => m.id === el.dataset.editMedicine);
+      openMedicineSheet(medicine || "new", () => renderMedicinesView(outlet));
     });
   });
-  todayDoses.sort((a, b) => a.time.localeCompare(b.time));
 
-  const historyByDate = {};
-  medsState.logs.forEach((l) => {
-    const d = dateStrOf(l.date);
-    if (!historyByDate[d]) historyByDate[d] = [];
-    historyByDate[d].push(l);
+  outlet.querySelectorAll("[data-delete-med]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteMedicineWithUndo(btn.dataset.deleteMed, () => renderMedicinesView(outlet));
+    });
   });
-  const historyDates = Object.keys(historyByDate).sort((a, b) => b.localeCompare(a));
 
-  return `
-    <div class="card">
-      <h2>${t("meds.today.title")}</h2>
-      ${
-        todayDoses.length
-          ? `
-        <ul class="med-list med-list--checkable">
-          ${todayDoses
-            .map(
-              (d) => `
-            <li>
-              <label class="med-check">
-                <input type="checkbox" data-med-id="${escapeHtml(d.medicine.id)}" data-med-time="${escapeHtml(d.time)}" ${d.taken ? "checked" : ""} />
-                <span class="${d.taken ? "med-check-done" : ""}">${escapeHtml(d.medicine.name)}${d.medicine.dose ? " · " + escapeHtml(d.medicine.dose) : ""}</span>
-              </label>
-              <span class="med-time">${escapeHtml(d.time)}</span>
-            </li>
-          `
-            )
-            .join("")}
-        </ul>
-      `
-          : `<p class="empty">${t("meds.today.none")}</p>`
+  outlet.querySelectorAll("[data-tick-med]").forEach((btn) => {
+    btn.addEventListener("click", () => toggleMedsPageDoseTaken(outlet, btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickTaken === "1"));
+  });
+
+  outlet.querySelectorAll("[data-take-now]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const now = new Date();
+      toggleMedsPageDoseTaken(outlet, btn.dataset.takeNow, formatTimeHHMM(now), true);
+    });
+  });
+
+  outlet.querySelectorAll("[data-take-prn]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const medicineId = btn.dataset.takePrn;
+      const confirmed = btn.dataset.prnConfirm === "1";
+      const medicine = medsState.medicines.find((m) => m.id === medicineId);
+      const gate = schedule.canTakeNow(medicine, logsForMedicine(medsState.logs, medicineId), new Date());
+      if (gate.needsConfirm && !confirmed) {
+        const row = outlet.querySelector(`[data-prn-confirm-row="${cssEscape(medicineId)}"]`);
+        if (row) row.hidden = false;
+        return;
       }
-    </div>
-
-    <button class="btn btn-primary" id="add-med-btn">${t("meds.add")}</button>
-
-    <div class="card">
-      <h2>${t("meds.all.title")}</h2>
-      ${
-        medsState.medicines.length
-          ? `<ul class="entity-list">${medsState.medicines.map((m) => medicineRowMarkup(m, medsState.countdowns, lastDoseByMedicineFrom(medsState.logs))).join("")}</ul>`
-          : `<p class="empty">${t("meds.all.none")}</p>`
+      const now = new Date();
+      try {
+        await store.call("medicines.logTaken", { medicine_id: medicineId, date: schedule.formatLocalDate(now), time: formatTimeHHMM(now), status: "taken" });
+        await renderMedicinesView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
       }
-    </div>
+    });
+  });
+}
 
+// Optimistic delete-with-undo: removes the medicine from view immediately
+// and shows a 6s Undo toast; the real medicines.delete call only fires if
+// the toast expires untouched. This is for correcting an accidental add —
+// the everyday "I'm done with this" action is Stop (see openMedicineSheet),
+// which keeps the medicine in history instead of removing it.
+function deleteMedicineWithUndo(medicineId, refresh) {
+  const idx = medsState.medicines.findIndex((m) => m.id === medicineId);
+  if (idx === -1) return;
+  const removed = medsState.medicines[idx];
+  medsState.medicines.splice(idx, 1);
+  refresh();
+  showUndoToast(t("meds.deletedToast", { name: removed.name }), {
+    onUndo: () => { medsState.medicines.splice(idx, 0, removed); refresh(); },
+    onCommit: async () => {
+      try {
+        await store.call("medicines.delete", { id: medicineId });
+      } catch (err) {
+        medsState.medicines.splice(idx, 0, removed);
+        refresh();
+        alert(err.message || t("common.error"));
+      }
+    }
+  });
+}
+
+function isTruthy(value) {
+  return value === true || String(value).toUpperCase() === "TRUE";
+}
+
+// ---------------------------------------------------------------------------
+// Medicines used — full history (active + finished + stopped), searchable.
+// ---------------------------------------------------------------------------
+
+const medsHistoryState = { medicines: [], logsByMedicine: {}, loading: true, search: "", statusFilter: "all" };
+
+async function renderMedicinesHistoryView(outlet) {
+  medsHistoryState.loading = true;
+  outlet.innerHTML = genericSkeleton(4);
+  try {
+    const medicines = await store.call("medicines.list", {});
+    medsHistoryState.medicines = medicines;
+    const logs = await Promise.all(medicines.map((m) => store.call("medicinelog.list", { medicine_id: m.id }).catch(() => [])));
+    medsHistoryState.logsByMedicine = {};
+    medicines.forEach((m, i) => { medsHistoryState.logsByMedicine[m.id] = logs[i]; });
+    medsHistoryState.loading = false;
+    renderMedsHistoryBody(outlet);
+  } catch (err) {
+    medsHistoryState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderMedicinesHistoryView(outlet));
+  }
+}
+
+function renderMedsHistoryBody(outlet) {
+  const search = medsHistoryState.search.trim().toLowerCase();
+  const rows = medsHistoryState.medicines.filter((m) => {
+    if (medsHistoryState.statusFilter !== "all" && (m.status || "active") !== medsHistoryState.statusFilter) return false;
+    if (search && !String(m.name || "").toLowerCase().includes(search)) return false;
+    return true;
+  });
+  rows.sort((a, b) => dateStrOf(b.start_date).localeCompare(dateStrOf(a.start_date)));
+
+  outlet.innerHTML = `
     <div class="card">
       <h2>${t("meds.history.title")}</h2>
+      <input class="field" id="meds-history-search" placeholder="${t("meds.history.searchPlaceholder")}" value="${escapeHtml(medsHistoryState.search)}" />
+      <div class="chip-row" id="meds-history-filters">
+        ${["all", "active", "finished", "stopped"].map((s) => `<button type="button" class="chip ${medsHistoryState.statusFilter === s ? "chip-selected" : ""}" data-history-filter="${s}">${t("meds.history.filter." + s)}</button>`).join("")}
+      </div>
       ${
-        historyDates.length
-          ? historyDates
-              .slice(0, 14)
-              .map((d) => historyDayMarkup(d, historyByDate[d]))
-              .join("")
+        rows.length
+          ? `<ul class="entity-list">${rows.map((m) => medsHistoryRowMarkup(m)).join("")}</ul>`
           : `<p class="empty">${t("meds.history.none")}</p>`
       }
     </div>
   `;
+
+  outlet.querySelector("#meds-history-search").addEventListener("input", (event) => {
+    medsHistoryState.search = event.target.value;
+    renderMedsHistoryBody(outlet);
+  });
+  outlet.querySelectorAll("[data-history-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      medsHistoryState.statusFilter = btn.dataset.historyFilter;
+      renderMedsHistoryBody(outlet);
+    });
+  });
+  outlet.querySelectorAll("[data-history-edit]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const m = medsHistoryState.medicines.find((x) => x.id === btn.dataset.historyEdit);
+      openMedicineSheet(m || "new", () => renderMedicinesHistoryView(outlet));
+    });
+  });
 }
 
-function medicineRowMarkup(m, countdowns, lastDoseByMedicine) {
-  const now = new Date();
-  const linked = (countdowns || []).filter((c) => c.linked_medicine_id === m.id && !isTruthy(c.done));
-  const intervalCd = linked.find((c) => c.kind === "interval");
-  const courseCd = linked.find((c) => c.kind === "course");
-  const stock = computeStockCountdown(m);
-
-  const extraLines = [];
-  if (intervalCd) {
-    const computed = computeCustomCountdown(intervalCd, { lastDose: lastDoseByMedicine[m.id] }, now);
-    extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.nextDose", { text: computed.msRemaining === null ? t("countdowns.display.noDoseYet") : formatRemainingLabel(computed.msRemaining) })}</span>`);
-  }
-  if (courseCd) {
-    const computed = computeCustomCountdown(courseCd, { dosesPerDay: numOrEmpty(m.doses_per_day) }, now);
-    if (computed.daysLeft !== null) {
-      extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.courseEnds", { n: computed.daysLeft })}</span>`);
-    }
-  }
-  if (stock) {
-    const stateClass = stock.outOfStock ? "countdown-state-overdue" : stock.needsRefill ? "countdown-state-dueSoon" : "countdown-state-upcoming";
-    extraLines.push(`<span class="muted ${stateClass}">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}${stock.needsRefill && !stock.outOfStock ? " · " + t("medicines.stock.needsRefill") : ""}</span>`);
-  }
+function medsHistoryRowMarkup(m) {
+  const logs = medsHistoryState.logsByMedicine[m.id] || [];
+  const takenCount = logs.filter((l) => isTruthy(l.taken) || l.status === "taken").length;
+  const statusLabel = t("meds.history.filter." + (m.status || "active"));
+  const period = [formatDisplayDate(dateStrOf(m.start_date)), m.end_date ? formatDisplayDate(dateStrOf(m.end_date)) : (m.stopped_on ? formatDisplayDate(dateStrOf(m.stopped_on)) : "")]
+    .filter(Boolean).join(" – ");
 
   return `
-    <li class="entity-row">
+    <li class="entity-row tap-row" data-history-edit="${escapeHtml(m.id)}">
       <div class="entity-main">
         <strong>${escapeHtml(m.name)}</strong>
-        <span class="muted">${escapeHtml([m.dose, m.frequency].filter(Boolean).join(" · "))}</span>
-        <span class="muted">${escapeHtml(m.times || "")}</span>
-        ${extraLines.join("")}
-        ${!isTruthy(m.active) ? `<span class="badge">${t("meds.inactive")}</span>` : ""}
-      </div>
-      <div class="entity-actions">
-        <button class="btn-link" data-edit-med="${escapeHtml(m.id)}">${t("common.edit")}</button>
-        <button class="btn-link btn-link--danger" data-delete-med="${escapeHtml(m.id)}">${t("common.delete")}</button>
+        <span class="badge">${escapeHtml(statusLabel)}</span>
+        <span class="muted">${escapeHtml(period)}</span>
+        <span class="muted">${t("meds.history.dosesTaken", { n: takenCount })}</span>
+        ${m.reason ? `<span class="muted">${escapeHtml(m.reason)}</span>` : ""}
+        ${m.stop_note ? `<span class="muted">${escapeHtml(m.stop_note)}</span>` : ""}
       </div>
     </li>
   `;
 }
 
-function historyDayMarkup(dateStr, logs) {
-  const takenCount = logs.filter((l) => isTruthy(l.taken)).length;
-  return `
-    <div class="history-day">
-      <div class="history-date">${escapeHtml(formatDisplayDate(dateStr))}</div>
-      <div class="muted">${t("meds.history.ratio", { taken: takenCount, total: logs.length })}</div>
-    </div>
-  `;
+// ---------------------------------------------------------------------------
+// Add/Edit Medicine sheet — progressive disclosure, far fewer questions than
+// a plain long form. Used from both Home's "+" and the Meds page's "+"/row
+// taps, so it lives here rather than duplicated in each caller.
+//
+// Design note: every "how often"/"how long" sub-field group is rendered up
+// front (all of them, for every schedule_type at once) and just shown/hidden
+// via a hidden input + [hidden] toggling — the same pattern the existing
+// Countdowns form already uses for its per-kind fields (see
+// applyCountdownKindVisibility). This means switching chips never re-renders
+// the form, so nothing already typed into an unrelated field is ever lost.
+// ---------------------------------------------------------------------------
+
+const HOW_OFTEN_CHIPS = [
+  { value: "daily", labelKey: "meds.howOften.daily" },
+  { value: "interval", labelKey: "meds.howOften.interval" },
+  { value: "weekdays", labelKey: "meds.howOften.weekdays" },
+  { value: "every_n_days", labelKey: "meds.howOften.everyNDays" },
+  { value: "weekly", labelKey: "meds.howOften.weekly" },
+  { value: "monthly", labelKey: "meds.howOften.monthly" },
+  { value: "prn", labelKey: "meds.howOften.prn" }
+];
+const HOW_LONG_CHIPS = [
+  { value: "3", labelKey: "meds.howLong.days3" }, { value: "5", labelKey: "meds.howLong.days5" },
+  { value: "7", labelKey: "meds.howLong.days7" }, { value: "10", labelKey: "meds.howLong.days10" },
+  { value: "14", labelKey: "meds.howLong.days14" }, { value: "1month", labelKey: "meds.howLong.month1" },
+  { value: "until", labelKey: "meds.howLong.until" }, { value: "doses", labelKey: "meds.howLong.doses" },
+  { value: "ongoing", labelKey: "meds.howLong.ongoing" }
+];
+const FOOD_CHIPS = [
+  { value: "before_food", labelKey: "meds.food.before_food" }, { value: "after_food", labelKey: "meds.food.after_food" },
+  { value: "with_food", labelKey: "meds.food.with_food" }, { value: "empty_stomach", labelKey: "meds.food.empty_stomach" },
+  { value: "bedtime", labelKey: "meds.food.bedtime" }, { value: "none", labelKey: "meds.food.none" }
+];
+const WEEKDAY_CHIPS = [
+  { value: "mon", labelKey: "meds.weekday.mon" }, { value: "tue", labelKey: "meds.weekday.tue" },
+  { value: "wed", labelKey: "meds.weekday.wed" }, { value: "thu", labelKey: "meds.weekday.thu" },
+  { value: "fri", labelKey: "meds.weekday.fri" }, { value: "sat", labelKey: "meds.weekday.sat" },
+  { value: "sun", labelKey: "meds.weekday.sun" }
+];
+const DEFAULT_TIME_CHIPS = [
+  { time: "08:00", labelKey: "home.bucket.morning" }, { time: "13:00", labelKey: "home.bucket.afternoon" },
+  { time: "18:00", labelKey: "home.bucket.evening" }, { time: "21:00", labelKey: "home.bucket.night" }
+];
+
+function chipButtonHtml(group, value, label, selected) {
+  return `<button type="button" class="chip ${selected ? "chip-selected" : ""}" data-chip-group="${escapeHtml(group)}" data-chip-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
 }
 
-function medicineFormMarkup(item) {
+async function openMedicineSheet(item, onSaved) {
+  let packs = [];
+  try { packs = await store.call("packs.list", {}); } catch { /* packs are optional; sheet works without them */ }
+  openSheet(medicineSheetMarkup(item, packs), (sheetEl) => attachMedicineSheetHandlers(sheetEl, item, onSaved));
+}
+
+function medicineSheetMarkup(item, packs) {
   const isNew = item === "new";
   const m = isNew ? {} : item;
+  const type = schedule.effectiveScheduleType(m);
+  const times = schedule.parseTimesList(m);
+  const weekdaysList = schedule.parseWeekdaysList(m);
+  const instructions = m.instructions || "none";
+  const howLong = m.total_doses ? "doses" : m.end_date ? "until" : "ongoing";
+
   return `
-    <div class="card">
-      <h2>${isNew ? t("meds.form.titleNew") : t("meds.form.titleEdit")}</h2>
-      <form id="med-form">
-        ${formField(t("meds.form.name"), `<input class="field" name="name" required value="${escapeHtml(m.name)}" />`)}
-        ${formField(t("meds.form.dose"), `<input class="field" name="dose" value="${escapeHtml(m.dose)}" />`)}
-        ${formField(t("meds.form.frequency"), `<input class="field" name="frequency" value="${escapeHtml(m.frequency)}" />`)}
-        ${formField(t("meds.form.times"), `<input class="field" name="times" placeholder="08:00, 20:00" value="${escapeHtml(m.times)}" />`, t("meds.form.timesHint"))}
-        ${formField(t("meds.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(dateStrOf(m.start_date) || formatDateInput(new Date()))}" />`)}
-        ${formField(t("meds.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(dateStrOf(m.end_date))}" />`)}
-        ${formField(t("meds.form.prescribedBy"), `<input class="field" name="prescribed_by" value="${escapeHtml(m.prescribed_by)}" />`)}
-        ${formField(t("meds.form.stockCount"), `<input class="field" type="number" min="0" step="1" name="stock_count" value="${escapeHtml(m.stock_count)}" />`, t("meds.form.stockHint"))}
-        ${formField(t("meds.form.dosesPerDay"), `<input class="field" type="number" min="0" step="0.5" name="doses_per_day" value="${escapeHtml(m.doses_per_day)}" />`)}
-        ${formField(t("meds.form.refillAlertDays"), `<input class="field" type="number" min="0" step="1" name="refill_alert_days" value="${escapeHtml(isNew ? (m.refill_alert_days === undefined ? 3 : m.refill_alert_days) : m.refill_alert_days)}" />`)}
-        ${formField(t("meds.form.notes"), `<textarea class="field" name="notes" rows="3">${escapeHtml(m.notes)}</textarea>`)}
-        <label class="checkbox-field">
-          <input type="checkbox" name="active" ${isNew || isTruthy(m.active) ? "checked" : ""} />
-          <span>${t("meds.form.active")}</span>
-        </label>
-        <p class="error-text" id="med-form-error" hidden></p>
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="med-form-cancel">${t("common.cancel")}</button>
-          <button type="submit" class="btn btn-primary" id="med-form-save">${t("common.save")}</button>
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${isNew ? t("meds.form.titleNew") : t("meds.form.titleEdit")}</h2>
+    <form id="med-sheet-form">
+      ${formField(t("meds.form.name"), `<input class="field" name="name" required value="${escapeHtml(m.name)}" />`)}
+      ${formField(`${t("meds.form.reason")} (${t("common.optional")})`, `<input class="field" name="reason" value="${escapeHtml(m.reason)}" />`)}
+      ${formField(t("meds.form.dose"), `<input class="field" name="dose" value="${escapeHtml(m.dose)}" />`)}
+
+      <p class="field-label">${t("meds.form.howOften")}</p>
+      <input type="hidden" name="schedule_type" value="${escapeHtml(type)}" />
+      <div class="chip-row">${HOW_OFTEN_CHIPS.map((c) => chipButtonHtml("how-often", c.value, t(c.labelKey), type === c.value)).join("")}</div>
+
+      <div data-how-often-fields="daily" ${type === "daily" ? "" : "hidden"}>
+        <input type="hidden" name="times" value="${escapeHtml(times.join(","))}" />
+        <div class="chip-row" id="daily-time-chips">
+          ${DEFAULT_TIME_CHIPS.map((c) => chipButtonHtml("daily-time", c.time, `${t(c.labelKey)} ${c.time}`, times.includes(c.time))).join("")}
+          ${times.filter((tm) => !DEFAULT_TIME_CHIPS.some((c) => c.time === tm)).map((tm) => chipButtonHtml("daily-time", tm, tm, true)).join("")}
         </div>
-      </form>
-    </div>
+        <div class="custom-time-row">
+          <input class="field" type="time" id="custom-time-input" />
+          <button type="button" class="btn-link" id="add-custom-time-btn">${t("meds.form.addCustomTime")}</button>
+        </div>
+      </div>
+
+      <div data-how-often-fields="interval" ${type === "interval" ? "" : "hidden"}>
+        ${formField(t("meds.form.everyNHours"), `<input class="field" type="number" min="1" step="1" name="interval_hours" value="${escapeHtml(m.interval_hours || 8)}" />`)}
+        <label class="checkbox-field">
+          <input type="checkbox" name="anchor_from_last" ${type !== "interval" || m.anchor_mode === "from_last" || isNew ? "checked" : ""} />
+          <span>${t("meds.form.countFromLastDose")}</span>
+        </label>
+        ${formField(t("meds.form.startingAround"), `<input class="field" type="time" name="interval_first_time" value="${escapeHtml(times[0] || "08:00")}" />`)}
+      </div>
+
+      <div data-how-often-fields="weekdays" ${type === "weekdays" ? "" : "hidden"}>
+        <input type="hidden" name="weekdays" value="${escapeHtml(weekdaysList.join(","))}" />
+        <div class="chip-row">${WEEKDAY_CHIPS.map((w) => chipButtonHtml("weekday-multi", w.value, t(w.labelKey), weekdaysList.includes(w.value))).join("")}</div>
+        ${formField(t("meds.form.atTime"), `<input class="field" type="time" name="weekdays_first_time" value="${escapeHtml(times[0] || "08:00")}" />`)}
+      </div>
+
+      <div data-how-often-fields="every_n_days" ${type === "every_n_days" ? "" : "hidden"}>
+        ${formField(t("meds.form.everyNDaysN"), `<input class="field" type="number" min="1" step="1" name="interval_days" value="${escapeHtml(m.interval_days || 2)}" />`)}
+        ${formField(t("meds.form.atTime"), `<input class="field" type="time" name="every_n_days_first_time" value="${escapeHtml(times[0] || "08:00")}" />`)}
+      </div>
+
+      <div data-how-often-fields="weekly" ${type === "weekly" ? "" : "hidden"}>
+        <input type="hidden" name="weekday_single" value="${escapeHtml(weekdaysList[0] || "")}" />
+        <div class="chip-row">${WEEKDAY_CHIPS.map((w) => chipButtonHtml("weekday-single", w.value, t(w.labelKey), weekdaysList[0] === w.value)).join("")}</div>
+        ${formField(t("meds.form.atTime"), `<input class="field" type="time" name="weekly_first_time" value="${escapeHtml(times[0] || "10:00")}" />`)}
+      </div>
+
+      <div data-how-often-fields="monthly" ${type === "monthly" ? "" : "hidden"}>
+        ${formField(t("meds.form.dayOfMonth"), `<input class="field" type="number" min="1" max="31" step="1" name="month_day" value="${escapeHtml(m.month_day || 1)}" />`)}
+        ${formField(t("meds.form.atTime"), `<input class="field" type="time" name="monthly_first_time" value="${escapeHtml(times[0] || "09:00")}" />`)}
+      </div>
+
+      <div data-how-often-fields="prn" ${type === "prn" ? "" : "hidden"}>
+        ${formField(t("meds.form.prnMinGap"), `<input class="field" type="number" min="0" step="1" name="prn_min_gap_hours" value="${escapeHtml(m.prn_min_gap_hours || 6)}" />`)}
+        ${formField(t("meds.form.prnMaxPerDay"), `<input class="field" type="number" min="0" step="1" name="prn_max_per_day" value="${escapeHtml(m.prn_max_per_day || 4)}" />`)}
+      </div>
+
+      <p class="field-label">${t("meds.form.howLong")}</p>
+      <input type="hidden" name="how_long" value="${escapeHtml(howLong)}" />
+      <div class="chip-row">${HOW_LONG_CHIPS.map((c) => chipButtonHtml("how-long", c.value, t(c.labelKey), howLong === c.value)).join("")}</div>
+      <div data-how-long-fields="until" ${howLong === "until" ? "" : "hidden"}>
+        ${formField(t("meds.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(dateStrOf(m.end_date))}" />`)}
+      </div>
+      <div data-how-long-fields="doses" ${howLong === "doses" ? "" : "hidden"}>
+        ${formField(t("meds.form.totalDoses"), `<input class="field" type="number" min="1" step="1" name="total_doses" value="${escapeHtml(m.total_doses || 10)}" />`)}
+      </div>
+
+      <p class="field-label">${t("meds.form.withFood")}</p>
+      <input type="hidden" name="instructions" value="${escapeHtml(instructions)}" />
+      <div class="chip-row">${FOOD_CHIPS.map((c) => chipButtonHtml("food", c.value, t(c.labelKey), instructions === c.value)).join("")}</div>
+
+      ${formField(t("meds.form.addToPack"), `
+        <select class="field" name="pack_id">
+          <option value="">${t("meds.form.noPack")}</option>
+          ${(packs || []).map((p) => `<option value="${escapeHtml(p.id)}" ${m.pack_id === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      `)}
+
+      <details class="more-details">
+        <summary>${t("common.more")}</summary>
+        ${formField(t("meds.form.stockCount"), `<input class="field" type="number" min="0" step="1" name="stock_count" value="${escapeHtml(m.stock_count)}" />`, t("meds.form.stockHint"))}
+        ${formField(t("meds.form.refillAlertDays"), `<input class="field" type="number" min="0" step="1" name="refill_alert_days" value="${escapeHtml(isNew ? 3 : (m.refill_alert_days === undefined ? "" : m.refill_alert_days))}" />`)}
+        ${formField(t("meds.form.graceMinutes"), `<input class="field" type="number" min="0" step="5" name="grace_minutes" value="${escapeHtml(isNew || m.grace_minutes === undefined || m.grace_minutes === "" ? 60 : m.grace_minutes)}" />`, t("meds.form.graceMinutesHint"))}
+        ${formField(t("meds.form.prescribedBy"), `<input class="field" name="prescribed_by" value="${escapeHtml(m.prescribed_by)}" />`)}
+        ${formField(t("meds.form.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(m.notes)}</textarea>`)}
+      </details>
+
+      <p class="safety-note">${t("meds.form.safetyNote")}</p>
+      <p class="sheet-summary" id="med-sheet-summary"></p>
+      <p class="error-text" id="med-sheet-error" hidden></p>
+
+      <div class="form-actions">
+        ${!isNew ? `<button type="button" class="btn-link btn-link--danger" id="med-sheet-stop">${t("meds.form.stop")}</button>` : ""}
+        <button type="button" class="btn btn-secondary" id="med-sheet-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary" id="med-sheet-save">${t("common.save")}</button>
+      </div>
+    </form>
   `;
 }
 
-function attachMedsHandlers(outlet) {
-  const addBtn = outlet.querySelector("#add-med-btn");
-  if (addBtn) addBtn.addEventListener("click", () => { medsState.formItem = "new"; renderMedsBody(outlet); });
+// Reads the sheet's current form state into one plain object — the single
+// source of truth for both the live plain-language summary and the actual
+// save payload, so they can never drift apart from each other.
+function readMedicineSheetForm(form) {
+  const fd = new FormData(form);
+  const scheduleType = fd.get("schedule_type") || "daily";
+  const howLong = fd.get("how_long") || "ongoing";
 
-  outlet.querySelectorAll("[data-edit-med]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      medsState.formItem = medsState.medicines.find((m) => m.id === btn.dataset.editMed) || "new";
-      renderMedsBody(outlet);
-    });
-  });
+  const result = {
+    name: String(fd.get("name") || "").trim(),
+    reason: String(fd.get("reason") || "").trim(),
+    dose: String(fd.get("dose") || "").trim(),
+    schedule_type: scheduleType,
+    instructions: fd.get("instructions") || "none",
+    pack_id: fd.get("pack_id") || "",
+    stock_count: fd.get("stock_count"),
+    refill_alert_days: fd.get("refill_alert_days"),
+    grace_minutes: fd.get("grace_minutes"),
+    prescribed_by: String(fd.get("prescribed_by") || "").trim(),
+    notes: String(fd.get("notes") || "").trim(),
+    times: "", weekdays: "", interval_hours: "", interval_days: "", month_day: "",
+    anchor_mode: "fixed", prn_min_gap_hours: "", prn_max_per_day: ""
+  };
 
-  outlet.querySelectorAll("[data-delete-med]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!confirm(t("meds.confirmDelete"))) return;
-      try {
-        await store.call("medicines.delete", { id: btn.dataset.deleteMed });
-        await renderMedicinesView(outlet);
-      } catch (err) {
-        alert(err.message || t("common.error"));
+  if (scheduleType === "daily") {
+    result.times = fd.get("times") || "";
+  } else if (scheduleType === "interval") {
+    result.interval_hours = fd.get("interval_hours");
+    result.anchor_mode = fd.get("anchor_from_last") === "on" ? "from_last" : "fixed";
+    result.times = fd.get("interval_first_time") || "";
+  } else if (scheduleType === "weekdays") {
+    result.weekdays = fd.get("weekdays") || "";
+    result.times = fd.get("weekdays_first_time") || "";
+  } else if (scheduleType === "every_n_days") {
+    result.interval_days = fd.get("interval_days");
+    result.times = fd.get("every_n_days_first_time") || "";
+  } else if (scheduleType === "weekly") {
+    result.weekdays = fd.get("weekday_single") || "";
+    result.times = fd.get("weekly_first_time") || "";
+  } else if (scheduleType === "monthly") {
+    result.month_day = fd.get("month_day");
+    result.times = fd.get("monthly_first_time") || "";
+  } else if (scheduleType === "prn") {
+    result.prn_min_gap_hours = fd.get("prn_min_gap_hours");
+    result.prn_max_per_day = fd.get("prn_max_per_day");
+  }
+
+  result.how_long = howLong;
+  if (howLong === "until") result.end_date = fd.get("end_date") || "";
+  else if (howLong === "doses") result.total_doses = fd.get("total_doses");
+
+  return result;
+}
+
+function summarizeMedicineForm(form) {
+  const parts = [];
+  switch (form.schedule_type) {
+    case "daily": {
+      const n = String(form.times || "").split(",").filter(Boolean).length;
+      parts.push(n ? t("meds.summary.daily", { n }) : t("meds.summary.dailyNoTimes"));
+      break;
+    }
+    case "interval":
+      parts.push(t("meds.summary.interval", { n: form.interval_hours || "?" }));
+      if (form.anchor_mode === "from_last") parts.push(t("meds.summary.fromLast"));
+      break;
+    case "weekdays":
+      parts.push(t("meds.summary.weekdays", { days: String(form.weekdays || "").split(",").filter(Boolean).map((d) => t("meds.weekday." + d)).join(", ") || "?" }));
+      break;
+    case "every_n_days":
+      parts.push(t("meds.summary.everyNDays", { n: form.interval_days || "?" }));
+      break;
+    case "weekly":
+      parts.push(t("meds.summary.weekly", { day: form.weekdays ? t("meds.weekday." + form.weekdays) : "?" }));
+      break;
+    case "monthly":
+      parts.push(t("meds.summary.monthly", { day: form.month_day || "?" }));
+      break;
+    case "prn":
+      parts.push(t("meds.summary.prn"));
+      break;
+  }
+
+  if (form.how_long === "doses" && form.total_doses) parts.push(t("meds.summary.forDoses", { n: form.total_doses }));
+  else if (form.how_long === "until" && form.end_date) parts.push(t("meds.summary.untilDate", { date: formatDisplayDate(form.end_date) }));
+  else if (form.how_long === "ongoing") parts.push(t("meds.summary.ongoing"));
+  else if (form.how_long) parts.push(form.how_long === "1month" ? t("meds.summary.forMonth") : t("meds.summary.forDays", { n: form.how_long }));
+
+  if (form.instructions && form.instructions !== "none") parts.push(t("meds.food." + form.instructions).toLowerCase());
+
+  return parts.filter(Boolean).join(", ") + ".";
+}
+
+function updateMedicineSheetSummary(sheetEl) {
+  const summaryEl = sheetEl.querySelector("#med-sheet-summary");
+  if (!summaryEl) return;
+  summaryEl.textContent = summarizeMedicineForm(readMedicineSheetForm(sheetEl.querySelector("#med-sheet-form")));
+}
+
+// Converts a preset duration chip ("3".."14" days, "1month") plus a
+// start date into a concrete end_date. 'until'/'doses'/'ongoing' are
+// resolved directly from their own fields instead, before this is called.
+function resolvePresetEndDate(startDateStr, preset) {
+  const start = dateStrOf(startDateStr) ? new Date(dateStrOf(startDateStr)) : new Date();
+  if (preset === "1month") {
+    start.setMonth(start.getMonth() + 1);
+    start.setDate(start.getDate() - 1);
+  } else {
+    start.setDate(start.getDate() + Number(preset) - 1);
+  }
+  return formatDateInput(start);
+}
+
+function attachChipHandler(sheetEl, btn) {
+  btn.addEventListener("click", () => {
+    const group = btn.dataset.chipGroup;
+    const value = btn.dataset.chipValue;
+    const singleSelectHiddenInput = { "how-often": "schedule_type", "how-long": "how_long", food: "instructions", "weekday-single": "weekday_single" };
+
+    if (singleSelectHiddenInput[group]) {
+      sheetEl.querySelectorAll(`[data-chip-group="${group}"]`).forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      sheetEl.querySelector(`input[name="${singleSelectHiddenInput[group]}"]`).value = value;
+      if (group === "how-often") {
+        sheetEl.querySelectorAll("[data-how-often-fields]").forEach((el) => { el.hidden = el.dataset.howOftenFields !== value; });
       }
-    });
-  });
-
-  outlet.querySelectorAll('input[type="checkbox"][data-med-id]').forEach((checkbox) => {
-    checkbox.addEventListener("change", async () => {
-      const medicineId = checkbox.dataset.medId;
-      const time = checkbox.dataset.medTime;
-      const taken = checkbox.checked;
-      const todayStr = formatDateInput(new Date());
-
-      // Optimistic: apply the change to local state and re-render
-      // immediately, before the network call resolves — Apps Script is
-      // 1-2s per call, and waiting for that on every tap feels sluggish.
-      // There's no offline write queue yet (that's a later build step), so
-      // this is "don't block the UI on the network", not "works offline";
-      // a failure below reverts the local guess and shows an error.
-      const logsSnapshot = medsState.logs.map((l) => ({ ...l }));
-      const medicinesSnapshot = medsState.medicines.map((m) => ({ ...m }));
-      applyOptimisticLogTaken(medicineId, todayStr, time, taken);
-      renderMedsBody(outlet);
-
-      try {
-        await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, taken });
-        await renderMedicinesView(outlet); // reconcile with the server's actual state
-      } catch (err) {
-        medsState.logs = logsSnapshot;
-        medsState.medicines = medicinesSnapshot;
-        renderMedsBody(outlet);
-        alert(err.message || t("common.error"));
+      if (group === "how-long") {
+        sheetEl.querySelectorAll("[data-how-long-fields]").forEach((el) => { el.hidden = el.dataset.howLongFields !== value; });
       }
-    });
+    } else {
+      // Multi-select: weekday-multi, daily-time.
+      btn.classList.toggle("chip-selected");
+      const hiddenInputName = group === "weekday-multi" ? "weekdays" : "times";
+      const selected = Array.from(sheetEl.querySelectorAll(`[data-chip-group="${group}"].chip-selected`)).map((b) => b.dataset.chipValue);
+      sheetEl.querySelector(`input[name="${hiddenInputName}"]`).value = selected.join(",");
+    }
+    updateMedicineSheetSummary(sheetEl);
   });
+}
 
-  const form = outlet.querySelector("#med-form");
-  if (form) {
-    outlet.querySelector("#med-form-cancel").addEventListener("click", () => {
-      medsState.formItem = null;
-      renderMedsBody(outlet);
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const fd = new FormData(form);
-      const payload = {
-        name: fd.get("name").trim(),
-        dose: fd.get("dose").trim(),
-        frequency: fd.get("frequency").trim(),
-        times: fd.get("times").trim(),
-        start_date: fd.get("start_date"),
-        end_date: fd.get("end_date"),
-        prescribed_by: fd.get("prescribed_by").trim(),
-        stock_count: fd.get("stock_count"),
-        doses_per_day: fd.get("doses_per_day"),
-        refill_alert_days: fd.get("refill_alert_days"),
-        notes: fd.get("notes").trim(),
-        active: fd.get("active") === "on"
-      };
-      const saveBtn = outlet.querySelector("#med-form-save");
-      saveBtn.disabled = true;
-      try {
-        if (medsState.formItem === "new") {
-          await store.call("medicines.create", payload);
-        } else {
-          await store.call("medicines.update", { id: medsState.formItem.id, ...payload });
-        }
-        await renderMedicinesView(outlet);
-      } catch (err) {
-        saveBtn.disabled = false;
-        const errEl = outlet.querySelector("#med-form-error");
-        errEl.textContent = err.message || t("common.error");
-        errEl.hidden = false;
-      }
+function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
+  const isNew = item === "new";
+  const form = sheetEl.querySelector("#med-sheet-form");
+
+  sheetEl.querySelectorAll("[data-chip-group]").forEach((btn) => attachChipHandler(sheetEl, btn));
+
+  const addCustomTimeBtn = sheetEl.querySelector("#add-custom-time-btn");
+  if (addCustomTimeBtn) {
+    addCustomTimeBtn.addEventListener("click", () => {
+      const input = sheetEl.querySelector("#custom-time-input");
+      const value = input.value;
+      if (!value) return;
+      const container = sheetEl.querySelector("#daily-time-chips");
+      if (container.querySelector(`[data-chip-value="${cssEscape(value)}"]`)) return;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip chip-selected";
+      chip.dataset.chipGroup = "daily-time";
+      chip.dataset.chipValue = value;
+      chip.textContent = value;
+      container.appendChild(chip);
+      attachChipHandler(sheetEl, chip);
+      const hiddenTimes = sheetEl.querySelector('input[name="times"]');
+      const selected = Array.from(container.querySelectorAll(".chip-selected")).map((b) => b.dataset.chipValue);
+      hiddenTimes.value = selected.join(",");
+      input.value = "";
+      updateMedicineSheetSummary(sheetEl);
     });
   }
+
+  form.addEventListener("input", () => updateMedicineSheetSummary(sheetEl));
+  form.addEventListener("change", () => updateMedicineSheetSummary(sheetEl));
+  updateMedicineSheetSummary(sheetEl);
+
+  sheetEl.querySelector("#med-sheet-cancel").addEventListener("click", closeSheet);
+
+  const stopBtn = sheetEl.querySelector("#med-sheet-stop");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => {
+      closeSheet();
+      showUndoToast(t("meds.stoppedToast", { name: item.name }), {
+        onUndo: () => { /* nothing was sent yet — closing the toast is enough */ },
+        onCommit: async () => {
+          try {
+            await store.call("medicines.stop", { id: item.id, stopped_on: formatDateInput(new Date()) });
+          } catch (err) {
+            alert(err.message || t("common.error"));
+          } finally {
+            onSaved();
+          }
+        }
+      });
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const parsed = readMedicineSheetForm(form);
+    const errEl = sheetEl.querySelector("#med-sheet-error");
+    errEl.hidden = true;
+    if (!parsed.name) {
+      errEl.textContent = t("meds.form.nameRequired");
+      errEl.hidden = false;
+      return;
+    }
+
+    const startDate = isNew ? formatDateInput(new Date()) : (dateStrOf(item.start_date) || formatDateInput(new Date()));
+    const payload = {
+      name: parsed.name, reason: parsed.reason, dose: parsed.dose,
+      schedule_type: parsed.schedule_type, anchor_mode: parsed.anchor_mode,
+      times: parsed.times, weekdays: parsed.weekdays,
+      interval_hours: parsed.interval_hours, interval_days: parsed.interval_days, month_day: parsed.month_day,
+      prn_min_gap_hours: parsed.prn_min_gap_hours, prn_max_per_day: parsed.prn_max_per_day,
+      instructions: parsed.instructions, pack_id: parsed.pack_id,
+      stock_count: parsed.stock_count, refill_alert_days: parsed.refill_alert_days, grace_minutes: parsed.grace_minutes,
+      prescribed_by: parsed.prescribed_by, notes: parsed.notes,
+      start_date: startDate
+    };
+    if (parsed.how_long === "until") payload.end_date = parsed.end_date || "";
+    else if (parsed.how_long === "doses") { payload.total_doses = parsed.total_doses; payload.end_date = ""; }
+    else if (parsed.how_long === "ongoing") { payload.end_date = ""; payload.total_doses = ""; }
+    else { payload.end_date = resolvePresetEndDate(startDate, parsed.how_long); payload.total_doses = ""; }
+
+    const saveBtn = sheetEl.querySelector("#med-sheet-save");
+    saveBtn.disabled = true;
+    try {
+      if (isNew) await store.call("medicines.create", payload);
+      else await store.call("medicines.update", { id: item.id, ...payload });
+      closeSheet();
+      onSaved();
+    } catch (err) {
+      saveBtn.disabled = false;
+      errEl.textContent = err.message || t("common.error");
+      errEl.hidden = false;
+    }
+  });
 }
 
-function isMedicineActiveOn(m, dateStr) {
-  if (!isTruthy(m.active)) return false;
-  const start = dateStrOf(m.start_date);
-  const end = dateStrOf(m.end_date);
-  if (start && start > dateStr) return false;
-  if (end && end < dateStr) return false;
-  return true;
+// ---------------------------------------------------------------------------
+// Pack sheet — a simple name + usual time + member-medicine checklist.
+// ---------------------------------------------------------------------------
+
+function openPackSheet(item, medicines, onSaved) {
+  openSheet(packSheetMarkup(item, medicines), (sheetEl) => attachPackSheetHandlers(sheetEl, item, onSaved));
 }
 
-function splitTimes(times) {
-  return String(times || "").split(",").map((t) => t.trim()).filter(Boolean);
+function packSheetMarkup(item, medicines) {
+  const isNew = item === "new";
+  const p = isNew ? {} : item;
+  const memberIds = String(p.member_medicine_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const activeMeds = activeMedicinesOf(medicines);
+
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${isNew ? t("packs.form.titleNew") : t("packs.form.titleEdit")}</h2>
+    <form id="pack-sheet-form">
+      ${formField(t("packs.form.name"), `<input class="field" name="name" required value="${escapeHtml(p.name)}" placeholder="${t("packs.form.namePlaceholder")}" />`)}
+      ${formField(t("packs.form.time"), `<input class="field" type="time" name="time" value="${escapeHtml((p.times || "").split(",")[0] || "20:00")}" />`)}
+      <p class="field-label">${t("packs.form.members")}</p>
+      ${
+        activeMeds.length
+          ? `<div class="checklist-field">${activeMeds.map((m) => `
+            <label class="checkbox-field">
+              <input type="checkbox" name="member" value="${escapeHtml(m.id)}" ${memberIds.includes(m.id) ? "checked" : ""} />
+              <span>${escapeHtml(m.name)}</span>
+            </label>
+          `).join("")}</div>`
+          : `<p class="empty">${t("packs.form.noMedicines")}</p>`
+      }
+      <p class="error-text" id="pack-sheet-error" hidden></p>
+      <div class="form-actions">
+        ${!isNew ? `<button type="button" class="btn-link btn-link--danger" id="pack-sheet-delete">${t("common.delete")}</button>` : ""}
+        <button type="button" class="btn btn-secondary" id="pack-sheet-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary" id="pack-sheet-save">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
 }
 
-function isTruthy(value) {
-  return value === true || String(value).toUpperCase() === "TRUE";
+function attachPackSheetHandlers(sheetEl, item, onSaved) {
+  const isNew = item === "new";
+  const form = sheetEl.querySelector("#pack-sheet-form");
+  sheetEl.querySelector("#pack-sheet-cancel").addEventListener("click", closeSheet);
+
+  const deleteBtn = sheetEl.querySelector("#pack-sheet-delete");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", () => {
+      closeSheet();
+      showUndoToast(t("packs.deletedToast", { name: item.name }), {
+        onUndo: () => {},
+        onCommit: async () => {
+          try { await store.call("packs.delete", { id: item.id }); } catch (err) { alert(err.message || t("common.error")); }
+          finally { onSaved(); }
+        }
+      });
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const name = String(fd.get("name") || "").trim();
+    const members = fd.getAll("member");
+    const errEl = sheetEl.querySelector("#pack-sheet-error");
+    if (!name) { errEl.textContent = t("packs.form.nameRequired"); errEl.hidden = false; return; }
+
+    const payload = { name, times: fd.get("time") || "", member_medicine_ids: members };
+    const saveBtn = sheetEl.querySelector("#pack-sheet-save");
+    saveBtn.disabled = true;
+    try {
+      if (isNew) await store.call("packs.create", payload);
+      else await store.call("packs.update", { id: item.id, ...payload });
+      closeSheet();
+      onSaved();
+    } catch (err) {
+      saveBtn.disabled = false;
+      errEl.textContent = err.message || t("common.error");
+      errEl.hidden = false;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Countdown + Appointment sheets — thin wrappers around the Countdowns/
+// Appointments views' own markup+validation (countdownFields/
+// appointmentFields, countdownFormMarkup, appointmentFormMarkup), so Home
+// can edit either without duplicating that logic. Save/delete here always
+// go through the full bootstrap-refetching onSaved() callback rather than
+// patching local state, since Home's bootstrap cache needs to reflect the
+// change regardless of which screen made it.
+// ---------------------------------------------------------------------------
+
+function openCountdownSheet(item, medicines, onSaved) {
+  openSheet(countdownFormMarkup(item, medicines), (sheetEl) => attachCountdownSheetHandlers(sheetEl, item, onSaved));
+}
+
+function attachCountdownSheetHandlers(sheetEl, item, onSaved) {
+  const isNew = item === "new";
+  const form = sheetEl.querySelector("#countdown-form");
+  if (!form) return; // defensive — countdownFormMarkup always renders one, but don't crash if that ever changes
+
+  const kindSelect = form.querySelector('[name="kind"]');
+  if (kindSelect) {
+    applyCountdownKindVisibility(sheetEl, kindSelect.value);
+    kindSelect.addEventListener("change", () => applyCountdownKindVisibility(sheetEl, kindSelect.value));
+  }
+
+  const cancelBtn = sheetEl.querySelector("#countdown-form-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", closeSheet);
+
+  // countdownFormMarkup (shared with the full Countdowns page) has no
+  // delete button of its own — that page deletes from its row actions
+  // instead. Add one here so the sheet still offers Save/Delete.
+  let deleteBtn = sheetEl.querySelector("#countdown-form-delete");
+  if (!deleteBtn && !isNew) {
+    deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.id = "countdown-form-delete";
+    deleteBtn.className = "btn-link btn-link--danger";
+    deleteBtn.textContent = t("common.delete");
+    const actions = form.querySelector(".form-actions");
+    if (actions) actions.insertBefore(deleteBtn, actions.firstChild);
+  }
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", () => {
+      closeSheet();
+      showUndoToast(t("countdowns.deletedToast", { title: item.title }), {
+        onUndo: () => {},
+        onCommit: async () => {
+          try { await store.call("countdowns.delete", { id: item.id }); } catch (err) { alert(err.message || t("common.error")); }
+          finally { onSaved(); }
+        }
+      });
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const payload = {
+      title: String(fd.get("title") || "").trim(), kind: fd.get("kind"),
+      target_datetime: fd.get("target_datetime") ? new Date(fd.get("target_datetime")).toISOString() : "",
+      start_date: fd.get("start_date") || "", repeat: fd.get("repeat") || "none",
+      interval_hours: fd.get("interval_hours") || "", linked_medicine_id: fd.get("linked_medicine_id") || "",
+      show_on_home: fd.get("show_on_home") === "on", notes: String(fd.get("notes") || "").trim()
+    };
+    const saveBtn = sheetEl.querySelector("#countdown-form-save");
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      if (isNew) await store.call("countdowns.add", payload);
+      else await store.call("countdowns.update", { id: item.id, ...payload });
+      closeSheet();
+      onSaved();
+    } catch (err) {
+      showCountdownFormError(sheetEl, err.message || t("common.error"));
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  });
+}
+
+function openAppointmentSheet(item, onSaved) {
+  openSheet(appointmentFormMarkup(item), (sheetEl) => attachAppointmentSheetHandlers(sheetEl, item, onSaved));
+}
+
+function attachAppointmentSheetHandlers(sheetEl, item, onSaved) {
+  const isNew = item === "new";
+  const form = sheetEl.querySelector("#appt-form");
+  if (!form) return;
+
+  const cancelBtn = sheetEl.querySelector("#appt-form-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", closeSheet);
+
+  // appointmentFormMarkup (shared with the full Visits page) has no delete
+  // button of its own — Visits deletes from its row actions instead. Add
+  // one here so the sheet still offers Save/Delete per the Home spec.
+  let deleteBtn = sheetEl.querySelector("#appt-form-delete");
+  if (!deleteBtn && !isNew) {
+    deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.id = "appt-form-delete";
+    deleteBtn.className = "btn-link btn-link--danger";
+    deleteBtn.textContent = t("common.delete");
+    const actions = form.querySelector(".form-actions");
+    if (actions) actions.insertBefore(deleteBtn, actions.firstChild);
+  }
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", () => {
+      closeSheet();
+      showUndoToast(t("appt.deletedToast"), {
+        onUndo: () => {},
+        onCommit: async () => {
+          try { await store.call("appointments.delete", { id: item.id }); } catch (err) { alert(err.message || t("common.error")); }
+          finally { onSaved(); }
+        }
+      });
+    });
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const payload = {
+      datetime: fd.get("datetime") ? new Date(fd.get("datetime")).toISOString() : "",
+      doctor: String(fd.get("doctor") || "").trim(), purpose: String(fd.get("purpose") || "").trim(),
+      location: String(fd.get("location") || "").trim(), status: fd.get("status") || "upcoming",
+      notes_after_visit: String(fd.get("notes_after_visit") || "").trim()
+    };
+    const saveBtn = sheetEl.querySelector("#appt-form-save");
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      if (isNew) await store.call("appointments.create", payload);
+      else await store.call("appointments.update", { id: item.id, ...payload });
+      closeSheet();
+      onSaved();
+    } catch (err) {
+      if (saveBtn) saveBtn.disabled = false;
+      alert(err.message || t("common.error"));
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2785,10 +3869,6 @@ function dateStrOf(value) {
   if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
   const parsed = new Date(str);
   return isNaN(parsed.getTime()) ? "" : formatDateInput(parsed);
-}
-
-function dateStrEq(a, b) {
-  return dateStrOf(a) === dateStrOf(b);
 }
 
 function formatDisplayDate(dateStr) {

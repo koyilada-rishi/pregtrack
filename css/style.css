@@ -19,8 +19,19 @@
   --color-success: #4f8a5e;
   --color-skeleton: #ece3df;
   --color-skeleton-shine: #f8f2ef;
+  --color-peach: #f6ddc4;
+  /* Shared dose/status state colors: calm (upcoming/on track), amber (due
+     soon/late), rose (overdue/missed — not the same as the Emergency red),
+     sage (done). Used across Home, Meds and the Coming-up card so the same
+     color always means the same thing. */
+  --color-state-calm: var(--color-accent);
+  --color-state-amber: #c9922e;
+  --color-state-amber-bg: var(--color-warning-bg);
+  --color-state-rose: #b85f5f;
+  --color-state-rose-bg: #f7e5e2;
+  --color-state-sage: #4f8a5e;
   --shadow-card: 0 1px 2px rgba(43, 36, 32, 0.06), 0 2px 8px rgba(43, 36, 32, 0.06);
-  --radius-card: 16px;
+  --radius-card: 20px;
   --radius-control: 12px;
   --nav-height: 64px;
 
@@ -48,6 +59,13 @@
     --color-success: #7fbb8d;
     --color-skeleton: #332c27;
     --color-skeleton-shine: #3d352f;
+    --color-peach: #5a4530;
+    --color-state-calm: var(--color-accent);
+    --color-state-amber: #e6c988;
+    --color-state-amber-bg: #3a2f17;
+    --color-state-rose: #e2938e;
+    --color-state-rose-bg: #3a2420;
+    --color-state-sage: #7fbb8d;
   }
 }
 
@@ -69,6 +87,13 @@
   --color-success: #7fbb8d;
   --color-skeleton: #332c27;
   --color-skeleton-shine: #3d352f;
+  --color-peach: #5a4530;
+  --color-state-calm: var(--color-accent);
+  --color-state-amber: #e6c988;
+  --color-state-amber-bg: #3a2f17;
+  --color-state-rose: #e2938e;
+  --color-state-rose-bg: #3a2420;
+  --color-state-sage: #7fbb8d;
 }
 
 * { box-sizing: border-box; }
@@ -854,10 +879,383 @@ a { color: var(--color-primary-dark); }
   font-size: 0.85rem;
 }
 
+/* ---------- Card header (title + a "+" add button) ---------- */
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card-head h2 { margin: 0; }
+
+.btn-add {
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--color-surface-muted);
+  color: var(--color-primary-dark);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* A whole row that's tappable (opens a sheet) but isn't a <button> element
+   semantically wrapping block content — styled to look/feel like one. */
+.tap-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-height: 48px;
+}
+
+/* ---------- Dose/status state colors (shared) ---------- */
+
+.dose-state-calm { color: var(--color-state-calm); }
+.dose-state-amber { color: var(--color-state-amber); }
+.dose-state-rose { color: var(--color-state-rose); }
+.dose-state-sage { color: var(--color-state-sage); }
+
+/* ---------- Hero countdown card ---------- */
+
+.hero-countdown-card {
+  display: block;
+  width: 100%;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-peach) 100%);
+  color: var(--color-primary-contrast);
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.hero-greeting {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.hero-days {
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-bottom: 4px;
+}
+
+.hero-week-line {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.hero-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.hero-progress-fill {
+  height: 100%;
+  background: var(--color-primary-contrast);
+  opacity: 0.85;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.hero-due-date, .hero-baby-size {
+  margin: 0 0 4px;
+  font-size: 0.9rem;
+  opacity: 0.9;
+}
+
+.hero-detail {
+  margin-top: 8px;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* ---------- Medicine dose slots (Home + Meds) ---------- */
+
+.med-bucket { margin-bottom: 12px; }
+.med-bucket:last-child { margin-bottom: 0; }
+
+.med-bucket-label {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.med-slot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.med-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.med-slot-list li:last-child { border-bottom: none; }
+
+.med-slot-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.med-slot-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tick-circle {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-state-sage);
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.tick-circle-done {
+  background: var(--color-state-sage);
+  border-color: var(--color-state-sage);
+  color: var(--color-primary-contrast);
+}
+
+.btn-small {
+  width: auto;
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.prn-confirm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 0 8px 50px;
+}
+
+/* ---------- Packs ---------- */
+
+.pack-row { margin-bottom: 16px; }
+.pack-row:last-child { margin-bottom: 0; }
+
+.pack-head {
+  margin-bottom: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ---------- Chips (used in the medicine sheet and history filters) ---------- */
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chip {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.chip-selected {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-contrast);
+  font-weight: 600;
+}
+
+.field-label {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.custom-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.custom-time-row .field { flex: 1; }
+
+.more-details {
+  margin-bottom: 12px;
+}
+
+.more-details summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--color-primary-dark);
+  font-weight: 600;
+}
+
+.checklist-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.safety-note {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-control);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.sheet-summary {
+  font-size: 0.95rem;
+  font-style: italic;
+  margin-bottom: 12px;
+}
+
+/* A sheet can embed one of the full-page forms' own markup (countdown/
+   appointment), which brings its own .card wrapper — flatten that out so
+   it doesn't double up on padding/shadow inside the sheet. */
+.sheet .card {
+  box-shadow: none;
+  padding: 0;
+  margin-bottom: 0;
+  background: none;
+}
+
+/* ---------- Bottom sheet + undo toast ---------- */
+
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 23, 21, 0.4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.sheet-overlay.sheet-open { opacity: 1; }
+
+.sheet {
+  background: var(--color-surface);
+  color: var(--color-text);
+  width: 100%;
+  max-width: 560px;
+  max-height: min(88vh, 860px);
+  overflow-y: auto;
+  border-radius: 20px 20px 0 0;
+  padding: 12px 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+  transform: translateY(100%);
+  transition: transform 0.25s ease;
+}
+
+.sheet-overlay.sheet-open .sheet { transform: translateY(0); }
+
+.sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-border);
+  margin: 4px auto 14px;
+}
+
+.sheet h2 {
+  margin: 0 0 14px;
+  font-size: 1.15rem;
+}
+
+.undo-toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + 12px);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-radius: var(--radius-control);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-card);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.undo-toast.undo-toast-open { opacity: 1; transform: translateY(0); }
+
+.undo-toast .undo-toast-btn {
+  color: var(--color-primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {
   .countdown-days { font-size: 2rem; }
+  .hero-days { font-size: 2rem; }
   .dashboard-actions { flex-direction: column; }
   .records-date-range { flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-overlay, .sheet, .undo-toast, .hero-progress-fill {
+    transition: none !important;
+  }
 }

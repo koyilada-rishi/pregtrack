@@ -27,7 +27,7 @@
 // after being deleted elsewhere) — double-check this list whenever a JS
 // file is added, renamed, or removed.
 
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const CACHE_NAME = "pct-shell-" + CACHE_VERSION;
 
 const APP_SHELL = [
@@ -38,6 +38,7 @@ const APP_SHELL = [
   "./js/api.js",
   "./js/store.js",
   "./js/countdown.js",
+  "./js/schedule.js",
   "./js/defaults.js",
   "./js/i18n.js",
   "./manifest.json",
