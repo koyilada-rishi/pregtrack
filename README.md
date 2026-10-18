@@ -14,7 +14,7 @@ clone to a working install with no guessing.
 - [x] Step 1 — repo scaffold
 - [x] Step 2 — backend (Code.gs: setup, auth, settings, dashboard)
 - [x] Step 3 — frontend shell, lock screen, dashboard, Emergency card
-- [ ] Step 4 — content JSON + guide view
+- [x] Step 4 — content JSON + guide view
 - [ ] Step 5 — medicines + appointments
 - [ ] Step 6 — health log + charts
 - [ ] Step 7 — records vault + upload
@@ -161,6 +161,21 @@ _Added in step 11._
 ## Troubleshooting
 
 _Added in step 11._
+
+## Content & medical disclaimer
+
+`data/weeks.json`, `data/food.json`, and `data/warnings.json` hold the
+baby-development, food, and warning-sign content shown in the dashboard and
+the Food & body guide view (More > Food & body guide). This is general,
+conservative information, not medical advice, and every view that uses it
+says so.
+
+Some entries are marked `"review": true` with a `review_note` — these are
+places where mainstream guidance is broadly consistent but the exact
+numbers or emphasis vary by source (e.g. the daily caffeine limit, weekly
+fish servings, side-sleeping guidance, and the cholestasis itching warning).
+The guide view shows a "confirm with doctor" note on these. It's worth
+having her doctor glance at just those flagged items.
 
 ## Security notes
 

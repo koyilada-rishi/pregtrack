@@ -32,6 +32,7 @@ const ROUTES = {
   "/records": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.records.title"), 7), navKey: "records", title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
+  "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
   "/log-vitals": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.logVitals.title"), 6), navKey: null, title: () => t("placeholder.logVitals.title") }
 };
 
@@ -214,20 +215,21 @@ function updateOnlineStatus() {
 async function renderDashboardView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
-  const paint = (data) => {
-    outlet.innerHTML = dashboardMarkup(data);
+  const paint = async (data) => {
+    const weekEntry = await weekEntryFor(data.gestational_age).catch(() => null);
+    outlet.innerHTML = dashboardMarkup(data, weekEntry);
     attachNavButtons(outlet);
   };
 
   try {
     const data = await api.fetchWithCache("dashboard.get", {}, paint);
-    paint(data);
+    await paint(data);
     // Warm the Emergency card's offline cache in the background.
     api.call("settings.get", {}).catch(() => {});
   } catch (err) {
     const cached = api.getCached("dashboard.get", {});
     if (cached) {
-      paint(cached);
+      await paint(cached);
     } else {
       outlet.innerHTML = errorMarkup(err);
       attachRetryHandler(outlet, () => renderDashboardView(outlet));
@@ -235,7 +237,16 @@ async function renderDashboardView(outlet) {
   }
 }
 
-function dashboardMarkup(data) {
+// Looks up the matching data/weeks.json entry for the current gestational
+// age, clamped to the 4-40 range the content file covers.
+async function weekEntryFor(age) {
+  if (!age) return null;
+  const weeksData = await loadJson("./data/weeks.json");
+  const weekNum = Math.min(40, Math.max(4, age.weeks));
+  return weeksData.weeks.find((w) => w.week === weekNum) || null;
+}
+
+function dashboardMarkup(data, weekEntry) {
   const countdown = formatCountdown(data.gestational_age);
   const nextAppt = data.next_appointment;
   const meds = data.today_medicines || [];
@@ -261,7 +272,15 @@ function dashboardMarkup(data) {
 
     <div class="card">
       <h2>${t("dashboard.babySize.title")}</h2>
-      <p class="empty">${t("dashboard.babySize.comingSoon")}</p>
+      ${
+        weekEntry
+          ? `
+        <p>${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
+        <p class="empty">${escapeHtml(weekEntry.development)}</p>
+        <a class="card-link" data-nav="#/guide">${t("guide.seeFull")}</a>
+      `
+          : `<p class="empty">${t("dashboard.babySize.comingSoon")}</p>`
+      }
     </div>
 
     <div class="card">
@@ -402,6 +421,96 @@ function emergencyMarkup(settings) {
 }
 
 // ---------------------------------------------------------------------------
+// Food & body guide
+// ---------------------------------------------------------------------------
+
+async function renderGuideView(outlet) {
+  outlet.innerHTML = genericSkeleton(8);
+
+  try {
+    const [dash, weeksData, foodData, warningsData] = await Promise.all([
+      api.call("dashboard.get", {}).catch(() => api.getCached("dashboard.get", {})),
+      loadJson("./data/weeks.json"),
+      loadJson("./data/food.json"),
+      loadJson("./data/warnings.json")
+    ]);
+    outlet.innerHTML = guideMarkup(dash, weeksData, foodData, warningsData);
+    attachNavButtons(outlet);
+  } catch (err) {
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderGuideView(outlet));
+  }
+}
+
+function guideMarkup(dash, weeksData, foodData, warningsData) {
+  const age = dash && dash.gestational_age;
+  const weekNum = age ? Math.min(40, Math.max(4, age.weeks)) : null;
+  const weekEntry = weekNum ? weeksData.weeks.find((w) => w.week === weekNum) : null;
+  const trimester = weekEntry ? weekEntry.trimester : 1;
+  const foodTrimester = foodData.trimesters.find((ft) => ft.trimester === trimester) || foodData.trimesters[0];
+
+  return `
+    ${!age ? `<div class="card"><p class="empty">${t("guide.noDueDate")}</p></div>` : ""}
+
+    <div class="card">
+      <h2>${t("guide.thisWeek.title")}</h2>
+      ${
+        weekEntry
+          ? `
+        <p>${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
+        <p>${escapeHtml(weekEntry.development)}</p>
+        <h3>${t("guide.commonSymptoms")}</h3>
+        <ul>${weekEntry.common_symptoms.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>
+        <h3>${t("guide.tips")}</h3>
+        <ul>${weekEntry.tips.map((tip) => `<li>${escapeHtml(tip)}</li>`).join("")}</ul>
+        ${weekEntry.review ? `<p class="review-note">${t("guide.reviewNote", { note: escapeHtml(weekEntry.review_note) })}</p>` : ""}
+      `
+          : `<p class="empty">${t("common.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <h2>${t("guide.food.title", { label: escapeHtml(foodTrimester.label) })}</h2>
+      ${foodSectionMarkup(t("guide.food.recommended"), foodTrimester.recommended)}
+      ${foodSectionMarkup(t("guide.food.limit"), foodTrimester.limit)}
+      ${foodSectionMarkup(null, foodTrimester.avoid)}
+      <h3>${t("guide.food.alwaysAvoid")}</h3>
+      <ul>${foodData.always_avoid.items.map((item) => foodItemMarkup(item)).join("")}</ul>
+    </div>
+
+    <div class="card warnings-card">
+      <h2>${t("guide.warnings.title")}</h2>
+      <ul class="warning-list">
+        ${warningsData.warnings
+          .map(
+            (w) => `
+          <li>
+            <strong>${escapeHtml(w.symptom)}</strong><br />
+            <span class="muted">${escapeHtml(w.action)}</span>
+          </li>
+        `
+          )
+          .join("")}
+      </ul>
+      <button class="btn btn-emergency" data-nav="#/emergency">${t("dashboard.emergency")}</button>
+    </div>
+
+    <p class="disclaimer">${escapeHtml(warningsData.disclaimer || t("app.disclaimer"))}</p>
+  `;
+}
+
+function foodSectionMarkup(title, items) {
+  if (!items || !items.length) return "";
+  return `${title ? `<h3>${title}</h3>` : ""}<ul>${items.map((item) => foodItemMarkup(item)).join("")}</ul>`;
+}
+
+function foodItemMarkup(item) {
+  return `<li><strong>${escapeHtml(item.item)}</strong> — ${escapeHtml(item.reason)}${
+    item.review ? ` <span class="review-flag">${t("guide.needsReview")}</span>` : ""
+  }</li>`;
+}
+
+// ---------------------------------------------------------------------------
 // More menu
 // ---------------------------------------------------------------------------
 
@@ -409,7 +518,7 @@ function renderMoreView(outlet) {
   outlet.innerHTML = `
     <ul class="menu-list">
       <li><button data-nav="#/emergency">${t("more.emergency")}</button></li>
-      <li><button disabled>${t("more.guide")} <span class="badge">${t("more.comingSoon")}</span></button></li>
+      <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button disabled>${t("more.checklists")} <span class="badge">${t("more.comingSoon")}</span></button></li>
       <li><button disabled>${t("more.settings")} <span class="badge">${t("more.comingSoon")}</span></button></li>
       <li><button id="lock-now-btn">${t("more.lockNow")}</button></li>
@@ -439,6 +548,20 @@ function renderPlaceholderView(outlet, title, step) {
 // ---------------------------------------------------------------------------
 // Shared view helpers
 // ---------------------------------------------------------------------------
+
+// Static content files (data/*.json) are fetched directly, not through
+// api.js — they ship with the app and don't need the PIN. Cached in memory
+// for the life of the page since they rarely change between reloads.
+const jsonCache = {};
+
+async function loadJson(path) {
+  if (jsonCache[path]) return jsonCache[path];
+  const res = await fetch(path);
+  if (!res.ok) throw new Error("Could not load " + path);
+  const json = await res.json();
+  jsonCache[path] = json;
+  return json;
+}
 
 function genericSkeleton(lines) {
   return `

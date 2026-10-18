@@ -1,4 +1,105 @@
 {
-  "_note": "Red-flag symptoms needing urgent care, linked from the Emergency card. Generated in step 4.",
-  "warnings": []
+  "_note": "Red-flag symptoms needing urgent care, linked from the guide view to the Emergency card. Conservative, widely-accepted list — not exhaustive.",
+  "disclaimer": "This is a general list of warning signs, not the full list. When in doubt, always call her doctor or go to the nearest hospital — this app is not a substitute for medical advice.",
+  "warnings": [
+    {
+      "id": "bleeding",
+      "symptom": "Vaginal bleeding, especially heavy or with pain",
+      "action": "Call her doctor or go to the hospital right away.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "abdominal_pain",
+      "symptom": "Severe or persistent abdominal pain",
+      "action": "Seek care immediately — this can signal a serious problem.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "severe_headache",
+      "symptom": "A severe headache that doesn't go away, especially with vision changes",
+      "action": "Get checked urgently — this can be a sign of preeclampsia.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "sudden_swelling",
+      "symptom": "Sudden swelling of the face, hands, or feet",
+      "action": "Contact her doctor the same day, especially if paired with a headache or vision changes.",
+      "urgency": "urgent",
+      "review": false
+    },
+    {
+      "id": "vision_changes",
+      "symptom": "Vision changes — blurring, flashing lights, or spots",
+      "action": "Seek care right away, especially combined with a headache or swelling.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "fever",
+      "symptom": "A fever of 100.4°F (38°C) or higher",
+      "action": "Contact her doctor — this can point to an infection that needs treatment.",
+      "urgency": "urgent",
+      "review": false
+    },
+    {
+      "id": "reduced_movement",
+      "symptom": "Baby's movements slow down a lot or stop, after you've started feeling regular movement",
+      "action": "Contact her doctor or go in to get checked — don't wait it out.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "fluid_leak",
+      "symptom": "Fluid leaking or gushing from the vagina before the due date",
+      "action": "Contact her doctor or the hospital — this may be her water breaking.",
+      "urgency": "urgent",
+      "review": false
+    },
+    {
+      "id": "preterm_labor",
+      "symptom": "Regular, painful contractions before 37 weeks",
+      "action": "Seek care immediately — this could be preterm labor.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "severe_vomiting",
+      "symptom": "Severe vomiting that keeps her from holding down fluids",
+      "action": "Contact her doctor — this can lead to dehydration and needs attention.",
+      "urgency": "urgent",
+      "review": false
+    },
+    {
+      "id": "urinary_symptoms",
+      "symptom": "Pain or burning when urinating",
+      "action": "Contact her doctor — this may be a urinary tract infection, which needs treatment during pregnancy.",
+      "urgency": "urgent",
+      "review": false
+    },
+    {
+      "id": "itching",
+      "symptom": "Severe itching, especially on the palms and soles, without a rash",
+      "action": "Contact her doctor — this can be a sign of a liver condition (cholestasis) that needs monitoring.",
+      "urgency": "urgent",
+      "review": true,
+      "review_note": "Less widely known than the other items here — worth confirming the right response with her doctor."
+    },
+    {
+      "id": "breathing",
+      "symptom": "Difficulty breathing or chest pain",
+      "action": "Seek emergency care immediately.",
+      "urgency": "emergency",
+      "review": false
+    },
+    {
+      "id": "mental_health",
+      "symptom": "Thoughts of harming herself, or feeling unable to cope",
+      "action": "Reach out to her doctor or a mental health professional right away — she is not alone, and help is available.",
+      "urgency": "emergency",
+      "review": false
+    }
+  ]
 }
