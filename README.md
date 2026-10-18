@@ -18,8 +18,8 @@ Drive as the database. No other backend, no paid services. 2-5 users.
 
 - [x] Step 1 — scaffold, mock-mode flag groundwork (`js/store.js`, `js/countdown.js`)
 - [x] Step 2 — backend: setup, auth, settings, version, dashboard, bootstrap
-- [ ] Step 3 — frontend shell, first-run screen, router, Home with live countdown, Emergency card
-- [ ] Step 4 — content JSON + guide
+- [x] Step 3 — frontend shell, first-run screen, router, Home with live countdown, Emergency card
+- [x] Step 4 — content JSON + guide
 - [ ] Step 5 — medicines + appointments
 - [ ] Step 6 — health log + charts
 - [ ] Step 7 — records vault: upload, thumbnails, viewer, syncFolder
@@ -28,9 +28,10 @@ Drive as the database. No other backend, no paid services. 2-5 users.
 - [ ] Step 10 — Telegram reminders
 - [ ] Step 11 — final README
 
-Steps 4, 8 (partially), 9 (PWA shell/icons), and 10 are already functionally
-done from v1 and mostly need re-verifying against the v2 data layer rather
-than rebuilding from scratch — marked as their step is actually revisited.
+Steps 5, 6, 8 (partially), 9 (PWA shell/icons), and 10 are already
+functionally built from v1 and mostly need re-verifying against the v2 data
+layer rather than rebuilding from scratch — marked done as each is actually
+revisited in order.
 
 ## Repo layout (target)
 
@@ -48,11 +49,10 @@ than rebuilding from scratch — marked as their step is actually revisited.
 /backend/Code.gs  /backend/appsscript.json
 ```
 
-No `config.js` / `config.example.js` in v2 — the first-run screen (step 3)
-collects the API URL and PIN together and stores both in `localStorage`.
-`js/mock.js` and the old config files are still present and in active use
-by the current (v1) `app.js`/`api.js` until step 3's cutover removes them;
-see the note at the top of `js/mock.js`.
+No `config.js` / `config.example.js` / `js/mock.js` in v2 — the first-run
+screen collects the API URL and PIN together and stores both in
+`localStorage` (see "Local setup" below), and mock-mode fixtures live
+inside `js/store.js` itself, toggled with a URL flag instead of a file.
 
 Working on the code itself (new views, new backend actions, understanding
 how the pieces fit together)? See **[DEVELOPMENT.md](DEVELOPMENT.md)** —
@@ -62,29 +62,37 @@ focused on deploying and running the app.
 
 ## Local setup
 
-```sh
-cp js/config.example.js js/config.js
-# edit js/config.js — leave MOCK: true to develop without a real backend
-```
-
-Serve the folder with any static file server, e.g.:
+No config file to copy — just serve the folder with any static file server:
 
 ```sh
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000`.
+Then open `http://localhost:8000`. **Mock mode is on by default**: the app
+runs entirely on sample data from `js/store.js`, no Apps Script deployment
+needed, no first-run screen — it goes straight to Home. This is how the
+app works right after a fresh clone, with zero setup.
 
-With `MOCK: true`, `js/api.js` serves fixtures from `js/mock.js` instead of
-calling the real backend — any PIN unlocks it, and the dashboard shows
-sample data. This is how the app works right after cloning, with no Apps
-Script deployment needed. Flip `MOCK` to `false` and set `API_URL` once
-you've deployed the backend (see "Apps Script deploy" below) and want to
-test against your real Sheet/Drive data.
+**To develop against your real deployed backend instead**, visit
+`http://localhost:8000?mock=0` once — this disables mock mode (remembered
+in `localStorage` after that) and shows the real first-run screen asking
+for your Apps Script URL and PIN. Switch back to mock mode any time with
+`?mock=1`.
 
-If `js/config.js` doesn't exist at all (fresh clone, before the `cp`
-above), the app shows a plain "not set up yet" screen instead of a blank
-page or console error.
+**Stop the dev server** with `Ctrl+C` in that terminal (or
+`pkill -f "http.server 8000"`).
+
+## Signing in (first-run screen)
+
+The first time the app loads on a device (outside mock mode), it asks for
+two things together: the Apps Script web app URL (see "Apps Script deploy"
+below) and the PIN. Both are validated with one `auth.check` call and saved
+to that device's `localStorage` — never in a file, never committed. Every
+later visit skips straight past this screen.
+
+To sign out of a device (e.g. to switch URL or PIN, or hand the phone back
+after testing), use **More → Settings → "Sign out / change PIN or URL"** —
+this clears both values and shows the first-run screen again.
 
 ## Apps Script deploy
 
@@ -147,39 +155,51 @@ whenever you change `backend/Code.gs`.
    deployment, change **Version** to **New version**, and click **Deploy**.
    The URL stays the same.
 
-8. **Test it from a terminal**, replacing `<API_URL>` and `<pin>`:
+8. **Test it from a terminal.** Export the URL and your PIN in your own
+   shell first — never paste them into a chat, a file, or a command for
+   someone else to run:
 
    ```sh
-   curl -i -X POST "<API_URL>" \
-     -H "Content-Type: text/plain" \
-     --data '{"pin":"<pin>","action":"auth.check"}'
+   export API_URL="https://script.google.com/macros/s/AKfycb.../exec"
+   export API_PIN="your-pin"
+   ```
+
+   Then, **important**: use `-L` (follow redirects) and do **not** pass
+   `-X POST` — Apps Script's web app URL redirects once to
+   `script.googleusercontent.com`, and curl only carries the POST body
+   through that redirect correctly when the method is implied by `-d`
+   rather than forced with `-X`:
+
+   ```sh
+   curl -L -H "Content-Type: text/plain" \
+     -d "{\"pin\":\"$API_PIN\",\"action\":\"auth.check\"}" \
+     "$API_URL"
    ```
 
    Expect `{"ok":true,"data":{"authenticated":true}}`. Then try:
 
    ```sh
-   curl -s -X POST "<API_URL>" \
-     -H "Content-Type: text/plain" \
-     --data '{"pin":"<pin>","action":"dashboard.get"}'
+   curl -L -H "Content-Type: text/plain" \
+     -d "{\"pin\":\"$API_PIN\",\"action\":\"dashboard.get\"}" \
+     "$API_URL"
    ```
 
    You should get back a JSON object with `due_date`, `gestational_age`,
    `next_appointment`, `today_medicines`, and `latest_vitals` (all empty/null
-   until you fill in Settings, Medicines, and Appointments — that comes with
-   step 3+). Try a wrong PIN too — you should get
-   `{"ok":false,"error":"Incorrect PIN."}`, and seeing that 5 times in a row
-   should lock you out for 15 minutes.
+   until you fill in Settings, Medicines, and Appointments). Try a wrong PIN
+   too — you should get `{"ok":false,"error":"Incorrect PIN."}`, and seeing
+   that 5 times in a row should lock you out for 15 minutes.
 
    Two more worth trying (v2 additions):
 
    ```sh
-   curl -s -X POST "<API_URL>" -H "Content-Type: text/plain" \
-     --data '{"pin":"<pin>","action":"version.get"}'
+   curl -L -H "Content-Type: text/plain" \
+     -d "{\"pin\":\"$API_PIN\",\"action\":\"version.get\"}" "$API_URL"
    # {"ok":true,"data":{"data_version":1}} — the counter setup() seeded at 0,
    # already bumped once if you've made any change since.
 
-   curl -s -X POST "<API_URL>" -H "Content-Type: text/plain" \
-     --data '{"pin":"<pin>","action":"bootstrap"}'
+   curl -L -H "Content-Type: text/plain" \
+     -d "{\"pin\":\"$API_PIN\",\"action\":\"bootstrap\"}" "$API_URL"
    # One response with data_version, settings, dashboard, and every entity
    # list (medicines, appointments, healthlog, contacts, foodlog, checklist,
    # files) in one call.
@@ -188,12 +208,14 @@ whenever you change `backend/Code.gs`.
    Then try any write (e.g. `settings.set` with a small payload) and call
    `version.get` again — the number should have gone up by exactly 1.
 
-9. **Wire up the frontend.** For local dev, copy `js/config.example.js` to
-   `js/config.js` (gitignored), set `API_URL` to the URL from step 6, and
-   set `MOCK: false` — this skips the one-time URL prompt described in
-   "GitHub Pages setup" below. The deployed app on GitHub Pages never has
-   this file; it asks for the URL once per device instead, since the URL
-   can't be committed to a file GitHub Pages would serve.
+   The frontend's own `fetch()` call (`js/api.js`) follows the same rules:
+   only a `Content-Type: text/plain` header (anything else triggers a CORS
+   preflight Apps Script can't answer) and the browser's default redirect
+   handling, untouched.
+
+9. **Try it in the browser.** Open the app locally with `?mock=0` (see
+   "Local setup" above) and enter the URL from step 6 plus your PIN on the
+   first-run screen — same validation as the curl test, just through the UI.
 
 ## Telegram reminders (optional)
 
@@ -255,26 +277,27 @@ left sidebar.
    `https://<you>.github.io/preg/`.
 
 4. **First visit, per device.** The very first time the app loads on a
-   given phone/browser, it shows a one-time **"Set up this device"** screen
-   asking for the Apps Script web app URL (from "Apps Script deploy" step 6
-   above). After that it goes straight to the normal PIN lock screen on
-   every future visit. Do this once on your phone and once on your wife's.
+   given phone/browser, it shows the one-time first-run screen asking for
+   the Apps Script web app URL (from "Apps Script deploy" step 6 above) and
+   the PIN together. After that it skips straight to Home on every future
+   visit. Do this once on each phone.
 
-   If the Apps Script deployment is ever redeployed and gets a new URL, use
-   **More → Settings → Change server URL** to update it without needing to
-   re-enter anything else.
+   If the Apps Script deployment is ever redeployed and gets a new URL, or
+   the PIN changes, use **More → Settings → "Sign out / change PIN or
+   URL"** to clear both and re-enter them.
 
 ### Why the repo can be public
 
 The non-negotiable rule is that no real data, Sheet ID, Drive ID, PIN, or
 API URL is ever **committed** — and nothing in this repo's tracked files is.
-`js/config.js` (the only file that could hold a real API URL) is gitignored
-and was never committed; the live site gets its API URL from each device's
-own `localStorage` instead (step 4 above), never from a file GitHub Pages
-serves. The PIN never appears in any file, committed or not — it only ever
-lives in Script Properties on the backend and in the browser's `localStorage`
-on each device. The actual medical data lives in your Google Sheet and
-Drive folder, neither of which this repo touches.
+There's no config file in the whole v2 architecture that could even hold a
+real API URL; the live site gets it from each device's own `localStorage`
+instead (step 4 above), entered once through the first-run screen, never
+from a file GitHub Pages serves. The PIN never appears in any file,
+committed or not — it only ever lives in Script Properties on the backend
+and in the browser's `localStorage` on each device. The actual medical data
+lives in your Google Sheet and Drive folder, neither of which this repo
+touches.
 
 The API URL itself isn't a secret once the app is running, anyway — anyone
 using the live site can see it in their browser's network tab, the same as
@@ -297,16 +320,12 @@ signal. New API calls (and anything not read before) still need a connection.
 
 ## Troubleshooting
 
-**"App isn't set up yet" on load.** `js/config.js` is missing. Run
-`cp js/config.example.js js/config.js` (local dev only — the live site
-doesn't need this file at all; see "GitHub Pages setup").
-
-**"Set up this device" keeps reappearing after you enter the URL.** The URL
+**First-run screen keeps reappearing after you enter the URL.** The URL
 must start with `https://` (Apps Script URLs always do). Check for typos or
 a stray trailing space. If it still fails after a valid-looking URL is
 accepted, the problem is likely the next item below.
 
-**Stuck on the PIN screen / "Incorrect PIN" even though it's right.**
+**Stuck on the first-run screen / "Incorrect PIN" even though it's right.**
 - Confirm `APP_PIN` is actually set in the Apps Script project's Script
   properties (Project Settings → Script properties) — without it, every PIN
   is rejected with a different-sounding error ("APP_PIN is not set...").
@@ -314,6 +333,9 @@ accepted, the problem is likely the next item below.
   the live URL until you do **Deploy → Manage deployments → (pencil) → New
   version → Deploy**.
 - 5 wrong attempts locks you out for 15 minutes (by design) — wait it out.
+- If you signed out (Settings → "Sign out / change PIN or URL") and the
+  server URL changed since, re-enter both fresh rather than assuming only
+  the PIN needs updating.
 
 **"Could not reach the server" / everything stuck loading.**
 - Open the deployed web app URL directly in a browser tab. A correctly
@@ -324,6 +346,9 @@ accepted, the problem is likely the next item below.
   the deployment settings).
 - Check you're online — the offline banner should appear automatically,
   and the app falls back to the last-saved data per view.
+- Testing with `curl` yourself? Use `-L` and do **not** pass `-X POST` —
+  see step 8 of "Apps Script deploy" for why; the wrong combination breaks
+  the redirect Apps Script's web app URL issues.
 
 **Dashboard/views show nothing, no errors.** Normal on a fresh setup — fill
 in a due date in Settings, then add a medicine/appointment/health entry to
@@ -373,10 +398,18 @@ having her doctor glance at just those flagged items.
 
 ## Security notes
 
-- No real data, Sheet ID, Drive IDs, PIN, or API URL is ever committed.
-  `js/config.js` is gitignored; only `js/config.example.js` is tracked.
-- The PIN lives only in Apps Script Script Properties (`APP_PIN`), compared
-  constant-time, with lockout after repeated failures.
+- No real data, Sheet ID, Drive IDs, PIN, or API URL is ever committed —
+  there's no config file at all in v2 to accidentally commit. Both the API
+  URL and the PIN live only in each device's own `localStorage`, entered
+  once via the first-run screen.
+- The PIN lives server-side only in Apps Script Script Properties
+  (`APP_PIN`), compared constant-time, with lockout after repeated
+  failures (5 wrong attempts / 10 minutes → 15-minute lockout).
+- Never paste the real API URL or PIN into a chat, commit, or shared
+  document — treat them like any other credential. If one is ever
+  accidentally exposed, rotate the PIN (edit `APP_PIN` in Script
+  properties, push a new deployment version) and re-enter it on both
+  phones via "Sign out / change PIN or URL" in Settings.
 - Drive files are never made public; the backend serves them through the
   API.
 - This app does not replace medical advice from a doctor.

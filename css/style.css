@@ -321,8 +321,18 @@ a { color: var(--color-primary-dark); }
 
 .lock-screen .field {
   text-align: center;
+}
+
+/* The PIN field specifically gets the large, spaced-out digit look — the
+   first-run screen's URL field stays normal-sized and left-aligned. */
+.lock-screen .field-pin {
   font-size: 1.6rem;
   letter-spacing: 0.3em;
+}
+
+.lock-screen .field[type="url"] {
+  font-size: 0.95rem;
+  text-align: left;
 }
 
 /* ---------- Dashboard ---------- */
@@ -356,6 +366,13 @@ a { color: var(--color-primary-dark); }
   opacity: 0.95;
 }
 
+.countdown-ticker {
+  margin-top: 2px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
 .med-list, .appt-list {
   list-style: none;
   margin: 0;
@@ -376,6 +393,11 @@ a { color: var(--color-primary-dark); }
 .med-time {
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.med-overdue .med-time {
+  color: var(--color-emergency);
+  font-weight: 600;
 }
 
 .dashboard-actions {

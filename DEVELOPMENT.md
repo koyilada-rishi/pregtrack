@@ -5,16 +5,13 @@ together, and the day-to-day commands (run, stop, PIN, testing). `README.md`
 is the deploy/setup guide for *using* the app; this file is for *changing*
 it.
 
-> **v2 migration in progress.** Everything below this note describes **v1**
-> (fully built, all 11 original steps — still accurate for the files it
-> hasn't touched yet). A revised work order is now being built in place on
-> top of it: no `config.js`, `data_version` polling, offline write queue,
-> thumbnails, `bootstrap`/`syncFolder`, a live local countdown. See
-> `README.md`'s Status section for current v2 step progress. This file gets
-> a full rewrite at v2's step 11 ("final README"); until then, treat
-> anything here about `js/mock.js`, `js/config.js`, or the PIN/API-URL flow
-> as v1-accurate but soon-superseded by `js/store.js` + the first-run screen
-> (step 3).
+> **v2 migration in progress.** v1 (all 11 original steps) is fully built;
+> a revised work order is now being built in place on top of it — steps 1-4
+> below are done (no `config.js`/`mock.js` at all anymore, `data_version`
+> polling, `bootstrap`, a live local countdown). Steps 5-11 (offline write
+> queue, thumbnails, `syncFolder`, etc.) are still ahead — see `README.md`'s
+> Status section for exact progress. Everything in this file is kept
+> accurate as each step lands, rather than deferred to the end.
 
 ## What this is, in one paragraph
 
@@ -22,8 +19,8 @@ A PIN-locked, installable PWA for tracking a pregnancy: dashboard/countdown,
 medicines, appointments, health log with charts, a Drive-backed records
 vault, a week-by-week guide, checklists, and settings. Static frontend
 (vanilla JS, no build step) on GitHub Pages; Google Apps Script is the only
-backend, reading/writing a single Google Sheet plus a Drive folder tree. Two
-users, no paid services.
+backend, reading/writing a single Google Sheet plus a Drive folder tree.
+2-5 users sharing one PIN, no paid services.
 
 ## Build history (what shipped in each step)
 
@@ -45,6 +42,17 @@ rationale and test notes. This is the short version.
 | 10 | `Step 10` | Telegram reminders: README walkthrough for the backend trigger that was already built in the "Backend: CRUD…" commit (BotFather bot, chat ID, script properties, `createDailyReminderTrigger()`). |
 | 11 | `Step 11` | Found and fixed two real bugs: `api.js` never re-exported `CONFIG` (silently `undefined` everywhere read from `app.js`), and — bigger — `js/config.js` being correctly gitignored meant a plain GitHub Pages deploy would have **no API URL at all**, stuck forever. Fixed by having the app ask for the Apps Script URL once per device and store it in `localStorage`, exactly like the PIN. Filled in README's GitHub Pages setup + Troubleshooting. |
 
+**v1 is where the table above ends.** A second, more detailed work order
+then revised the architecture — the rows below are v2, built in place on
+top of v1 rather than starting over (same repo, same `main`, continuing
+history).
+
+| # | Commit(s) | What it added |
+|---|--------|----------------|
+| v2-1 | `v2 Step 1` | Added `js/store.js` (mock-mode flag — now frontend-only via a `?mock=1/0` URL param, no file at all — plus the v1 mock fixtures ported over) and a `js/countdown.js` placeholder. Deliberately left `app.js`/`api.js`/`config.js`/`mock.js` untouched at this point — ripping them out before the step-3 rewrite was ready would've left a broken intermediate state for no reason. |
+| v2-2 | `v2 Step 2` | Backend: a `data_version` counter (Settings sheet + CacheService, bumped from inside every mutating action's existing lock — see `incrementDataVersion()`), the `version.get` and `bootstrap` actions, `Files` schema gains `mime`/`thumb_file_id` (appended, not inserted mid-row, so re-running `setup()` on a populated sheet never misaligns existing data), a `Thumbs` Drive folder. Extended the mock-Apps-Script Node test harness (real in-memory `CacheService` now, was a no-op stub) — 64 assertions passing. |
+| v2-3/4 | `v2 Step 3/4` (one commit) | The real cutover: deleted `js/config.js`, `js/config.example.js`, `js/mock.js`. Rewrote `js/api.js` to pure transport (no mock branching, no `CONFIG` — matches the exact `fetch()` shape verified against the live deployment: only a `Content-Type: text/plain` header, default redirect-follow). Grew `js/store.js` into the real data layer (`call`/`fetchWithCache`/`getCached`/`loadBootstrap`/`startVersionPolling` — see "Architecture" below). Real `js/countdown.js` (pure local math, unit-tested standalone). Rewrote `app.js`'s boot/router/shell into one first-run screen (URL + PIN together) and a Home view with a live countdown (1s ticker for seconds, 30s full re-render, paused/resumed on tab visibility) — then did a mechanical `api.` → `store.` rename through the already-built Meds/Appointments/Health/Records/Checklist/Settings view code rather than rewriting it (unchanged logic, just a different module to call). Settings' old two sign-out-ish buttons (PIN-only "Lock app now" in both Settings and More, a separate "Change server URL") collapsed into one "Sign out / change PIN or URL" per the new spec. Wired Home's "this week" card to `data/weeks.json` (content itself was already correct from v1 step 4, unchanged). Found and fixed two real bugs during this pass: a temporal-dead-zone crash (`boot()` was invoked before a `const` it transitively depended on had been declared later in the file — fixed by moving the boot call to the very end), and `store.js`'s mock fixtures never got `bootstrap`/`version.get` cases added despite `app.js` needing them immediately. |
+
 ## Architecture
 
 ```
@@ -53,36 +61,51 @@ rationale and test notes. This is the short version.
 │  (static files only) │ ─────────────────────────────▶│  doPost → routeAction │
 │                      │ ◀───────────────────────────── │  {ok, data, error}    │
 │  js/app.js (router)  │        JSON response           │                      │
-│  js/api.js (network) │                                 │  Sheet (9 tabs)       │
-│  js/mock.js (dev)    │                                 │  Drive (4 folders)    │
+│  js/store.js (data)  │                                 │  Sheet (9 tabs)       │
+│  js/api.js (network) │                                 │  Drive (5 folders)    │
+│  js/countdown.js     │                                 │                      │
 └─────────────────────┘                                 └──────────────────────┘
         │
         ▼
-  localStorage: PIN, API URL, last-good response per action (offline cache)
+  localStorage: PIN, API URL, bootstrap cache, last-good response per action
 ```
 
 - **No CORS preflight**: the frontend always POSTs with `Content-Type:
-  text/plain` (a "simple request"), carrying `{pin, action, payload}` as a
-  JSON string body. Apps Script web apps respond with
-  `Access-Control-Allow-Origin: *` automatically, so this works without any
-  CORS configuration.
+  text/plain` as the *only* header (a "simple request"), carrying
+  `{pin, action, payload}` as a JSON string body, and leaves `redirect` at
+  fetch's default (`"follow"`) — any other header triggers a preflight
+  Apps Script can't answer, and Apps Script's web app URL redirects once to
+  `script.googleusercontent.com`. This exact shape was verified against the
+  live deployment; don't add headers or override redirect handling in
+  `js/api.js`. The `curl` equivalent is `-L` with **no** `-X POST` (see
+  README's "Apps Script deploy" step 8 for why that combination matters).
 - **Every action requires the PIN**, checked by `handleRequest()` in
   `Code.gs` before `routeAction()` ever runs. A wrong PIN or a backend-side
   validation error both come back as `{ok: false, error: "..."}` with
-  HTTP 200 — `js/api.js` is what turns that into an `ApiError` with a
-  `.kind` (`auth` / `lockout` / `network` / `server`) that `app.js` reacts to.
-- **`js/api.js` is the only file that knows about the network.** Every view
-  in `app.js` calls `api.call(action, payload)` and gets back plain data or
-  an `ApiError` — it never touches `fetch` directly. This is also the file
-  to extend when adding a new backend action.
-- **Offline reads**: `api.call()` caches every successful response in
-  `localStorage` keyed by `action + JSON.stringify(payload)`. Views that
-  want instant paint + background refresh use `api.fetchWithCache(action,
-  payload, onCache)` instead of a plain `api.call()`.
-- **`js/mock.js`** is a parallel implementation of every backend action as
-  an in-memory JS object, used whenever `CONFIG.MOCK` is `true`. Keep it in
-  sync with `Code.gs` when adding actions — it's what makes local UI dev
-  possible without touching Apps Script at all.
+  HTTP 200 — `js/api.js` turns that into an `ApiError` with a `.kind`
+  (`auth` / `lockout` / `network` / `server`) that `app.js` reacts to.
+- **Three layers, not two.** `js/api.js` is pure transport: one `call()`
+  that always hits the real backend, plus PIN/URL storage — nothing else,
+  no mock branching. `js/store.js` sits above it and is what views actually
+  import: it decides mock-vs-real, adds response caching
+  (`getCached`/`fetchWithCache`), the `bootstrap` batch-load with its own
+  cache (`loadBootstrap`/`getCachedBootstrap`), and `data_version` polling
+  (`startVersionPolling`). `js/countdown.js` is pure math with no
+  dependencies on either — due-date/gestational-age/duration calculations
+  from a `Date`, used by Home's live ticker.
+- **Freshness, not polling-everything.** `store.loadBootstrap()` serves the
+  in-memory/`localStorage` cache instantly on every call *unless*
+  `forceRefresh` is passed — only `startVersionPolling()`'s `onChanged`
+  callback (fired when `version.get`, checked every 30s while the tab is
+  visible, reports a different number than last time) ever passes that.
+  So a view navigation is always instant after the first load; only an
+  actual backend change triggers a real `bootstrap` re-fetch. Mock mode
+  skips polling entirely (`startVersionPolling` no-ops — there's no real
+  server to poll).
+- **Mock fixtures live inside `js/store.js`** (not a separate file) as an
+  in-memory object mirroring every `Code.gs` action, including `bootstrap`
+  and `version.get`. Keep it in sync with `Code.gs` when adding backend
+  actions — it's what makes local UI dev possible with zero setup.
 
 ## File-by-file reference
 
@@ -92,29 +115,43 @@ index.html            Static shell — just a <div id="app">, everything else is
                        and loads js/app.js as a module.
 
 js/app.js              ~2200 lines. Router (hash-based, see ROUTES table
-                       below), every view's render + event-handler functions,
-                       shared helpers (escapeHtml, formField, date formatting,
-                       genericSkeleton, errorMarkup). This is where almost all
-                       new frontend work happens.
+                       below), first-run screen, every view's render +
+                       event-handler functions, shared helpers (escapeHtml,
+                       formField, date formatting, genericSkeleton,
+                       errorMarkup). This is where almost all new frontend
+                       work happens. boot() and registerServiceWorker() are
+                       invoked at the very bottom of the file, not the top —
+                       see the comment where ROUTES is defined for why
+                       (a temporal-dead-zone bug bit this once already).
 
-js/api.js               The network boundary. call(action, payload), PIN and
-                        API-URL storage (localStorage), response caching,
-                        fetchWithCache(). Re-exports CONFIG from config.js.
+js/store.js              The data layer every view actually imports — not
+                        js/api.js directly. Mock-mode flag + fixtures, plus
+                        call/fetchWithCache/getCached/loadBootstrap/
+                        startVersionPolling. Re-exports api.js's PIN/URL
+                        helpers and ApiError too, so app.js only ever needs
+                        one import. See "Architecture" above.
 
-js/mock.js               In-memory fixture backend for CONFIG.MOCK: true.
-                        Mirrors every Code.gs action — update both together.
+js/api.js               Pure network transport. One call(action, payload)
+                        that always hits the real backend (no mock
+                        branching — that's store.js), plus PIN/API-URL
+                        storage in localStorage.
+
+js/countdown.js           Pure local countdown math, no DOM/fetch/
+                        localStorage — computeCountdown, formatDuration,
+                        msUntil, isTimePastToday. Unit-testable standalone
+                        (see "Testing approach" below).
 
 js/i18n.js                English string table behind t(key, vars). Every
                         user-visible string should go through this, not be
                         hardcoded in app.js, so Telugu can be added later by
                         adding a "te" object with the same keys.
 
-js/config.example.js      Committed template. Copy to js/config.js (gitignored)
-                        for local dev. See "Local dev" below.
-
-css/style.css            ~800 lines. Design tokens on :root, dark mode via
+css/style.css            ~800+ lines. Design tokens on :root, dark mode via
                         prefers-color-scheme + explicit [data-theme], bottom
-                        nav, cards, forms, charts container, etc.
+                        nav, cards, forms, charts container, the first-run
+                        screen's two-field form (.field-pin vs the plain
+                        .field[type="url"] — don't let the PIN's large
+                        letter-spaced style leak onto the URL input), etc.
 
 data/weeks.json           37 entries (weeks 4-40): size comparison, length/
                         weight, development note, common symptoms, tips.
@@ -124,10 +161,11 @@ data/food.json            Per-trimester recommended/limit lists + an
                         reason and the same review flag convention.
 data/warnings.json        14 red-flag symptoms with action + urgency.
 
-backend/Code.gs            ~1140 lines. setup(), auth, routeAction() switch,
-                        per-entity CRUD (medicines/appointments/healthlog/
-                        contacts/foodlog/checklist/files), generic
-                        createRow/updateRowById/deleteRowById helpers,
+backend/Code.gs            ~1250 lines. setup(), auth, routeAction() switch,
+                        data_version machinery, bootstrap(), per-entity CRUD
+                        (medicines/appointments/healthlog/contacts/foodlog/
+                        checklist/files), generic createRow/updateRowById/
+                        deleteRowById helpers (each bumps data_version),
                         validation helpers, date helpers, Telegram reminder
                         functions. See "Backend action reference" below.
 backend/appsscript.json    Apps Script manifest: Asia/Kolkata timezone,
@@ -146,14 +184,14 @@ DEVELOPMENT.md             This file.
 
 ## Routes (frontend)
 
-Hash-based router in `js/app.js` (`ROUTES` object). The lock screen is not
-a route — it's a separate render mode gated by `state.locked`, independent
-of the current hash, so navigating while locked always shows the PIN
-screen.
+Hash-based router in `js/app.js` (`ROUTES` object). The first-run screen is
+not a route — it's a separate render mode gated by `state.locked`,
+independent of the current hash, so navigating while locked always shows
+it (or, in mock mode, self-heals straight past it — see `renderRoute()`).
 
 | Hash | View | Bottom nav? |
 |---|---|---|
-| `#/dashboard` | Dashboard (default) | Home |
+| `#/home` | Home: live countdown, next appointment, today's meds | Home |
 | `#/meds` | Medicines | Meds |
 | `#/visits` | Appointments | Visits |
 | `#/records` | Records vault | Records |
@@ -161,9 +199,12 @@ screen.
 | `#/emergency` | Emergency card | — (reached via button/menu) |
 | `#/guide` | Food & body guide (+ FoodLog quick-add) | — (via More) |
 | `#/health` | Health log (list + charts) | — (via More) |
-| `#/health/new` | Health log, form opened immediately | — (dashboard "Log vitals") |
+| `#/health/new` | Health log, form opened immediately | — (Home "Log vitals") |
 | `#/checklist` | Checklists | — (via More) |
-| `#/settings` | Settings (+ Contacts, + Server URL) | — (via More) |
+| `#/settings` | Settings (+ Contacts, + sign-out) | — (via More) |
+
+Home and Emergency share one `store.loadBootstrap()` cache — visiting
+Emergency right after Home is instant, no second network round-trip.
 
 ## Backend action reference
 
@@ -174,6 +215,8 @@ All actions are routed through `routeAction(action, payload)` in
 auth.check
 settings.get / settings.set
 dashboard.get
+version.get                 -- cheap, cache-backed: {data_version}
+bootstrap                   -- settings + dashboard + every entity list in one call
 
 medicines.list / .create / .update / .delete / .logTaken / .history
 appointments.list / .create / .update / .delete
@@ -189,83 +232,105 @@ calling it twice for the same dose on the same day updates the existing
 `MedicineLog` row instead of creating a duplicate. `files.upload` takes
 base64 + a type (`report`/`scan`/`prescription`/`document`), rejects
 anything over 8MB, and saves into the matching Drive subfolder.
+`bootstrap` deliberately omits raw `MedicineLog` (not needed for first
+paint, can grow large, fetched on demand by the Meds view via
+`medicines.history`). Every mutating action bumps `data_version` by
+exactly 1 — see "Data version" in `backend/Code.gs`.
 
 ## Running it locally
 
-### Mock mode (default, no backend needed)
+No config file to create — v2 has none at all. Just:
 
 ```sh
 cd /Users/rishi/workspace-auto/preg
-cp js/config.example.js js/config.js   # only if you haven't already — it's gitignored
 python3 -m http.server 8000
 ```
 
-Open `http://localhost:8000`. With `MOCK: true` in `js/config.js` (the
-default), **any PIN unlocks the app** — `js/mock.js` serves realistic
-sample data for every view, in-memory, reset on every page reload.
-
 **Stop it**: `Ctrl+C` in that terminal, or `pkill -f "http.server 8000"`.
+
+### Mock mode (default)
+
+Open `http://localhost:8000` — mock mode is on by default
+(`MOCK_MODE_DEFAULT` in `js/store.js`), so it goes straight to Home with
+sample data, no first-run screen, no backend. **Any PIN "works"** in the
+sense that `store.js`'s `mockCall("auth.check", ...)` always succeeds —
+there's nothing real behind it.
+
+Force a mode without editing source: `?mock=1` / `?mock=0` in the URL once
+(remembered in `localStorage`, key `pct_mock`, after that).
 
 ### Against the real backend
 
 1. Deploy `backend/Code.gs` per the README's "Apps Script deploy" section
    and get the web app URL.
-2. Edit `js/config.js`: set `API_URL` to that URL and `MOCK: false`.
-3. Reload. The lock screen now does a real `auth.check` against Apps
-   Script, and a wrong PIN is genuinely rejected (with the real 5-attempt
-   lockout).
+2. Open `http://localhost:8000?mock=0`. This shows the real first-run
+   screen (same one the live site shows) asking for the URL and PIN
+   together.
+3. Enter both, submit. `app.js`'s `attemptFirstRun()` calls
+   `store.setApiUrl()` + `store.setPin()` (both to `localStorage`), then a
+   real `store.call("auth.check", {})`. A wrong PIN is genuinely rejected
+   (with the real 5-attempt lockout); a non-`https://` URL is rejected
+   client-side before any network call.
 
-If `js/config.js` doesn't exist at all, the app shows a "not set up yet"
-screen instead of breaking. If it exists with `MOCK: false` but no
-`API_URL`, the app shows the one-time "Set up this device" screen asking
-for the URL (see "PIN and the API URL" below) — useful for testing that
-flow without touching `config.js`.
+To skip the form while testing (e.g. driving it from a script), seed
+`localStorage` directly before reload: `pct_api_url` and `pct_pin`. That's
+what `boot()`'s own silent background re-check on every subsequent load
+exercises too — see "PIN" below.
 
 ## PIN: how it actually works
 
-- The PIN itself is **never stored in any file** — not in `Code.gs`, not in
-  `config.js`, nowhere in git. It lives in two places only:
+- The PIN itself is **never stored in any file** — not in `Code.gs`, not
+  anywhere in git (there's no config file in v2 at all). It lives in two
+  places only:
   1. **Apps Script Script Properties** (`APP_PIN`), set by hand via the
      Apps Script editor (Project Settings → Script properties).
   2. **Each device's own `localStorage`** (`pct_pin`), set the first time
-     that device's user types it into the lock screen successfully.
-- **First unlock on a device**: lock screen → type PIN → `app.js` calls
-  `api.setPin(pin)` (writes to localStorage) → `api.call("auth.check", {})`
-  → if the backend accepts it, `state.locked = false` and the PIN stays in
-  localStorage for next time. If rejected, `api.clearPin()` wipes it and
-  the error shows.
-- **Every subsequent app load**: if a PIN is already in localStorage, the
-  app tries `auth.check` once, silently. Success → straight to the
-  dashboard. Rejected (`kind: "auth"`) → PIN cleared, back to lock screen.
-  Any other failure (network/server) → **trusts the stored PIN and lets you
-  in anyway**, so you can read cached data offline without the app locking
-  you out just because you have no signal.
-- **Changing the PIN**: edit `APP_PIN` in Apps Script's Script properties,
-  then on *each* device, enter the new PIN at the lock screen once (or tap
-  **More → Settings → Lock app now** first, then enter the new PIN).
-  Instructions for this are also shown directly in the Settings view.
-- **Locking manually**: **More → Lock app now** (also present in Settings)
-  clears the stored PIN and returns to the lock screen immediately.
+     that device enters it successfully on the first-run screen.
+- **First entry on a device**: first-run screen → type URL + PIN together
+  → `app.js`'s `attemptFirstRun()` calls `store.setApiUrl()` +
+  `store.setPin()` (both written to localStorage) → one
+  `store.call("auth.check", {})`. Accepted → into the app, both values
+  stay stored. Rejected for a wrong PIN → `store.clearPin()` wipes the PIN
+  only (the URL stays, so there's no need to retype it) and the form
+  reappears. Rejected for a network failure → **both** are cleared, since
+  nothing was proven to work yet on this device.
+- **Every subsequent app load**: `boot()` tries `auth.check` once,
+  silently, using whatever's already in localStorage. Success → straight
+  to Home. Rejected (`kind: "auth"`) → PIN cleared, first-run screen shown
+  again. Any other failure (network/server) → **trusts the stored
+  credentials and lets you in anyway**, so you can read cached data
+  offline without the app locking you out just because there's no signal.
+- **Signing out**: **More → Settings → "Sign out / change PIN or URL"**
+  clears *both* the PIN and the URL and shows the first-run screen again —
+  there's no separate "just lock, keep the URL" action anymore (v1 had
+  two different buttons for this; v2 collapsed them into one, per spec).
+- **Changing the PIN**: edit `APP_PIN` in Apps Script's Script properties
+  (push a new deployment version isn't needed for a Script Properties
+  change, only for `Code.gs` edits), then sign out and re-enter it on each
+  device.
 - **Lockout**: 5 wrong attempts within 10 minutes → 15-minute lockout,
   tracked server-side via `CacheService` (not per-device, since there's one
   shared PIN) — see `isLockedOut`/`recordFailedAttempt` in `Code.gs`.
-- **Mock mode PIN**: `js/mock.js`'s `auth.check` always succeeds, so any
-  non-empty PIN "works" locally. This is intentional — it's a dev
-  convenience, not a security surface (nothing real is behind it).
+- **Mock mode**: `boot()`/`renderRoute()` auto-provision dummy credentials
+  (`ensureMockCredentials()`) and never show the first-run screen at all —
+  not even after signing out while in mock mode, which self-heals straight
+  back into the app instead of getting stuck on a form that mock mode
+  doesn't need filled in.
 
 ## The API URL (companion to the PIN)
 
-Added in step 11 to fix a real deployment gap. Same pattern as the PIN:
+Same pattern as the PIN, entered together on the same form:
 
-- Stored in `localStorage` (`pct_api_url`), entered once per device via a
-  "Set up this device" screen that appears before the lock screen if
-  `CONFIG.MOCK` is `false` and no URL is known yet.
-- `CONFIG.API_URL` in `js/config.js` is only a **local-dev shortcut** that
-  skips this prompt — it's never what the live GitHub Pages deployment
-  uses, since `config.js` is never committed.
+- Stored in `localStorage` (`pct_api_url`), entered once per device.
+- Validated client-side as `https://...` before any network call —
+  Apps Script URLs are always https, and this also means a plaintext PIN
+  never goes out over an insecure connection by accident.
 - To change it later (e.g. after redeploying Apps Script to a new URL):
-  **More → Settings → Change server URL**.
-- Validation requires `https://` — the setup screen rejects anything else.
+  same **"Sign out / change PIN or URL"** action as the PIN — there's no
+  separate "just the URL" control in v2.
+- There's no local-dev-only shortcut file for this anymore (v1's
+  `CONFIG.API_URL` in `config.js` is gone) — use `?mock=0` + the form, or
+  seed `localStorage` directly, per "Running it locally" above.
 
 ## Testing approach used during development
 
@@ -274,25 +339,43 @@ pipeline), but everything was verified before each commit:
 
 - **Backend logic**: a throwaway Node harness (not committed) fakes just
   enough of the Apps Script runtime (`SpreadsheetApp`, `PropertiesService`,
-  `DriveApp`, `Utilities`, etc. — in-memory fakes, real SHA-256 via Node's
-  `crypto` for the PIN compare) to `eval()` the real `backend/Code.gs` and
-  run 48 assertions: CRUD round-trips, validation rejections, the
-  `medicines.logTaken` upsert path, the 8MB file-size limit, and
-  `dashboard.get` integration. Re-run it after any `Code.gs` change by
-  recreating that harness (see the step-5 commit message / this file's git
-  history for the exact approach) — or just re-deploy and use the `curl`
-  smoke tests in the README.
+  `DriveApp`, `Utilities`, a real in-memory `CacheService` — real SHA-256
+  via Node's `crypto` for the PIN compare) to `eval()` the real
+  `backend/Code.gs` and run assertions against it: CRUD round-trips,
+  validation rejections, the `medicines.logTaken` upsert path, the 8MB
+  file-size limit, `dashboard.get` integration, `data_version` bumping on
+  every write path (verified by tampering the underlying fake sheet
+  directly and confirming cache-hit reads ignore it, and that a cold cache
+  falls back to the sheet correctly), and `bootstrap`'s shape. 64
+  assertions as of v2 step 2. Re-run it after any `Code.gs` change by
+  recreating that harness — or just re-deploy and use the `curl` smoke
+  tests in the README.
+- **`js/countdown.js`**: unit-tested standalone in Node (it's dependency-free
+  by design) — parseLocalDateOnly, gestational age at several week
+  boundaries, overdue vs. upcoming, formatDuration, msUntil,
+  isTimePastToday. 19 assertions.
 - **Frontend**: headless Playwright (Chromium) driving a local
-  `python3 -m http.server`, exercising real user flows — lock/unlock,
-  every CRUD form, chart rendering, file upload with size-limit rejection,
-  offline mode after a real service-worker registration, and a full
-  regression pass loading all 9 non-dashboard routes. None of this is
+  `python3 -m http.server`, exercising real user flows in mock mode (no
+  credentials needed) — first-run/sign-out, every CRUD form, chart
+  rendering, file upload with size-limit rejection, offline mode after a
+  real service-worker registration, the live countdown actually ticking
+  second-to-second, timers correctly stopping when navigating away from
+  Home (a leaked `setInterval` was a real risk given the 1s ticker), and a
+  full regression pass loading every route. Separately, a small local HTTP
+  server stood in for Apps Script to verify the real (non-mock) `fetch()`
+  path end-to-end — first-run validation, wrong/correct PIN, bootstrap
+  data flowing into Home and Emergency identically. None of this is
   committed to the repo (it was scratch tooling), so there's nothing to run
   here directly — if you want a repeatable test suite, that'd be new work.
+- **Real credentials**: this session never had the real deployed API URL
+  or PIN, by design (see README's security notes) — everything above was
+  verified against mock data or a local fake backend standing in for Apps
+  Script, never the real deployment.
 
 If you add a new view or action, the fastest way to sanity-check it without
 writing new test infra: serve locally in mock mode, add the action's mock
-implementation to `js/mock.js`, and click through it in a browser.
+implementation to `js/store.js`'s `mockCall()`, and click through it in a
+browser.
 
 ## Known trade-offs / things intentionally left out
 
@@ -301,9 +384,19 @@ implementation to `js/mock.js`, and click through it in a browser.
 - **No dedicated Contacts or FoodLog screens** — Contacts live in Settings
   (feeding the Emergency card); FoodLog is a quick-add section at the
   bottom of the Guide view. Neither was in the original 10-view list.
-- **Records vault "grid" view doesn't show real thumbnails** — it shows a
-  type icon, not the actual image, to avoid fetching every file's base64
-  just to render a list. Only the detail viewer loads the real content.
+- **Records vault "grid" view doesn't show real thumbnails yet** — v1 shows
+  a type icon, not the actual image. Real per-file thumbnails (client-side
+  generated, uploaded alongside the original, `Files.thumb_file_id`) are
+  v2 step 7 work, not done yet.
+- **No offline write queue yet** — v1/early-v2 writes (medicines, etc.)
+  just fail with an error message if offline; they don't queue and retry
+  on reconnect. That's v2 step 9. The schema is already ready for it
+  (creates accept an optional client-supplied `id` in both the mock and
+  real `createRow`, so a retried/de-duped write won't be a problem once
+  the queue exists), but the actual queue/backoff/de-dupe logic doesn't
+  exist yet.
+- **No `syncFolder` yet** — scanning Drive for files dropped in by hand and
+  adding `Files` rows for them is v2 step 7 work.
 - **Health log reference thresholds are deliberately generic** (BP ≥140/90,
   sugar ≥95 fasting / ≥140 post-meal) — framed as "worth mentioning at the
   next visit," never a diagnosis. These are the kind of numbers that

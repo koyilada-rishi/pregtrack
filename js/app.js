@@ -1,16 +1,15 @@
-// Pregnancy Care Tracker — app entry point: router, lock screen, shell, views.
+// Pregnancy Care Tracker — app entry point: router, first-run screen, shell, views.
 //
-// api.js is imported dynamically (not statically) because it in turn
-// imports js/config.js, which is gitignored and may not exist yet (e.g. a
-// fresh clone before `cp js/config.example.js js/config.js`). A missing
-// config.js must not take down the whole module graph — it should show a
-// friendly "not set up" screen instead.
+// Every data call goes through js/store.js (never js/api.js directly) —
+// store.js transparently routes to mock fixtures or the real backend, adds
+// response caching, the bootstrap batch load, and data_version polling.
+// See DEVELOPMENT.md for the full architecture.
 
 import { t, setLanguage } from "./i18n.js";
+import * as store from "./store.js";
+import { computeCountdown, formatDuration, msUntil, isTimePastToday } from "./countdown.js";
 
 const appRoot = document.getElementById("app");
-
-let api = null; // assigned once js/api.js (and its config.js) load successfully
 
 const state = {
   locked: true,
@@ -18,7 +17,7 @@ const state = {
 };
 
 const NAV_ITEMS = [
-  { key: "home", hash: "#/dashboard", icon: "🏠", label: () => t("nav.home") },
+  { key: "home", hash: "#/home", icon: "🏠", label: () => t("nav.home") },
   { key: "meds", hash: "#/meds", icon: "💊", label: () => t("nav.meds") },
   { key: "visits", hash: "#/visits", icon: "🩺", label: () => t("nav.visits") },
   { key: "records", hash: "#/records", icon: "📁", label: () => t("nav.records") },
@@ -26,7 +25,7 @@ const NAV_ITEMS = [
 ];
 
 const ROUTES = {
-  "/dashboard": { render: renderDashboardView, navKey: "home", title: () => t("dashboard.title") },
+  "/home": { render: renderHomeView, navKey: "home", title: () => t("home.title") },
   "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
   "/visits": { render: renderAppointmentsView, navKey: "visits", title: () => t("nav.visits") },
   "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
@@ -39,12 +38,14 @@ const ROUTES = {
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
 
-boot().catch((err) => {
-  console.error("Fatal startup error", err);
-  appRoot.innerHTML = `<div class="lock-screen"><h1>${t("app.name")}</h1><p>${t("lock.error.generic")}</p></div>`;
-});
-
-registerServiceWorker();
+// boot() and registerServiceWorker() are invoked at the very bottom of this
+// file, not here — renderShell() (called synchronously inside boot()'s
+// mock-mode path) reaches into homeState, which is a `const` declared much
+// further down. Module-level `const`s are in their temporal dead zone until
+// their own declaration line actually runs, so calling boot() before the
+// whole file has been parsed throws a ReferenceError. Calling it last,
+// after every const/function below has been declared, sidesteps that for
+// good rather than just for homeState specifically.
 
 // Caches the app shell for offline reading and installing to the home
 // screen. Registration failures (unsupported browser, non-secure context
@@ -59,163 +60,135 @@ function registerServiceWorker() {
   });
 }
 
+// Mock mode needs zero setup — that's the point. Auto-provisions dummy
+// credentials so downstream code (Settings' connection display, etc.) has
+// something to read. Called both from boot() and from renderRoute() (so
+// e.g. signing out while in mock mode self-heals straight back into the
+// app instead of getting stuck on a first-run form that mock mode doesn't
+// actually need filled in).
+function ensureMockCredentials() {
+  if (!store.hasApiUrl()) store.setApiUrl("mock://local");
+  if (!store.hasPin()) store.setPin("mock");
+}
+
 async function boot() {
-  try {
-    api = await import("./api.js");
-  } catch (err) {
-    console.error("Could not load js/config.js", err);
-    renderConfigMissing();
-    return;
-  }
-
-  const config = api.CONFIG;
-  if (config && config.LANGUAGE) setLanguage(config.LANGUAGE);
-
-  if (!config.MOCK && !api.hasApiUrl()) {
-    renderApiUrlSetup();
-    return;
-  }
-
-  if (!api.hasPin()) {
-    state.locked = true;
-    renderLockScreen();
-    return;
-  }
-
-  try {
-    await api.call("auth.check", {});
+  if (store.isMockMode()) {
+    ensureMockCredentials();
     state.locked = false;
+    await enterApp();
+    return;
+  }
+
+  if (!store.hasApiUrl() || !store.hasPin()) {
+    renderFirstRunScreen();
+    return;
+  }
+
+  try {
+    await store.call("auth.check", {});
+    state.locked = false;
+    await enterApp();
   } catch (err) {
     if (err.kind === "auth") {
-      api.clearPin();
-      state.locked = true;
-      renderLockScreen(t("lock.error.wrong"));
+      store.clearPin();
+      renderFirstRunScreen(t("firstRun.error.wrongPin"));
       return;
     }
     if (err.kind === "lockout") {
-      state.locked = true;
-      renderLockScreen(t("lock.error.lockout"));
+      renderFirstRunScreen(t("firstRun.error.lockout"));
       return;
     }
-    // Network/server hiccup: trust the already-stored PIN and let the
-    // person read cached data offline rather than locking them out.
+    // Network/server hiccup on an already-trusted device: keep the stored
+    // credentials and let the person read cached data offline instead of
+    // kicking them back to first-run just because there's no signal.
     state.locked = false;
+    await enterApp();
   }
+}
 
-  if (!location.hash) location.hash = "#/dashboard";
+async function enterApp() {
+  if (!location.hash) location.hash = "#/home";
   window.addEventListener("hashchange", renderRoute);
   window.addEventListener("online", updateOnlineStatus);
   window.addEventListener("offline", updateOnlineStatus);
+  store.startVersionPolling(handleVersionChanged);
   renderRoute();
 }
 
-// ---------------------------------------------------------------------------
-// Config-missing screen
-// ---------------------------------------------------------------------------
-
-function renderConfigMissing() {
-  appRoot.innerHTML = `
-    <div class="lock-screen">
-      <h1>${t("app.name")}</h1>
-      <p>${t("lock.error.needsConfig")}</p>
-    </div>
-  `;
+// The backend reported a new data_version (something changed — most likely
+// from the other phone). Force a real bootstrap refetch, then silently
+// re-render if Home or Emergency is the view currently open; other views
+// just pick up the fresh cache next time they're (re)opened.
+function handleVersionChanged() {
+  store.loadBootstrap(null, true).catch(() => {});
+  const path = currentPath();
+  if (path === "/home" || path === "/emergency") renderRoute();
 }
 
 // ---------------------------------------------------------------------------
-// One-time API URL setup (per device) — see the comment in api.js on why
-// this isn't just read from a committed config.js.
+// First-run screen (API URL + PIN together, once per device)
 // ---------------------------------------------------------------------------
 
-function renderApiUrlSetup(message, onDone) {
+function renderFirstRunScreen(message) {
   appRoot.innerHTML = `
     <div class="lock-screen">
-      <h1>${t("setup.title")}</h1>
-      <p>${t("setup.subtitle")}</p>
-      <form id="setup-form">
-        <input id="setup-url-input" class="field" type="url" inputmode="url" autocomplete="off"
-               placeholder="${t("setup.placeholder")}" value="${escapeHtml(api.getApiUrl())}" />
-        <button type="submit" class="btn btn-primary">${t("setup.submit")}</button>
-        <p class="error-text" id="setup-error" ${message ? "" : "hidden"}>${escapeHtml(message || "")}</p>
+      <h1>${t("firstRun.title")}</h1>
+      <p>${t("firstRun.subtitle")}</p>
+      <form id="firstrun-form">
+        <input id="firstrun-url-input" class="field" type="url" inputmode="url" autocomplete="off"
+               placeholder="${t("firstRun.urlPlaceholder")}" value="${escapeHtml(store.getApiUrl())}" />
+        <input id="firstrun-pin-input" class="field field-pin" type="password" inputmode="numeric" autocomplete="off"
+               placeholder="${t("firstRun.pinPlaceholder")}" />
+        <button type="submit" class="btn btn-primary" id="firstrun-submit">${t("firstRun.submit")}</button>
+        <p class="error-text" id="firstrun-error" ${message ? "" : "hidden"}>${escapeHtml(message || "")}</p>
       </form>
-      <p class="disclaimer">${t("setup.hint")}</p>
+      <p class="disclaimer">${t("firstRun.hint")}</p>
     </div>
   `;
 
-  const form = document.getElementById("setup-form");
-  const input = document.getElementById("setup-url-input");
-  input.focus();
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const url = input.value.trim();
-    if (!/^https:\/\/.+/.test(url)) {
-      renderApiUrlSetup(t("setup.error.invalid"), onDone);
-      return;
-    }
-    api.setApiUrl(url);
-    if (onDone) {
-      onDone();
-    } else {
-      state.locked = true;
-      renderLockScreen();
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Lock screen
-// ---------------------------------------------------------------------------
-
-function renderLockScreen(message) {
-  appRoot.innerHTML = `
-    <div class="lock-screen">
-      <h1>${t("lock.title")}</h1>
-      <p>${t("lock.subtitle")}</p>
-      <form id="lock-form">
-        <input id="pin-input" class="field" type="password" inputmode="numeric"
-               autocomplete="off" placeholder="${t("lock.placeholder")}" />
-        <button type="submit" class="btn btn-primary" id="lock-submit">${t("lock.submit")}</button>
-        <p class="error-text" id="lock-error" ${message ? "" : "hidden"}>${escapeHtml(message || "")}</p>
-      </form>
-      <p class="disclaimer">${t("app.disclaimer")}</p>
-    </div>
-  `;
-
-  const form = document.getElementById("lock-form");
-  const input = document.getElementById("pin-input");
-  input.focus();
+  const form = document.getElementById("firstrun-form");
+  const urlInput = document.getElementById("firstrun-url-input");
+  const pinInput = document.getElementById("firstrun-pin-input");
+  (urlInput.value ? pinInput : urlInput).focus();
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const pin = input.value.trim();
+    const url = urlInput.value.trim();
+    const pin = pinInput.value.trim();
+    if (!/^https:\/\/.+/.test(url)) {
+      renderFirstRunScreen(t("firstRun.error.invalidUrl"));
+      return;
+    }
     if (!pin) return;
-    await attemptUnlock(pin);
+    await attemptFirstRun(url, pin);
   });
 }
 
-async function attemptUnlock(pin) {
-  const submitBtn = document.getElementById("lock-submit");
+async function attemptFirstRun(url, pin) {
+  const submitBtn = document.getElementById("firstrun-submit");
   submitBtn.disabled = true;
-  submitBtn.textContent = t("lock.checking");
+  submitBtn.textContent = t("firstRun.checking");
 
-  api.setPin(pin);
+  store.setApiUrl(url);
+  store.setPin(pin);
   try {
-    await api.call("auth.check", {});
+    await store.call("auth.check", {});
     state.locked = false;
-    if (!location.hash) location.hash = "#/dashboard";
-    window.addEventListener("hashchange", renderRoute);
-    window.addEventListener("online", updateOnlineStatus);
-    window.addEventListener("offline", updateOnlineStatus);
-    renderRoute();
+    await enterApp();
   } catch (err) {
     if (err.kind === "auth") {
-      api.clearPin();
-      renderLockScreen(t("lock.error.wrong"));
+      store.clearPin(); // keep the URL — no need to retype a value that worked
+      renderFirstRunScreen(t("firstRun.error.wrongPin"));
     } else if (err.kind === "lockout") {
-      renderLockScreen(t("lock.error.lockout"));
+      renderFirstRunScreen(t("firstRun.error.lockout"));
+    } else if (err.kind === "network") {
+      // Nothing proven to work yet on this device — clear both rather than
+      // leave a possibly-wrong URL silently stored.
+      store.clearApiUrl();
+      store.clearPin();
+      renderFirstRunScreen(t("firstRun.error.network"));
     } else {
-      renderLockScreen(t("lock.error.generic"));
+      renderFirstRunScreen(t("firstRun.error.generic"));
     }
   }
 }
@@ -225,19 +198,25 @@ async function attemptUnlock(pin) {
 // ---------------------------------------------------------------------------
 
 function currentPath() {
-  return (location.hash || "#/dashboard").replace(/^#/, "") || "/dashboard";
+  return (location.hash || "#/home").replace(/^#/, "") || "/home";
 }
 
 function renderRoute() {
   if (state.locked) {
-    renderLockScreen();
-    return;
+    if (store.isMockMode()) {
+      ensureMockCredentials();
+      state.locked = false;
+    } else {
+      renderFirstRunScreen();
+      return;
+    }
   }
-  const route = ROUTES[currentPath()] || ROUTES["/dashboard"];
+  const route = ROUTES[currentPath()] || ROUTES["/home"];
   renderShell(route);
 }
 
 function renderShell(route) {
+  stopHomeTimers(); // harmless no-op unless Home was the previous view
   appRoot.innerHTML = `
     <div id="offline-banner" class="offline-banner" ${state.online ? "hidden" : ""}>${t("offline.banner")}</div>
     <header class="topbar">
@@ -273,36 +252,46 @@ function updateOnlineStatus() {
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard view
+// Home view — live countdown (local, no network), next appointment, today's
+// medicines. Backed by store.js's bootstrap cache: instant after the first
+// load, refreshed only when startVersionPolling() detects a real change.
 // ---------------------------------------------------------------------------
 
-async function renderDashboardView(outlet) {
+const homeState = {
+  bootstrap: null,
+  weekEntry: null,
+  tickIntervalId: null,
+  refreshIntervalId: null
+};
+
+async function renderHomeView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
-  const paint = async (data) => {
-    const weekEntry = await weekEntryFor(data.gestational_age).catch(() => null);
-    outlet.innerHTML = dashboardMarkup(data, weekEntry);
+  const paint = async (boot) => {
+    homeState.bootstrap = boot;
+    homeState.weekEntry = await weekEntryFor(computeCountdown(boot.settings || {}, new Date())).catch(() => null);
+    outlet.innerHTML = homeMarkup(boot, homeState.weekEntry);
     attachNavButtons(outlet);
+    startHomeTimers(outlet);
   };
 
   try {
-    const data = await api.fetchWithCache("dashboard.get", {}, paint);
-    await paint(data);
-    // Warm the Emergency card's offline cache in the background.
-    api.call("settings.get", {}).catch(() => {});
+    const boot = await store.loadBootstrap(paint);
+    await paint(boot);
   } catch (err) {
-    const cached = api.getCached("dashboard.get", {});
+    const cached = store.getCachedBootstrap();
     if (cached) {
       await paint(cached);
     } else {
       outlet.innerHTML = errorMarkup(err);
-      attachRetryHandler(outlet, () => renderDashboardView(outlet));
+      attachRetryHandler(outlet, () => renderHomeView(outlet));
     }
   }
 }
 
 // Looks up the matching data/weeks.json entry for the current gestational
-// age, clamped to the 4-40 range the content file covers.
+// age (computed locally via countdown.js), clamped to the 4-40 range the
+// content file covers.
 async function weekEntryFor(age) {
   if (!age) return null;
   const weeksData = await loadJson("./data/weeks.json");
@@ -310,32 +299,34 @@ async function weekEntryFor(age) {
   return weeksData.weeks.find((w) => w.week === weekNum) || null;
 }
 
-function dashboardMarkup(data, weekEntry) {
-  const countdown = formatCountdown(data.gestational_age);
-  const nextAppt = data.next_appointment;
-  const meds = data.today_medicines || [];
+function homeMarkup(boot, weekEntry) {
+  const settings = boot.settings || {};
+  const dashboard = boot.dashboard || {};
+  const nextAppt = dashboard.next_appointment;
+  const meds = dashboard.today_medicines || [];
+  const hasCountdown = !!computeCountdown(settings, new Date());
 
   return `
     <div class="card countdown-card">
-      <h2>${t("dashboard.dueDate")}</h2>
+      <h2>${t("home.dueDate")}</h2>
       ${
-        countdown
+        hasCountdown
           ? `
-        <div class="countdown-days">${countdown.daysLeftText}</div>
-        <div class="countdown-sub">${countdown.weekDay}</div>
-        <div class="countdown-meta"><span>${countdown.trimesterText}</span></div>
+        <div class="countdown-days" id="countdown-main"></div>
+        <div class="countdown-ticker" id="countdown-ticker"></div>
+        <div class="countdown-meta"><span id="countdown-sub"></span></div>
       `
-          : `<p class="empty">${t("dashboard.dueDateUnset")}</p>`
+          : `<p class="empty">${t("home.dueDateUnset")}</p>`
       }
     </div>
 
     <div class="dashboard-actions">
-      <button class="btn btn-secondary" data-nav="#/health/new">${t("dashboard.logVitals")}</button>
-      <button class="btn btn-emergency" data-nav="#/emergency">${t("dashboard.emergency")}</button>
+      <button class="btn btn-secondary" data-nav="#/health/new">${t("home.logVitals")}</button>
+      <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
     </div>
 
     <div class="card">
-      <h2>${t("dashboard.babySize.title")}</h2>
+      <h2>${t("home.babySize.title")}</h2>
       ${
         weekEntry
           ? `
@@ -343,12 +334,12 @@ function dashboardMarkup(data, weekEntry) {
         <p class="empty">${escapeHtml(weekEntry.development)}</p>
         <a class="card-link" data-nav="#/guide">${t("guide.seeFull")}</a>
       `
-          : `<p class="empty">${t("dashboard.babySize.comingSoon")}</p>`
+          : `<p class="empty">${t("home.babySize.comingSoon")}</p>`
       }
     </div>
 
     <div class="card">
-      <h2>${t("dashboard.nextAppointment.title")}</h2>
+      <h2>${t("home.nextAppointment.title")}</h2>
       ${
         nextAppt
           ? `
@@ -358,21 +349,22 @@ function dashboardMarkup(data, weekEntry) {
             <span class="med-time">${formatApptDateTime(nextAppt.datetime)}</span>
           </li>
         </ul>
+        <p class="muted" id="appt-ticker"></p>
       `
-          : `<p class="empty">${t("dashboard.nextAppointment.none")}</p>`
+          : `<p class="empty">${t("home.nextAppointment.none")}</p>`
       }
     </div>
 
     <div class="card">
-      <h2>${t("dashboard.medicines.title")}</h2>
+      <h2>${t("home.medicines.title")}</h2>
       ${
         meds.length
           ? `
-        <ul class="med-list">
+        <ul class="med-list" id="home-med-list">
           ${meds
             .map(
               (m) => `
-            <li>
+            <li data-med-time="${escapeHtml(m.time)}">
               <span>${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
               <span class="med-time">${escapeHtml(m.time)}</span>
             </li>
@@ -380,32 +372,75 @@ function dashboardMarkup(data, weekEntry) {
             )
             .join("")}
         </ul>
-        <p class="empty">${t("dashboard.medicines.hint")}</p>
+        <p class="empty">${t("home.medicines.hint")}</p>
       `
-          : `<p class="empty">${t("dashboard.medicines.none")}</p>`
+          : `<p class="empty">${t("home.medicines.none")}</p>`
       }
     </div>
   `;
 }
 
-function formatCountdown(age) {
-  if (!age) return null;
-  const daysLeft = age.days_left;
-  let daysLeftText = "";
-  if (daysLeft === null || daysLeft === undefined) {
-    daysLeftText = "";
-  } else if (daysLeft > 0) {
-    daysLeftText = t("dashboard.daysLeft", { n: daysLeft });
-  } else if (daysLeft === 0) {
-    daysLeftText = t("dashboard.daysLeft.today");
-  } else {
-    daysLeftText = t("dashboard.daysLeft.overdue", { n: Math.abs(daysLeft) });
+// 1s ticker: cheap textContent updates only, no DOM rebuild — keeps the
+// seconds-resolution countdown smooth without disrupting scroll/focus.
+function tickHomeCountdown(outlet) {
+  if (!homeState.bootstrap) return;
+  const mainEl = document.getElementById("countdown-main");
+  if (!mainEl) { stopHomeTimers(); return; } // view no longer mounted — safety net
+
+  const now = new Date();
+  const settings = homeState.bootstrap.settings || {};
+  const countdown = computeCountdown(settings, now);
+
+  if (countdown && countdown.msToDueDate !== null) {
+    const dur = formatDuration(countdown.msToDueDate);
+    mainEl.textContent = countdown.isOverdue
+      ? t("home.daysOverdue", { n: dur.days })
+      : dur.days === 0
+        ? t("home.dueToday")
+        : t("home.daysToGo", { n: dur.days });
+
+    const tickerEl = document.getElementById("countdown-ticker");
+    if (tickerEl) {
+      tickerEl.textContent = t("home.ticker", {
+        h: String(dur.hours).padStart(2, "0"),
+        m: String(dur.minutes).padStart(2, "0"),
+        s: String(dur.seconds).padStart(2, "0")
+      });
+    }
+
+    const subEl = document.getElementById("countdown-sub");
+    if (subEl) {
+      subEl.textContent =
+        t("home.weekDay", { weeks: countdown.weeks, days: countdown.days }) + " · " + t("home.trimester", { n: countdown.trimester });
+    }
   }
-  return {
-    daysLeftText,
-    weekDay: t("dashboard.weekDay", { weeks: age.weeks, days: age.days }),
-    trimesterText: t("dashboard.trimester", { n: age.trimester })
-  };
+
+  const nextAppt = homeState.bootstrap.dashboard && homeState.bootstrap.dashboard.next_appointment;
+  const apptTickerEl = document.getElementById("appt-ticker");
+  if (apptTickerEl && nextAppt) {
+    const msLeft = msUntil(nextAppt.datetime, now);
+    apptTickerEl.textContent = msLeft !== null && msLeft > 0 ? t("home.apptIn", formatDuration(msLeft)) : "";
+  }
+
+  outlet.querySelectorAll("#home-med-list li[data-med-time]").forEach((li) => {
+    li.classList.toggle("med-overdue", isTimePastToday(li.dataset.medTime, now));
+  });
+}
+
+function startHomeTimers(outlet) {
+  tickHomeCountdown(outlet);
+  homeState.tickIntervalId = setInterval(() => tickHomeCountdown(outlet), 1000);
+  homeState.refreshIntervalId = setInterval(() => {
+    if (!homeState.bootstrap) return;
+    outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.weekEntry);
+    attachNavButtons(outlet);
+    tickHomeCountdown(outlet);
+  }, 30000);
+}
+
+function stopHomeTimers() {
+  if (homeState.tickIntervalId) { clearInterval(homeState.tickIntervalId); homeState.tickIntervalId = null; }
+  if (homeState.refreshIntervalId) { clearInterval(homeState.refreshIntervalId); homeState.refreshIntervalId = null; }
 }
 
 function formatApptDateTime(iso) {
@@ -423,26 +458,22 @@ function formatApptDateTime(iso) {
 }
 
 // ---------------------------------------------------------------------------
-// Emergency card
+// Emergency card — shares Home's bootstrap cache (settings + contacts come
+// from the same batch load), so it's instant whenever Home has already
+// loaded, and still offline-cacheable on its own otherwise.
 // ---------------------------------------------------------------------------
 
 async function renderEmergencyView(outlet) {
   outlet.classList.add("emergency-view");
   outlet.innerHTML = genericSkeleton(5);
 
-  const paint = (settings) => { outlet.innerHTML = emergencyMarkup(settings, emergencyState.contacts); };
+  const paint = (boot) => { outlet.innerHTML = emergencyMarkup(boot.settings || {}, boot.contacts || []); };
 
   try {
-    const settings = await api.fetchWithCache("settings.get", {}, paint);
-    paint(settings);
-    try {
-      emergencyState.contacts = await api.fetchWithCache("contacts.list", {}, () => {});
-      outlet.innerHTML = emergencyMarkup(settings, emergencyState.contacts);
-    } catch {
-      // Contacts are a nice-to-have on this card; settings alone still render.
-    }
+    const boot = await store.loadBootstrap(paint);
+    paint(boot);
   } catch (err) {
-    const cached = api.getCached("settings.get", {});
+    const cached = store.getCachedBootstrap();
     if (cached) {
       paint(cached);
     } else {
@@ -452,11 +483,8 @@ async function renderEmergencyView(outlet) {
   }
 }
 
-const emergencyState = { contacts: [] };
-
 function emergencyMarkup(settings, contacts) {
-  contacts = contacts || [];
-  const emergencyContacts = contacts.filter((c) => isTruthy(c.is_emergency));
+  const emergencyContacts = (contacts || []).filter((c) => isTruthy(c.is_emergency));
   const phoneDigits = String(settings.hospital_phone || "").replace(/[^+\d]/g, "");
   const address = settings.hospital_address || "";
 
@@ -510,7 +538,6 @@ function emergencyContactRowMarkup(c) {
     </li>
   `;
 }
-
 // ---------------------------------------------------------------------------
 // Food & body guide
 // ---------------------------------------------------------------------------
@@ -521,18 +548,39 @@ async function renderGuideView(outlet) {
   outlet.innerHTML = genericSkeleton(8);
 
   try {
-    const [dash, weeksData, foodData, warningsData, foodlog] = await Promise.all([
-      api.call("dashboard.get", {}).catch(() => api.getCached("dashboard.get", {})),
+    const [boot, weeksData, foodData, warningsData, foodlog] = await Promise.all([
+      store.loadBootstrap(),
       loadJson("./data/weeks.json"),
       loadJson("./data/food.json"),
       loadJson("./data/warnings.json"),
-      api.call("foodlog.list", {}).catch(() => [])
+      store.call("foodlog.list", {}).catch(() => [])
     ]);
     guideState.foodlog = foodlog;
-    outlet.innerHTML = guideMarkup(dash, weeksData, foodData, warningsData);
+    // Computed locally (same as Home's countdown) rather than from the
+    // backend, so the week shown here always matches Home exactly.
+    const age = computeCountdown(boot.settings || {}, new Date());
+    outlet.innerHTML = guideMarkup(age, weeksData, foodData, warningsData);
     attachNavButtons(outlet);
     attachFoodlogHandlers(outlet);
   } catch (err) {
+    const cachedBoot = store.getCachedBootstrap();
+    if (cachedBoot) {
+      const age = computeCountdown(cachedBoot.settings || {}, new Date());
+      try {
+        const [weeksData, foodData, warningsData] = await Promise.all([
+          loadJson("./data/weeks.json"),
+          loadJson("./data/food.json"),
+          loadJson("./data/warnings.json")
+        ]);
+        guideState.foodlog = [];
+        outlet.innerHTML = guideMarkup(age, weeksData, foodData, warningsData);
+        attachNavButtons(outlet);
+        attachFoodlogHandlers(outlet);
+        return;
+      } catch {
+        // fall through to the error state below
+      }
+    }
     outlet.innerHTML = errorMarkup(err);
     attachRetryHandler(outlet, () => renderGuideView(outlet));
   }
@@ -555,7 +603,7 @@ function attachFoodlogHandlers(outlet) {
     const saveBtn = form.querySelector('button[type="submit"]');
     saveBtn.disabled = true;
     try {
-      await api.call("foodlog.create", payload);
+      await store.call("foodlog.create", payload);
       await renderGuideView(outlet);
     } catch (err) {
       saveBtn.disabled = false;
@@ -564,8 +612,7 @@ function attachFoodlogHandlers(outlet) {
   });
 }
 
-function guideMarkup(dash, weeksData, foodData, warningsData) {
-  const age = dash && dash.gestational_age;
+function guideMarkup(age, weeksData, foodData, warningsData) {
   const weekNum = age ? Math.min(40, Math.max(4, age.weeks)) : null;
   const weekEntry = weekNum ? weeksData.weeks.find((w) => w.week === weekNum) : null;
   const trimester = weekEntry ? weekEntry.trimester : 1;
@@ -614,7 +661,7 @@ function guideMarkup(dash, weeksData, foodData, warningsData) {
           )
           .join("")}
       </ul>
-      <button class="btn btn-emergency" data-nav="#/emergency">${t("dashboard.emergency")}</button>
+      <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
     </div>
 
     <div class="card">
@@ -683,8 +730,8 @@ async function renderMedicinesView(outlet) {
 
   try {
     const [medicines, history] = await Promise.all([
-      api.call("medicines.list", {}),
-      api.call("medicines.history", { days: 14 })
+      store.call("medicines.list", {}),
+      store.call("medicines.history", { days: 14 })
     ]);
     medsState.medicines = medicines;
     medsState.logs = history.logs;
@@ -847,7 +894,7 @@ function attachMedsHandlers(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("meds.confirmDelete"))) return;
       try {
-        await api.call("medicines.delete", { id: btn.dataset.deleteMed });
+        await store.call("medicines.delete", { id: btn.dataset.deleteMed });
         await renderMedicinesView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -862,7 +909,7 @@ function attachMedsHandlers(outlet) {
       const taken = checkbox.checked;
       checkbox.disabled = true;
       try {
-        await api.call("medicines.logTaken", { medicine_id: medicineId, date: formatDateInput(new Date()), time, taken });
+        await store.call("medicines.logTaken", { medicine_id: medicineId, date: formatDateInput(new Date()), time, taken });
         await renderMedicinesView(outlet);
       } catch (err) {
         checkbox.checked = !taken;
@@ -896,9 +943,9 @@ function attachMedsHandlers(outlet) {
       saveBtn.disabled = true;
       try {
         if (medsState.formItem === "new") {
-          await api.call("medicines.create", payload);
+          await store.call("medicines.create", payload);
         } else {
-          await api.call("medicines.update", { id: medsState.formItem.id, ...payload });
+          await store.call("medicines.update", { id: medsState.formItem.id, ...payload });
         }
         await renderMedicinesView(outlet);
       } catch (err) {
@@ -940,7 +987,7 @@ async function renderAppointmentsView(outlet) {
   outlet.innerHTML = genericSkeleton(5);
 
   try {
-    apptState.appointments = await api.call("appointments.list", {});
+    apptState.appointments = await store.call("appointments.list", {});
     apptState.loading = false;
     renderApptBody(outlet);
   } catch (err) {
@@ -1048,7 +1095,7 @@ function attachApptHandlers(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("appt.confirmDelete"))) return;
       try {
-        await api.call("appointments.delete", { id: btn.dataset.deleteAppt });
+        await store.call("appointments.delete", { id: btn.dataset.deleteAppt });
         await renderAppointmentsView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -1059,7 +1106,7 @@ function attachApptHandlers(outlet) {
   outlet.querySelectorAll("[data-mark-done]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       try {
-        await api.call("appointments.update", { id: btn.dataset.markDone, status: "done" });
+        await store.call("appointments.update", { id: btn.dataset.markDone, status: "done" });
         await renderAppointmentsView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -1096,9 +1143,9 @@ function attachApptHandlers(outlet) {
       saveBtn.disabled = true;
       try {
         if (apptState.formItem === "new") {
-          await api.call("appointments.create", payload);
+          await store.call("appointments.create", payload);
         } else {
-          await api.call("appointments.update", { id: apptState.formItem.id, ...payload });
+          await store.call("appointments.update", { id: apptState.formItem.id, ...payload });
         }
         await renderAppointmentsView(outlet);
       } catch (err) {
@@ -1141,7 +1188,7 @@ async function renderHealthView(outlet, openFormInitially) {
   outlet.innerHTML = genericSkeleton(6);
 
   try {
-    healthState.entries = await api.call("healthlog.list", {});
+    healthState.entries = await store.call("healthlog.list", {});
     healthState.loading = false;
     await renderHealthBody(outlet);
   } catch (err) {
@@ -1303,7 +1350,7 @@ function attachHealthListHandlers(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("health.confirmDelete"))) return;
       try {
-        await api.call("healthlog.delete", { id: btn.dataset.deleteHealth });
+        await store.call("healthlog.delete", { id: btn.dataset.deleteHealth });
         await renderHealthView(outlet, false);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -1340,9 +1387,9 @@ function attachHealthFormHandlers(outlet) {
     saveBtn.disabled = true;
     try {
       if (healthState.editItem) {
-        await api.call("healthlog.update", { id: healthState.editItem.id, ...payload });
+        await store.call("healthlog.update", { id: healthState.editItem.id, ...payload });
       } else {
-        await api.call("healthlog.create", payload);
+        await store.call("healthlog.create", payload);
       }
       await renderHealthView(outlet, false);
     } catch (err) {
@@ -1469,7 +1516,7 @@ async function reloadRecords() {
   if (recordsState.filterType) payload.type = recordsState.filterType;
   if (recordsState.filterFrom) payload.date_from = recordsState.filterFrom;
   if (recordsState.filterTo) payload.date_to = recordsState.filterTo;
-  recordsState.files = await api.call("files.list", payload);
+  recordsState.files = await store.call("files.list", payload);
 }
 
 function renderRecordsBody(outlet) {
@@ -1570,7 +1617,7 @@ function attachRecordsListHandlers(outlet) {
       const id = btn.dataset.viewFile;
       outlet.innerHTML = genericSkeleton(4);
       try {
-        recordsState.viewingFile = await api.call("files.get", { id });
+        recordsState.viewingFile = await store.call("files.get", { id });
         renderRecordsBody(outlet);
       } catch (err) {
         outlet.innerHTML = errorMarkup(err);
@@ -1583,7 +1630,7 @@ function attachRecordsListHandlers(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("records.confirmDelete"))) return;
       try {
-        await api.call("files.delete", { id: btn.dataset.deleteFile });
+        await store.call("files.delete", { id: btn.dataset.deleteFile });
         await renderRecordsView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -1687,7 +1734,7 @@ function attachUploadHandlers(outlet) {
       const saveBtn = outlet.querySelector("#upload-save");
       saveBtn.disabled = true;
       try {
-        await api.call("files.upload", {
+        await store.call("files.upload", {
           title: fd.get("title").trim(),
           type: fd.get("type"),
           date: fd.get("date"),
@@ -1760,7 +1807,7 @@ async function renderChecklistView(outlet) {
   checklistState.loading = true;
   outlet.innerHTML = genericSkeleton(5);
   try {
-    checklistState.items = await api.call("checklist.list", {});
+    checklistState.items = await store.call("checklist.list", {});
     checklistState.loading = false;
     renderChecklistBody(outlet);
   } catch (err) {
@@ -1806,7 +1853,7 @@ function renderChecklistBody(outlet) {
       const done = cb.checked;
       cb.disabled = true;
       try {
-        await api.call("checklist.update", { id, done });
+        await store.call("checklist.update", { id, done });
         const item = checklistState.items.find((i) => i.id === id);
         if (item) item.done = done;
         renderChecklistBody(outlet);
@@ -1822,7 +1869,7 @@ function renderChecklistBody(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("checklist.confirmDelete"))) return;
       try {
-        await api.call("checklist.delete", { id: btn.dataset.deleteChecklist });
+        await store.call("checklist.delete", { id: btn.dataset.deleteChecklist });
         await renderChecklistView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -1837,7 +1884,7 @@ function renderChecklistBody(outlet) {
     const text = input.value.trim();
     if (!text) return;
     try {
-      await api.call("checklist.create", { list: checklistState.activeList, item: text });
+      await store.call("checklist.create", { list: checklistState.activeList, item: text });
       await renderChecklistView(outlet);
     } catch (err) {
       alert(err.message || t("common.error"));
@@ -1869,7 +1916,7 @@ async function renderSettingsView(outlet) {
   settingsState.contactFormItem = null;
   outlet.innerHTML = genericSkeleton(8);
   try {
-    const [settings, contacts] = await Promise.all([api.call("settings.get", {}), api.call("contacts.list", {})]);
+    const [settings, contacts] = await Promise.all([store.call("settings.get", {}), store.call("contacts.list", {})]);
     settingsState.settings = settings;
     settingsState.contacts = contacts;
     settingsState.loading = false;
@@ -1914,22 +1961,15 @@ function renderSettingsBody(outlet) {
     </div>
 
     <div class="card">
-      <h2>${t("settings.pin.title")}</h2>
-      <p class="muted">${t("settings.pin.instructions")}</p>
-      <button class="btn btn-secondary" id="settings-lock-btn">${t("more.lockNow")}</button>
+      <h2>${t("settings.account.title")}</h2>
+      ${
+        store.isMockMode()
+          ? `<p class="muted">${t("settings.account.mockMode")}</p>`
+          : `<p class="muted">${escapeHtml(store.getApiUrl())}</p>`
+      }
+      <p class="muted">${t("settings.account.pinInstructions")}</p>
+      <button class="btn btn-secondary" id="settings-signout-btn">${t("settings.account.signOut")}</button>
     </div>
-
-    ${
-      api.CONFIG.MOCK
-        ? ""
-        : `
-      <div class="card">
-        <h2>${t("settings.connection.title")}</h2>
-        <p class="muted">${escapeHtml(api.getApiUrl())}</p>
-        <button class="btn btn-secondary" id="settings-change-url-btn">${t("settings.connection.change")}</button>
-      </div>
-    `
-    }
   `;
 
   attachSettingsHandlers(outlet);
@@ -1988,7 +2028,7 @@ function attachSettingsHandlers(outlet) {
     errEl.hidden = true;
     okEl.hidden = true;
     try {
-      settingsState.settings = await api.call("settings.set", payload);
+      settingsState.settings = await store.call("settings.set", payload);
       okEl.hidden = false;
     } catch (err) {
       errEl.textContent = err.message || t("common.error");
@@ -1996,18 +2036,14 @@ function attachSettingsHandlers(outlet) {
     }
   });
 
-  outlet.querySelector("#settings-lock-btn").addEventListener("click", () => {
-    api.clearPin();
+  outlet.querySelector("#settings-signout-btn").addEventListener("click", () => {
+    if (!confirm(t("settings.account.confirmSignOut"))) return;
+    store.stopVersionPolling();
+    store.clearPin();
+    store.clearApiUrl();
     state.locked = true;
     renderRoute();
   });
-
-  const changeUrlBtn = outlet.querySelector("#settings-change-url-btn");
-  if (changeUrlBtn) {
-    changeUrlBtn.addEventListener("click", () => {
-      renderApiUrlSetup(null, () => { renderRoute(); });
-    });
-  }
 
   const addContactBtn = outlet.querySelector("#add-contact-btn");
   if (addContactBtn) {
@@ -2028,7 +2064,7 @@ function attachSettingsHandlers(outlet) {
     btn.addEventListener("click", async () => {
       if (!confirm(t("settings.contacts.confirmDelete"))) return;
       try {
-        await api.call("contacts.delete", { id: btn.dataset.deleteContact });
+        await store.call("contacts.delete", { id: btn.dataset.deleteContact });
         await renderSettingsView(outlet);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -2055,9 +2091,9 @@ function attachSettingsHandlers(outlet) {
       };
       try {
         if (settingsState.contactFormItem === "new") {
-          await api.call("contacts.create", payload);
+          await store.call("contacts.create", payload);
         } else {
-          await api.call("contacts.update", { id: settingsState.contactFormItem.id, ...payload });
+          await store.call("contacts.update", { id: settingsState.contactFormItem.id, ...payload });
         }
         await renderSettingsView(outlet);
       } catch (err) {
@@ -2081,28 +2117,9 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>
       <li><button data-nav="#/settings">${t("more.settings")}</button></li>
-      <li><button id="lock-now-btn">${t("more.lockNow")}</button></li>
     </ul>
   `;
   attachNavButtons(outlet);
-  outlet.querySelector("#lock-now-btn").addEventListener("click", () => {
-    api.clearPin();
-    state.locked = true;
-    renderRoute();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder view (for tabs not built yet)
-// ---------------------------------------------------------------------------
-
-function renderPlaceholderView(outlet, title, step) {
-  outlet.innerHTML = `
-    <div class="card">
-      <h2>${escapeHtml(title)}</h2>
-      <p class="empty">${t("common.comingSoon")} (step ${step})</p>
-    </div>
-  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -2110,7 +2127,7 @@ function renderPlaceholderView(outlet, title, step) {
 // ---------------------------------------------------------------------------
 
 // Static content files (data/*.json) are fetched directly, not through
-// api.js — they ship with the app and don't need the PIN. Cached in memory
+// store.js — they ship with the app and don't need the PIN. Cached in memory
 // for the life of the page since they rarely change between reloads.
 const jsonCache = {};
 
@@ -2204,3 +2221,15 @@ function escapeHtml(value) {
     "'": "&#39;"
   }[c]));
 }
+
+// ---------------------------------------------------------------------------
+// Start the app — deliberately last in the file (see the comment near the
+// top where ROUTES is defined).
+// ---------------------------------------------------------------------------
+
+boot().catch((err) => {
+  console.error("Fatal startup error", err);
+  appRoot.innerHTML = `<div class="lock-screen"><h1>${t("app.name")}</h1><p>${t("firstRun.error.generic")}</p></div>`;
+});
+
+registerServiceWorker();

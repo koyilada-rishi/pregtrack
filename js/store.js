@@ -1,19 +1,30 @@
 // Pregnancy Care Tracker — store.js
 //
-// The data layer sitting above js/api.js. Built incrementally per the (v2)
-// work order's build order:
-//   step 1 (this commit): mock-mode flag + mock fixture data, replacing the
-//                          old js/mock.js / js/config.js MOCK flag.
-//   step 2/3: data_version-aware caching, the bootstrap batch load,
-//             optimistic updates with rollback.
-//   step 9: offline write queue (backoff, de-dupe by client-generated id).
-//
-// NOT YET WIRED INTO app.js — that cutover (deleting js/config.js and
-// js/mock.js, building the first-run screen, routing every view through
-// this module instead of api.js directly) happens in step 3, per the build
-// order. Until then the app keeps running exactly as before; this file
-// exists standalone so later steps can grow it without a disruptive
-// same-day rewrite. See DEVELOPMENT.md for the full picture.
+// The data layer sitting above js/api.js — the module every view actually
+// imports. Public surface intentionally mirrors what js/api.js used to
+// expose directly (call/fetchWithCache/getCached/PIN+URL helpers/ApiError),
+// so the view code built in steps 5-8 barely needed to change when this
+// module took over from api.js in step 3 — just an `api.` -> `store.`
+// rename at each call site. What's new here:
+//   - call() routes to the mock fixtures below or to the real api.call(),
+//     transparently, and always throws ApiError either way.
+//   - fetchWithCache()/getCached() unchanged in spirit from v1, still the
+//     "paint from localStorage instantly, then resolve with fresh data"
+//     pattern used by Home/Emergency.
+//   - bootstrap(): the one-call batch load (step 2's backend action) with
+//     its own localStorage persistence, so a cold reload can paint from the
+//     last-known bootstrap before the network round-trip finishes.
+//   - startVersionPolling(): the freshness mechanism — checks version.get
+//     on load/focus and every 30s while the tab is visible (paused while
+//     hidden), and tells its caller when something actually changed instead
+//     of blindly refetching on a timer.
+//   - step 9 still owed: the offline write queue (backoff, de-dupe by
+//     client-generated id). Everything above already passes an optional
+//     client id through on creates (see mockCall below) in anticipation.
+
+import * as api from "./api.js";
+
+export { ApiError, getPin, setPin, clearPin, hasPin, getApiUrl, setApiUrl, clearApiUrl, hasApiUrl } from "./api.js";
 
 const MOCK_MODE_DEFAULT = true;
 const MOCK_QUERY_PARAM = "mock";
@@ -40,6 +51,166 @@ export function isMockMode() {
     // mode) — fall through to the default below.
   }
   return MOCK_MODE_DEFAULT;
+}
+
+// --- Core call + response cache --------------------------------------------
+
+const CACHE_PREFIX = "pct_cache:";
+
+function cacheKey(action, payload) {
+  return CACHE_PREFIX + action + ":" + JSON.stringify(payload || {});
+}
+
+export function getCached(action, payload) {
+  try {
+    const raw = localStorage.getItem(cacheKey(action, payload));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setCached(action, payload, data) {
+  try {
+    localStorage.setItem(cacheKey(action, payload), JSON.stringify(data));
+  } catch {
+    // Storage full/unavailable — caching is a nice-to-have, not fatal.
+  }
+}
+
+export async function call(action, payload) {
+  const data = isMockMode() ? await callMock(action, payload) : await api.call(action, payload);
+  setCached(action, payload, data);
+  return data;
+}
+
+async function callMock(action, payload) {
+  try {
+    return await mockCall(action, payload);
+  } catch (err) {
+    throw new api.ApiError(err.message || String(err), "server");
+  }
+}
+
+// Cache-then-network: paints instantly from localStorage if there's a
+// cached response, then resolves with fresh data once the network call
+// finishes. Throws the ApiError on network failure — the caller decides
+// whether to keep showing the cached paint or surface the error.
+export async function fetchWithCache(action, payload, onCache) {
+  const cached = getCached(action, payload);
+  if (cached && onCache) onCache(cached);
+  return call(action, payload);
+}
+
+// --- Bootstrap: one-call batch load for the initial app load ---------------
+
+const BOOTSTRAP_CACHE_KEY = "pct_bootstrap";
+let inMemoryBootstrap = null;
+
+export function getCachedBootstrap() {
+  if (inMemoryBootstrap) return inMemoryBootstrap;
+  try {
+    const raw = localStorage.getItem(BOOTSTRAP_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedBootstrap(data) {
+  inMemoryBootstrap = data;
+  try {
+    localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+}
+
+// Views call this without forceRefresh and get the cache instantly once
+// it's warm — startVersionPolling()'s onChanged callback is the only thing
+// that should pass forceRefresh: true, when data_version actually moved.
+// This is "cache aggressively" taken literally: a view navigation alone
+// never re-hits the (slow) bootstrap action, only a real server-side change
+// does. Throws on a genuine network failure during the first (uncached)
+// load; after that, a view with nothing cached yet will fall back to its
+// own error state the same way it always did with fetchWithCache.
+export async function loadBootstrap(onCache, forceRefresh) {
+  const cached = getCachedBootstrap();
+  if (cached && !forceRefresh) {
+    if (onCache) onCache(cached);
+    return cached;
+  }
+  if (cached && onCache) onCache(cached); // paint the stale copy while refreshing
+  const fresh = await call("bootstrap", {});
+  setCachedBootstrap(fresh);
+  return fresh;
+}
+
+// --- Freshness: data_version polling ---------------------------------------
+//
+// Checks version.get on load, on the tab regaining focus/visibility, and
+// every POLL_INTERVAL_MS while visible (paused while hidden, so a
+// backgrounded tab doesn't keep hitting the network). Calls onChanged()
+// — not a full refetch itself — whenever the version actually moved, so
+// the caller (app.js) decides what to do: reload the bootstrap, re-render
+// whatever view is open, etc. A failed version.get (offline, slow network)
+// is silently skipped; it just tries again next cycle.
+
+const POLL_INTERVAL_MS = 30000;
+let lastKnownVersion = null;
+let pollIntervalId = null;
+let pollingOnChanged = null;
+
+export function startVersionPolling(onChanged) {
+  if (isMockMode()) return; // nothing to poll — there's no server
+  pollingOnChanged = onChanged;
+
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("focus", checkVersionOnce);
+  checkVersionOnce();
+  if (document.visibilityState === "visible") startInterval();
+}
+
+export function stopVersionPolling() {
+  stopInterval();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("focus", checkVersionOnce);
+  pollingOnChanged = null;
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") {
+    checkVersionOnce();
+    startInterval();
+  } else {
+    stopInterval();
+  }
+}
+
+function startInterval() {
+  if (pollIntervalId) return;
+  pollIntervalId = setInterval(checkVersionOnce, POLL_INTERVAL_MS);
+}
+
+function stopInterval() {
+  if (pollIntervalId) {
+    clearInterval(pollIntervalId);
+    pollIntervalId = null;
+  }
+}
+
+async function checkVersionOnce() {
+  try {
+    const { data_version } = await api.call("version.get", {});
+    if (lastKnownVersion !== null && data_version !== lastKnownVersion) {
+      lastKnownVersion = data_version;
+      if (pollingOnChanged) pollingOnChanged(data_version);
+    } else {
+      lastKnownVersion = data_version;
+    }
+  } catch {
+    // Offline or a slow network hiccup — just try again next cycle.
+  }
 }
 
 // --- Mock fixture data ------------------------------------------------------
@@ -169,10 +340,23 @@ function mockDashboard() {
   };
 }
 
+// Mirrors the backend's data_version, loosely — bumped on any mock action
+// that isn't a read. startVersionPolling() is a no-op in mock mode (no real
+// server to poll), so nothing currently depends on this being exact; it's
+// here mainly so version.get/bootstrap return something sane if called
+// directly.
+let mockDataVersion = 1;
+const MOCK_READ_ONLY_SUFFIXES = [".list", ".get", ".history"];
+
 export async function mockCall(action, payload) {
   // Simulate real network latency so loading states are visible in dev.
   await new Promise((resolve) => setTimeout(resolve, 250));
   payload = payload || {};
+
+  if (action !== "auth.check" && action !== "version.get" && action !== "bootstrap" &&
+      !MOCK_READ_ONLY_SUFFIXES.some((suffix) => action.endsWith(suffix))) {
+    mockDataVersion++;
+  }
 
   switch (action) {
     case "auth.check":
@@ -186,6 +370,21 @@ export async function mockCall(action, payload) {
 
     case "dashboard.get":
       return mockDashboard();
+    case "version.get":
+      return { data_version: mockDataVersion };
+    case "bootstrap":
+      return {
+        data_version: mockDataVersion,
+        settings: clone(db.settings),
+        dashboard: mockDashboard(),
+        medicines: clone(db.medicines),
+        appointments: clone(db.appointments),
+        healthlog: clone(db.healthlog),
+        contacts: clone(db.contacts),
+        foodlog: clone(db.foodlog),
+        checklist: clone(db.checklist),
+        files: clone(db.files).map(({ _base64, _mimeType, _filename, ...rest }) => rest)
+      };
 
     case "medicines.list":
       return clone(db.medicines);

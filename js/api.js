@@ -1,24 +1,29 @@
-// Pregnancy Care Tracker — API client.
+// Pregnancy Care Tracker — api.js
 //
-// Every call goes through call(action, payload):
-//   - sends {pin, action, payload} as a text/plain POST (no CORS preflight)
-//   - on success, caches the result in localStorage under its action+payload
-//   - on failure, throws an ApiError tagged with .kind so app.js can react
-//     ('auth' -> wrong PIN, 'lockout' -> too many attempts, 'network' -> offline
-//     /unreachable, 'server' -> backend returned some other error)
+// Pure network transport. Nothing else: no mock branching (that's
+// js/store.js), no caching, no version polling. Just one function — raw
+// POSTs to the Apps Script backend — plus PIN/API-URL storage, since those
+// are what every request needs.
 //
-// When CONFIG.MOCK is true, calls are served by js/mock.js instead, so the
-// whole UI can be built and tested without a deployed backend.
-
-import { CONFIG } from "./config.js";
-import { mockCall } from "./mock.js";
-
-export { CONFIG };
+// Request shape is exactly what was verified against the real deployment
+// (see the work order's "Rules learned while testing"):
+//   fetch(apiUrl, {
+//     method: "POST",
+//     headers: { "Content-Type": "text/plain" },   // no other header —
+//                                                   // anything else makes
+//                                                   // the browser send a
+//                                                   // CORS preflight, which
+//                                                   // an Apps Script web app
+//                                                   // cannot answer.
+//     body: JSON.stringify({ pin, action, payload })
+//   })
+// redirect is left at its fetch default ("follow") — Apps Script's web app
+// URL redirects once to script.googleusercontent.com, and fetch follows
+// that transparently as long as nothing here overrides it.
 
 const PIN_STORAGE_KEY = "pct_pin";
 const API_URL_STORAGE_KEY = "pct_api_url";
-const CACHE_PREFIX = "pct_cache:";
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 30000; // Apps Script is typically 1-2s, but cold starts/slow days happen
 
 export class ApiError extends Error {
   constructor(message, kind) {
@@ -28,7 +33,7 @@ export class ApiError extends Error {
   }
 }
 
-// --- PIN storage -----------------------------------------------------------
+// --- PIN storage -------------------------------------------------------
 
 export function getPin() {
   try {
@@ -58,21 +63,16 @@ export function hasPin() {
   return getPin().length > 0;
 }
 
-// --- API URL storage --------------------------------------------------------
+// --- API URL storage -----------------------------------------------------
 //
-// js/config.js is gitignored and never committed (the security rules forbid
-// committing the real API URL), so a plain `git push` to main never ships a
-// working config.js to GitHub Pages. Instead, in non-mock mode, the API URL
-// is entered once per device (same as the PIN) and stored here — it never
-// needs to exist in any file served by Pages. CONFIG.API_URL still works as
-// a local-dev convenience (skips the prompt), and takes priority if both are
-// set, since a developer's js/config.js is a deliberate override.
+// Entered once per device on the first-run screen, alongside the PIN —
+// never in a committed file. See README's "GitHub Pages setup" for why.
 
 export function getApiUrl() {
   try {
-    return CONFIG.API_URL || localStorage.getItem(API_URL_STORAGE_KEY) || "";
+    return localStorage.getItem(API_URL_STORAGE_KEY) || "";
   } catch {
-    return CONFIG.API_URL || "";
+    return "";
   }
 }
 
@@ -80,7 +80,7 @@ export function setApiUrl(url) {
   try {
     localStorage.setItem(API_URL_STORAGE_KEY, url);
   } catch {
-    // localStorage unavailable — URL just won't persist across reloads.
+    // ignore
   }
 }
 
@@ -96,48 +96,9 @@ export function hasApiUrl() {
   return getApiUrl().length > 0;
 }
 
-// --- Response cache (last-good data per action, for offline reading) ------
-
-function cacheKey(action, payload) {
-  return CACHE_PREFIX + action + ":" + JSON.stringify(payload || {});
-}
-
-export function getCached(action, payload) {
-  try {
-    const raw = localStorage.getItem(cacheKey(action, payload));
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function setCached(action, payload, data) {
-  try {
-    localStorage.setItem(cacheKey(action, payload), JSON.stringify(data));
-  } catch {
-    // Storage full or unavailable — caching is a nice-to-have, not fatal.
-  }
-}
-
-// --- Core call ---------------------------------------------------------
+// --- The one network call -------------------------------------------------
 
 export async function call(action, payload) {
-  const data = CONFIG.MOCK
-    ? await callMock(action, payload)
-    : await callReal(action, payload);
-  setCached(action, payload, data);
-  return data;
-}
-
-async function callMock(action, payload) {
-  try {
-    return await mockCall(action, payload);
-  } catch (err) {
-    throw new ApiError(err.message || String(err), "server");
-  }
-}
-
-async function callReal(action, payload) {
   const apiUrl = getApiUrl();
   if (!apiUrl) {
     throw new ApiError("No server URL is set up on this device yet.", "server");
@@ -162,7 +123,10 @@ async function callReal(action, payload) {
   try {
     json = await response.json();
   } catch {
-    throw new ApiError("Server returned an unexpected response.", "server");
+    // Non-JSON back (an HTML error page, a Google sign-in redirect target,
+    // etc.) always means a deploy/network problem, never a real {ok,error}
+    // response — surface it as that, not a cryptic parse error.
+    throw new ApiError("Server returned an unexpected response. Check the deployment is live.", "network");
   }
 
   if (!json.ok) {
@@ -173,17 +137,4 @@ async function callReal(action, payload) {
   }
 
   return json.data;
-}
-
-// --- Cache-then-network helper for views -----------------------------------
-//
-// Calls onCache synchronously (if cached data exists) so the view can paint
-// instantly, then resolves with fresh data once the network call finishes.
-// Throws the ApiError if the network call fails (caller decides whether to
-// keep showing cached data or surface the error).
-
-export async function fetchWithCache(action, payload, onCache) {
-  const cached = getCached(action, payload);
-  if (cached && onCache) onCache(cached);
-  return call(action, payload);
 }
