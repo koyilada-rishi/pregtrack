@@ -1,0 +1,10 @@
+{
+  "_note": "Full PWA manifest (icons, colors, display mode) built in step 9.",
+  "name": "Pregnancy Care Tracker",
+  "short_name": "PregCare",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#fff8f6",
+  "theme_color": "#f6a5a5",
+  "icons": []
+}

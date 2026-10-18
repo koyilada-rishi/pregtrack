@@ -1,0 +1,18 @@
+# Real config with API URL — never commit this
+js/config.js
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Node (only used for local dev tooling, no build step for the app itself)
+node_modules/
+npm-debug.log*
+
+# Local env files, just in case
+.env
+.env.*
