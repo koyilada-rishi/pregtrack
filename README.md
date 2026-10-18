@@ -37,6 +37,12 @@ clone to a working install with no guessing.
 /backend/Code.gs  /backend/appsscript.json
 ```
 
+Working on the code itself (new views, new backend actions, understanding
+how the pieces fit together)? See **[DEVELOPMENT.md](DEVELOPMENT.md)** —
+architecture, a file-by-file reference, the full build history, and how the
+PIN/API-URL/offline-cache machinery actually works. This README stays
+focused on deploying and running the app.
+
 ## Local setup
 
 ```sh
