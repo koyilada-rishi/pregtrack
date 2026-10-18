@@ -26,16 +26,31 @@ import * as api from "./api.js";
 
 export { ApiError, getPin, setPin, clearPin, hasPin, getApiUrl, setApiUrl, clearApiUrl, hasApiUrl } from "./api.js";
 
-const MOCK_MODE_DEFAULT = true;
 const MOCK_QUERY_PARAM = "mock";
 const MOCK_STORAGE_KEY = "pct_mock";
 
-// Mock mode is a frontend-only flag now (no config.js file at all, per the
-// v2 security rules — nothing like an API URL should need to exist in a
-// committed file). Defaults to on, like the old CONFIG.MOCK default, so a
-// fresh clone still "just works" with sample data. Can be forced either way
-// without editing source via ?mock=1 / ?mock=0 in the URL once — the choice
-// is remembered in localStorage after that.
+// Mock mode is a frontend-only flag (no config.js file at all, per the v2
+// security rules — nothing like an API URL should need to exist in a
+// committed file). Can be forced either way without editing source via
+// ?mock=1 / ?mock=0 in the URL once — the choice is remembered in
+// localStorage after that, and takes priority over everything below.
+//
+// With no explicit choice ever made, the default depends on where the app
+// is running: on over a real domain (GitHub Pages, the live deployment)
+// it's OFF — production defaults to real mode with the first-run URL+PIN
+// screen, never silently showing sample data. On localhost/127.0.0.1 (or
+// file://, e.g. opening index.html directly) it's ON, so a fresh clone
+// still "just works" with zero setup.
+function isLocalDev() {
+  try {
+    if (location.protocol === "file:") return true;
+    const host = location.hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "";
+  } catch {
+    return true; // can't tell — default to mock rather than risk silently hitting a real backend
+  }
+}
+
 export function isMockMode() {
   try {
     const params = new URLSearchParams(location.search);
@@ -48,9 +63,9 @@ export function isMockMode() {
     if (stored !== null) return stored === "1";
   } catch {
     // localStorage/URLSearchParams unavailable (very old browser, privacy
-    // mode) — fall through to the default below.
+    // mode) — fall through to the hostname-based default below.
   }
-  return MOCK_MODE_DEFAULT;
+  return isLocalDev();
 }
 
 // --- Core call + response cache --------------------------------------------

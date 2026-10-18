@@ -52,6 +52,7 @@ history).
 | v2-1 | `v2 Step 1` | Added `js/store.js` (mock-mode flag — now frontend-only via a `?mock=1/0` URL param, no file at all — plus the v1 mock fixtures ported over) and a `js/countdown.js` placeholder. Deliberately left `app.js`/`api.js`/`config.js`/`mock.js` untouched at this point — ripping them out before the step-3 rewrite was ready would've left a broken intermediate state for no reason. |
 | v2-2 | `v2 Step 2` | Backend: a `data_version` counter (Settings sheet + CacheService, bumped from inside every mutating action's existing lock — see `incrementDataVersion()`), the `version.get` and `bootstrap` actions, `Files` schema gains `mime`/`thumb_file_id` (appended, not inserted mid-row, so re-running `setup()` on a populated sheet never misaligns existing data), a `Thumbs` Drive folder. Extended the mock-Apps-Script Node test harness (real in-memory `CacheService` now, was a no-op stub) — 64 assertions passing. |
 | v2-3/4 | `v2 Step 3/4` (one commit) | The real cutover: deleted `js/config.js`, `js/config.example.js`, `js/mock.js`. Rewrote `js/api.js` to pure transport (no mock branching, no `CONFIG` — matches the exact `fetch()` shape verified against the live deployment: only a `Content-Type: text/plain` header, default redirect-follow). Grew `js/store.js` into the real data layer (`call`/`fetchWithCache`/`getCached`/`loadBootstrap`/`startVersionPolling` — see "Architecture" below). Real `js/countdown.js` (pure local math, unit-tested standalone). Rewrote `app.js`'s boot/router/shell into one first-run screen (URL + PIN together) and a Home view with a live countdown (1s ticker for seconds, 30s full re-render, paused/resumed on tab visibility) — then did a mechanical `api.` → `store.` rename through the already-built Meds/Appointments/Health/Records/Checklist/Settings view code rather than rewriting it (unchanged logic, just a different module to call). Settings' old two sign-out-ish buttons (PIN-only "Lock app now" in both Settings and More, a separate "Change server URL") collapsed into one "Sign out / change PIN or URL" per the new spec. Wired Home's "this week" card to `data/weeks.json` (content itself was already correct from v1 step 4, unchanged). Found and fixed two real bugs during this pass: a temporal-dead-zone crash (`boot()` was invoked before a `const` it transitively depended on had been declared later in the file — fixed by moving the boot call to the very end), and `store.js`'s mock fixtures never got `bootstrap`/`version.get` cases added despite `app.js` needing them immediately. |
+| v2-5 | `Countdowns + stock tracking + GitHub Pages readiness` (4 commits) | **Backend**: `ensureTabs(ss)` replaces the old unconditional-rewrite tab setup — appends only genuinely missing columns/tabs, never touches existing data, called from both `setup()` and every `bootstrap()` so a `Code.gs` redeploy alone migrates the Sheet. New `Countdowns` tab/actions (5 kinds: event/course/interval/recurring/countup), `Medicines` gains stock_count/doses_per_day/refill_alert_days, `medicines.logTaken` adjusts stock on real taken-state transitions only. **`js/countdown.js`**: pure per-kind math (`computeEventCountdown`/`computeCourseCountdown`/`computeStockCountdown`/`computeIntervalCountdown`/`nextRecurringOccurrence`+`computeRecurringCountdown`/`computeCountupCountdown`), a shared `classifyCountdownState` (upcoming/dueSoon(≤24h)/overdue/done), and a `computeCustomCountdown` dispatcher. **Frontend**: new `#/countdowns` view, Home's "Pinned countdowns" card (ticks every 1s, same mechanism as the pregnancy countdown), Medicines view shows next-dose/course/stock figures per row, the one-tap "taken" checkbox became genuinely optimistic (local state + re-render before the network call resolves). **GitHub Pages readiness**: found and fixed a real, serious bug — `sw.js`'s precache list still referenced `js/mock.js`, deleted in the v2 cutover; `cache.addAll()` is all-or-nothing, so the service worker had been **completely unable to install since that cutover**, silently breaking all offline support with no visible error. Also added `js/store.js`/`countdown.js` to the precache list (new files it was missing) and bumped `CACHE_VERSION`. Mock mode's default changed from an unconditional `true` to hostname-based (`isLocalDev()`): on in local dev, off in production — real mode and the first-run screen by default on any real domain, never silent sample data. Audited every asset reference for GitHub-Pages-subpath safety (all already relative — manifest, sw.js, imports, fetches) and the full git history for secrets (clean — confirmed via direct commands, not inferred). Added `.nojekyll`. Testing: backend harness grew to 103 assertions (was 64), `countdown.js` standalone tests grew to 59 (was 19), plus Playwright verification of the actual offline-after-subpath-deploy scenario (DNS-spoofed to a realistic hostname to test the production mock-mode default for real, not just in theory). |
 
 ## Architecture
 
@@ -171,10 +172,23 @@ backend/Code.gs            ~1250 lines. setup(), auth, routeAction() switch,
 backend/appsscript.json    Apps Script manifest: Asia/Kolkata timezone,
                         webapp execute-as/access config.
 
-manifest.json              PWA manifest (icons, standalone display, theme).
+manifest.json              PWA manifest (icons, standalone display, theme),
+                        all relative paths/URLs so it resolves correctly
+                        from GitHub Pages' /<repo-name>/ subpath.
 sw.js                      Service worker: stale-while-revalidate for
-                        same-origin GETs only (app shell + data/*.json).
-                        Bump CACHE_VERSION when shell files change.
+                        same-origin GETs only (app shell + data/*.json),
+                        every APP_SHELL entry relative for the same subpath
+                        reason. MUST list every file app.js actually
+                        imports — cache.addAll() is all-or-nothing, so one
+                        stale/wrong entry (e.g. a deleted file still listed)
+                        fails the *entire* install silently, breaking
+                        offline support completely with no visible error.
+                        This happened for real during the v2 cutover (js/
+                        mock.js stayed listed after being deleted) and went
+                        unnoticed until an explicit GitHub-Pages-readiness
+                        pass caught it — bump CACHE_VERSION and double-check
+                        this list against the actual import graph whenever
+                        a JS file is added, renamed, or removed.
 icons/                     Generated heart-icon PNGs (192/512, + maskable).
 
 README.md                  User-facing: status, deploy steps, GitHub Pages
@@ -201,6 +215,7 @@ it (or, in mock mode, self-heals straight past it — see `renderRoute()`).
 | `#/health` | Health log (list + charts) | — (via More) |
 | `#/health/new` | Health log, form opened immediately | — (Home "Log vitals") |
 | `#/checklist` | Checklists | — (via More) |
+| `#/countdowns` | Custom countdowns (event/course/interval/recurring/countup) | — (via More) |
 | `#/settings` | Settings (+ Contacts, + sign-out) | — (via More) |
 
 Home and Emergency share one `store.loadBootstrap()` cache — visiting
@@ -225,6 +240,7 @@ contacts.list / .create / .update / .delete
 foodlog.list / .create / .update / .delete
 checklist.list / .create / .update / .delete
 files.list / .upload / .get / .delete
+countdowns.list / .add / .update / .delete / .markDone
 ```
 
 `medicines.logTaken` is an upsert keyed on `(medicine_id, date, time)` —
@@ -250,11 +266,14 @@ python3 -m http.server 8000
 
 ### Mock mode (default)
 
-Open `http://localhost:8000` — mock mode is on by default
-(`MOCK_MODE_DEFAULT` in `js/store.js`), so it goes straight to Home with
-sample data, no first-run screen, no backend. **Any PIN "works"** in the
-sense that `store.js`'s `mockCall("auth.check", ...)` always succeeds —
-there's nothing real behind it.
+Open `http://localhost:8000` — mock mode defaults on here (`isLocalDev()`
+in `js/store.js` checks for `localhost`/`127.0.0.1`/`file://`), so it goes
+straight to Home with sample data, no first-run screen, no backend. On any
+other host — the real deployed site included — that same default flips to
+real mode instead (first-run screen, no silent sample data in production).
+**Any PIN "works"** in mock mode in the sense that `store.js`'s
+`mockCall("auth.check", ...)` always succeeds — there's nothing real
+behind it.
 
 Force a mode without editing source: `?mock=1` / `?mock=0` in the URL once
 (remembered in `localStorage`, key `pct_mock`, after that).

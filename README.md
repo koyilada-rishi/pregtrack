@@ -68,10 +68,13 @@ No config file to copy — just serve the folder with any static file server:
 python3 -m http.server 8000
 ```
 
-Then open `http://localhost:8000`. **Mock mode is on by default**: the app
-runs entirely on sample data from `js/store.js`, no Apps Script deployment
-needed, no first-run screen — it goes straight to Home. This is how the
-app works right after a fresh clone, with zero setup.
+Then open `http://localhost:8000`. **Mock mode is on by default on
+localhost** (and `file://`): the app runs entirely on sample data from
+`js/store.js`, no Apps Script deployment needed, no first-run screen — it
+goes straight to Home. This is how the app works right after a fresh
+clone, with zero setup. On any other host — including the real deployed
+site — it defaults the other way: real mode, first-run screen, never
+silently sample data.
 
 **To develop against your real deployed backend instead**, visit
 `http://localhost:8000?mock=0` once — this disables mock mode (remembered
@@ -267,10 +270,10 @@ left sidebar.
 1. **Create the GitHub repo and push.** GitHub Pages on a free personal
    account only serves **public** repositories — and that's fine here: the
    app's own code has no secrets in it (see "Why the repo can be public"
-   below). Create a repo (e.g. `preg`), then from this folder:
+   below). This repo: `https://github.com/koyilada-rishi/pregtrack`.
 
    ```sh
-   git remote add origin https://github.com/<you>/preg.git
+   git remote add origin https://github.com/koyilada-rishi/pregtrack.git
    git push -u origin main
    ```
 
@@ -278,11 +281,31 @@ left sidebar.
    "Build and deployment", set **Source: Deploy from a branch**, **Branch:
    main**, folder **/ (root)**. Save.
 
-3. **Wait a minute, then open the site.** GitHub shows the URL at the top
-   of that same Pages settings page once it's live — typically
-   `https://<you>.github.io/preg/`.
+   A `.nojekyll` file sits at the repo root — without it, GitHub Pages runs
+   everything through Jekyll by default, which ignores any file or folder
+   starting with `_` and can mangle things in ways that have nothing to do
+   with this being a plain static site. `.nojekyll` turns that off.
 
-4. **First visit, per device.** The very first time the app loads on a
+3. **Wait a minute, then open the site.** GitHub shows the URL at the top
+   of that same Pages settings page once it's live:
+   `https://koyilada-rishi.github.io/pregtrack/`.
+
+   Because Pages serves from that `/pregtrack/` subpath rather than the
+   domain root, every asset reference in this app (CSS/JS/icons/manifest,
+   the service worker's own precache list, `fetch()` calls for the content
+   JSON) uses a **relative** path (`./...`), never a leading `/`. Routing
+   within the app is hash-based (`#/home`, `#/meds`, …) for the same
+   reason — the actual URL path never changes, so there's nothing for the
+   subpath to break.
+
+4. **Mock mode is off by default on the real domain.** Visiting
+   `koyilada-rishi.github.io` (or any non-localhost host) shows the real
+   first-run screen, never sample data — mock mode only defaults on when
+   running on `localhost`/`127.0.0.1` (local dev) or opened directly as a
+   `file://` path. You can still force it with `?mock=1` on any host (and
+   `?mock=0` to force real mode locally) — see `DEVELOPMENT.md`.
+
+5. **First visit, per device.** The very first time the app loads on a
    given phone/browser, it shows the one-time first-run screen asking for
    the Apps Script web app URL (from "Apps Script deploy" step 6 above) and
    the PIN together. After that it skips straight to Home on every future

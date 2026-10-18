@@ -3,16 +3,20 @@
 // Caches the app shell (HTML/CSS/JS/icons/manifest) and the static content
 // JSON so the app opens and reads offline. It does NOT touch API calls
 // (those are POST requests to Apps Script, which the Cache API can't key
-// on anyway) — js/api.js already keeps its own "last-fetched data" cache in
-// localStorage for that. js/config.js is deliberately left out of the
-// precache list: it's user-provided and gitignored, so it may not exist
-// yet on first install, and forcing it into addAll() would fail the whole
-// install if so.
+// on anyway) — js/store.js already keeps its own "last-fetched data" cache
+// (and the bootstrap cache) in localStorage for that. There's no config.js
+// to worry about in v2 at all — the API URL and PIN live only in
+// localStorage, entered via the first-run screen, never in a file.
 //
-// Bump CACHE_VERSION whenever app shell files change, so returning users
-// pick up the new version instead of a stale cached one.
+// All paths below are relative ("./..."), resolved against this script's
+// own URL — required for GitHub Pages, which serves the site from
+// /<repo-name>/ rather than the domain root.
+//
+// Bump CACHE_VERSION whenever app shell files change (added/removed a
+// file here), so returning users pick up the new version instead of a
+// stale cached one that cache.addAll() would otherwise keep serving.
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CACHE_NAME = "pct-shell-" + CACHE_VERSION;
 
 const APP_SHELL = [
@@ -21,8 +25,9 @@ const APP_SHELL = [
   "./css/style.css",
   "./js/app.js",
   "./js/api.js",
+  "./js/store.js",
+  "./js/countdown.js",
   "./js/i18n.js",
-  "./js/mock.js",
   "./manifest.json",
   "./data/weeks.json",
   "./data/food.json",
