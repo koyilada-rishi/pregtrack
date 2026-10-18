@@ -64,14 +64,13 @@ function registerServiceWorker() {
   });
 }
 
-// Mock mode needs zero setup — that's the point. Auto-provisions dummy
-// credentials so downstream code (Settings' connection display, etc.) has
-// something to read. Called both from boot() and from renderRoute() (so
-// e.g. signing out while in mock mode self-heals straight back into the
-// app instead of getting stuck on a first-run form that mock mode doesn't
-// actually need filled in).
+// Mock mode needs zero setup — that's the point. Auto-provisions a dummy
+// PIN so downstream code has something to read (the URL is irrelevant in
+// mock mode — store.call() never reaches api.js's real call() at all).
+// Called both from boot() and from renderRoute() (so e.g. signing out
+// while in mock mode self-heals straight back into the app instead of
+// getting stuck on a first-run form that mock mode doesn't need filled in).
 function ensureMockCredentials() {
-  if (!store.hasApiUrl()) store.setApiUrl("mock://local");
   if (!store.hasPin()) store.setPin("mock");
 }
 
@@ -83,7 +82,14 @@ async function boot() {
     return;
   }
 
-  if (!store.hasApiUrl() || !store.hasPin()) {
+  // The committed default (js/defaults.js) is still its placeholder and no
+  // per-device override has been set either — nothing to even try calling.
+  if (!store.hasApiUrl()) {
+    renderConfigMissing();
+    return;
+  }
+
+  if (!store.hasPin()) {
     renderFirstRunScreen();
     return;
   }
@@ -103,11 +109,25 @@ async function boot() {
       return;
     }
     // Network/server hiccup on an already-trusted device: keep the stored
-    // credentials and let the person read cached data offline instead of
-    // kicking them back to first-run just because there's no signal.
+    // PIN and let the person read cached data offline instead of kicking
+    // them back to first-run just because there's no signal.
     state.locked = false;
     await enterApp();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Config-missing screen — js/defaults.js hasn't been edited past its
+// placeholder, and no per-device override is set in Settings → Advanced.
+// ---------------------------------------------------------------------------
+
+function renderConfigMissing() {
+  appRoot.innerHTML = `
+    <div class="lock-screen">
+      <h1>${t("app.name")}</h1>
+      <p>${t("configMissing.message")}</p>
+    </div>
+  `;
 }
 
 async function enterApp() {
@@ -130,7 +150,9 @@ function handleVersionChanged() {
 }
 
 // ---------------------------------------------------------------------------
-// First-run screen (API URL + PIN together, once per device)
+// First-run screen — PIN only. The server URL is already resolved (the
+// committed default, or a per-device override from Settings → Advanced) —
+// see js/defaults.js and js/api.js's getApiUrl().
 // ---------------------------------------------------------------------------
 
 function renderFirstRunScreen(message) {
@@ -139,8 +161,6 @@ function renderFirstRunScreen(message) {
       <h1>${t("firstRun.title")}</h1>
       <p>${t("firstRun.subtitle")}</p>
       <form id="firstrun-form">
-        <input id="firstrun-url-input" class="field" type="url" inputmode="url" autocomplete="off"
-               placeholder="${t("firstRun.urlPlaceholder")}" value="${escapeHtml(store.getApiUrl())}" />
         <input id="firstrun-pin-input" class="field field-pin" type="password" inputmode="numeric" autocomplete="off"
                placeholder="${t("firstRun.pinPlaceholder")}" />
         <button type="submit" class="btn btn-primary" id="firstrun-submit">${t("firstRun.submit")}</button>
@@ -151,29 +171,22 @@ function renderFirstRunScreen(message) {
   `;
 
   const form = document.getElementById("firstrun-form");
-  const urlInput = document.getElementById("firstrun-url-input");
   const pinInput = document.getElementById("firstrun-pin-input");
-  (urlInput.value ? pinInput : urlInput).focus();
+  pinInput.focus();
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const url = urlInput.value.trim();
     const pin = pinInput.value.trim();
-    if (!/^https:\/\/.+/.test(url)) {
-      renderFirstRunScreen(t("firstRun.error.invalidUrl"));
-      return;
-    }
     if (!pin) return;
-    await attemptFirstRun(url, pin);
+    await attemptFirstRun(pin);
   });
 }
 
-async function attemptFirstRun(url, pin) {
+async function attemptFirstRun(pin) {
   const submitBtn = document.getElementById("firstrun-submit");
   submitBtn.disabled = true;
   submitBtn.textContent = t("firstRun.checking");
 
-  store.setApiUrl(url);
   store.setPin(pin);
   try {
     await store.call("auth.check", {});
@@ -181,15 +194,15 @@ async function attemptFirstRun(url, pin) {
     await enterApp();
   } catch (err) {
     if (err.kind === "auth") {
-      store.clearPin(); // keep the URL — no need to retype a value that worked
+      store.clearPin();
       renderFirstRunScreen(t("firstRun.error.wrongPin"));
     } else if (err.kind === "lockout") {
       renderFirstRunScreen(t("firstRun.error.lockout"));
     } else if (err.kind === "network") {
-      // Nothing proven to work yet on this device — clear both rather than
-      // leave a possibly-wrong URL silently stored.
-      store.clearApiUrl();
-      store.clearPin();
+      // Don't clear the PIN they just typed — it's very likely fine, the
+      // URL (committed default or an override) is the more probable
+      // culprit, and that's fixed in Settings → Advanced, not by retyping
+      // a PIN that was never the problem.
       renderFirstRunScreen(t("firstRun.error.network"));
     } else {
       renderFirstRunScreen(t("firstRun.error.generic"));
@@ -2125,17 +2138,37 @@ function renderSettingsBody(outlet) {
 
     <div class="card">
       <h2>${t("settings.account.title")}</h2>
-      ${
-        store.isMockMode()
-          ? `<p class="muted">${t("settings.account.mockMode")}</p>`
-          : `<p class="muted">${escapeHtml(store.getApiUrl())}</p>`
-      }
       <p class="muted">${t("settings.account.pinInstructions")}</p>
       <button class="btn btn-secondary" id="settings-signout-btn">${t("settings.account.signOut")}</button>
     </div>
+
+    ${
+      store.isMockMode()
+        ? `<div class="card"><h2>${t("settings.advanced.title")}</h2><p class="muted">${t("settings.account.mockMode")}</p></div>`
+        : advancedUrlCardMarkup()
+    }
   `;
 
   attachSettingsHandlers(outlet);
+}
+
+function advancedUrlCardMarkup() {
+  const hasOverride = store.hasApiUrlOverride();
+  return `
+    <div class="card">
+      <h2>${t("settings.advanced.title")}</h2>
+      <p class="muted">${hasOverride ? t("settings.advanced.usingOverride") : t("settings.advanced.usingDefault")}</p>
+      <p class="muted">${escapeHtml(store.getApiUrl())}</p>
+      <form id="api-url-override-form">
+        ${formField(t("settings.advanced.overrideLabel"), `<input class="field" type="text" inputmode="url" autocomplete="off" name="api_url_override" placeholder="https://script.google.com/macros/s/.../exec" value="${escapeHtml(store.getApiUrlOverride())}" />`, t("settings.advanced.overrideHint"))}
+        <p class="error-text" id="api-url-override-error" hidden></p>
+        <div class="form-actions">
+          ${hasOverride ? `<button type="button" class="btn btn-secondary" id="api-url-reset-btn">${t("settings.advanced.resetToDefault")}</button>` : ""}
+          <button type="submit" class="btn btn-primary">${t("settings.advanced.saveOverride")}</button>
+        </div>
+      </form>
+    </div>
+  `;
 }
 
 function contactRowMarkup(c) {
@@ -2201,12 +2234,38 @@ function attachSettingsHandlers(outlet) {
 
   outlet.querySelector("#settings-signout-btn").addEventListener("click", () => {
     if (!confirm(t("settings.account.confirmSignOut"))) return;
+    // PIN only — any URL override in Settings → Advanced is independent
+    // and survives signing out (it's a per-device connection setting, not
+    // part of "who's signed in").
     store.stopVersionPolling();
     store.clearPin();
-    store.clearApiUrl();
     state.locked = true;
     renderRoute();
   });
+
+  const urlOverrideForm = outlet.querySelector("#api-url-override-form");
+  if (urlOverrideForm) {
+    urlOverrideForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const url = new FormData(urlOverrideForm).get("api_url_override").trim();
+      const errEl = outlet.querySelector("#api-url-override-error");
+      if (!store.isValidApiUrl(url)) {
+        errEl.textContent = t("settings.advanced.invalidUrl");
+        errEl.hidden = false;
+        return;
+      }
+      store.setApiUrlOverride(url);
+      renderSettingsBody(outlet);
+    });
+  }
+
+  const urlResetBtn = outlet.querySelector("#api-url-reset-btn");
+  if (urlResetBtn) {
+    urlResetBtn.addEventListener("click", () => {
+      store.clearApiUrlOverride();
+      renderSettingsBody(outlet);
+    });
+  }
 
   const addContactBtn = outlet.querySelector("#add-contact-btn");
   if (addContactBtn) {

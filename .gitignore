@@ -1,6 +1,8 @@
-# v2: no config.js at all (API URL + PIN are entered in-app and stored in
-# localStorage, never in a file — see js/api.js / README's first-run docs).
-# Kept here defensively in case any local experiment recreates one.
+# No config.js — the API URL is intentionally committed in js/defaults.js
+# instead (it's not actually a secret once deployed — see README's security
+# notes), and the PIN lives only in localStorage, entered via the first-run
+# screen, never in any file. Kept here defensively in case a local
+# experiment recreates a config.js-style file.
 js/config.js
 js/config.local.js
 

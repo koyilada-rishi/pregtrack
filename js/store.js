@@ -24,7 +24,11 @@
 
 import * as api from "./api.js";
 
-export { ApiError, getPin, setPin, clearPin, hasPin, getApiUrl, setApiUrl, clearApiUrl, hasApiUrl } from "./api.js";
+export {
+  ApiError, getPin, setPin, clearPin, hasPin,
+  getApiUrl, hasApiUrl, isValidApiUrl,
+  getApiUrlOverride, setApiUrlOverride, clearApiUrlOverride, hasApiUrlOverride
+} from "./api.js";
 
 const MOCK_QUERY_PARAM = "mock";
 const MOCK_STORAGE_KEY = "pct_mock";

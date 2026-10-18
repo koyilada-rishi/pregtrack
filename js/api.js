@@ -2,8 +2,9 @@
 //
 // Pure network transport. Nothing else: no mock branching (that's
 // js/store.js), no caching, no version polling. Just one function — raw
-// POSTs to the Apps Script backend — plus PIN/API-URL storage, since those
-// are what every request needs.
+// POSTs to the Apps Script backend — plus PIN storage and API URL
+// resolution (committed default + optional per-device override), since
+// those are what every request needs.
 //
 // Request shape is exactly what was verified against the real deployment
 // (see the work order's "Rules learned while testing"):
@@ -21,8 +22,10 @@
 // URL redirects once to script.googleusercontent.com, and fetch follows
 // that transparently as long as nothing here overrides it.
 
+import { DEFAULT_API_URL } from "./defaults.js";
+
 const PIN_STORAGE_KEY = "pct_pin";
-const API_URL_STORAGE_KEY = "pct_api_url";
+const API_URL_OVERRIDE_KEY = "pct_api_url_override";
 const REQUEST_TIMEOUT_MS = 30000; // Apps Script is typically 1-2s, but cold starts/slow days happen
 
 export class ApiError extends Error {
@@ -63,45 +66,67 @@ export function hasPin() {
   return getPin().length > 0;
 }
 
-// --- API URL storage -----------------------------------------------------
+// --- API URL ---------------------------------------------------------------
 //
-// Entered once per device on the first-run screen, alongside the PIN —
-// never in a committed file. See README's "GitHub Pages setup" for why.
+// DEFAULT_API_URL (js/defaults.js) is committed on purpose — see that
+// file's comment for why that's fine even though the PIN never is. Most
+// devices never need to touch any of this: getApiUrl() just resolves to
+// the committed default. An override exists for when the backend gets
+// redeployed as a genuinely new deployment (changing the URL) before
+// defaults.js is updated and redeployed — Settings → Advanced sets one
+// per device, independent of the PIN and independent of signing out.
 
-export function getApiUrl() {
+export function getApiUrlOverride() {
   try {
-    return localStorage.getItem(API_URL_STORAGE_KEY) || "";
+    return localStorage.getItem(API_URL_OVERRIDE_KEY) || "";
   } catch {
     return "";
   }
 }
 
-export function setApiUrl(url) {
+export function setApiUrlOverride(url) {
   try {
-    localStorage.setItem(API_URL_STORAGE_KEY, url);
+    localStorage.setItem(API_URL_OVERRIDE_KEY, url);
   } catch {
     // ignore
   }
 }
 
-export function clearApiUrl() {
+export function clearApiUrlOverride() {
   try {
-    localStorage.removeItem(API_URL_STORAGE_KEY);
+    localStorage.removeItem(API_URL_OVERRIDE_KEY);
   } catch {
     // ignore
   }
 }
 
+export function hasApiUrlOverride() {
+  return getApiUrlOverride().length > 0;
+}
+
+// The URL actually used for requests: the per-device override if one is
+// set, else the committed default.
+export function getApiUrl() {
+  return getApiUrlOverride() || DEFAULT_API_URL;
+}
+
+export function isValidApiUrl(url) {
+  return /^https:\/\/.+/.test(String(url || ""));
+}
+
+// False until the resolved URL (override or default) actually looks like
+// a real https:// URL — i.e. still false if defaults.js hasn't been
+// edited past its placeholder and no override has been set either.
 export function hasApiUrl() {
-  return getApiUrl().length > 0;
+  return isValidApiUrl(getApiUrl());
 }
 
 // --- The one network call -------------------------------------------------
 
 export async function call(action, payload) {
   const apiUrl = getApiUrl();
-  if (!apiUrl) {
-    throw new ApiError("No server URL is set up on this device yet.", "server");
+  if (!hasApiUrl()) {
+    throw new ApiError("No server URL is configured yet — edit js/defaults.js, or set one in Settings → Advanced.", "server");
   }
 
   let response;
