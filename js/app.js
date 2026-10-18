@@ -34,7 +34,9 @@ const ROUTES = {
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
   "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
   "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
-  "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") }
+  "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") },
+  "/checklist": { render: renderChecklistView, navKey: null, title: () => t("checklist.title") },
+  "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
 
 boot().catch((err) => {
@@ -367,11 +369,17 @@ async function renderEmergencyView(outlet) {
   outlet.classList.add("emergency-view");
   outlet.innerHTML = genericSkeleton(5);
 
-  const paint = (settings) => { outlet.innerHTML = emergencyMarkup(settings); };
+  const paint = (settings) => { outlet.innerHTML = emergencyMarkup(settings, emergencyState.contacts); };
 
   try {
     const settings = await api.fetchWithCache("settings.get", {}, paint);
     paint(settings);
+    try {
+      emergencyState.contacts = await api.fetchWithCache("contacts.list", {}, () => {});
+      outlet.innerHTML = emergencyMarkup(settings, emergencyState.contacts);
+    } catch {
+      // Contacts are a nice-to-have on this card; settings alone still render.
+    }
   } catch (err) {
     const cached = api.getCached("settings.get", {});
     if (cached) {
@@ -383,7 +391,11 @@ async function renderEmergencyView(outlet) {
   }
 }
 
-function emergencyMarkup(settings) {
+const emergencyState = { contacts: [] };
+
+function emergencyMarkup(settings, contacts) {
+  contacts = contacts || [];
+  const emergencyContacts = contacts.filter((c) => isTruthy(c.is_emergency));
   const phoneDigits = String(settings.hospital_phone || "").replace(/[^+\d]/g, "");
   const address = settings.hospital_address || "";
 
@@ -414,10 +426,27 @@ function emergencyMarkup(settings) {
 
     <div class="card">
       <h2>${t("emergency.contacts.title")}</h2>
-      <p class="empty">${t("emergency.contacts.comingSoon")}</p>
+      ${
+        emergencyContacts.length
+          ? `<ul class="entity-list">${emergencyContacts.map((c) => emergencyContactRowMarkup(c)).join("")}</ul>`
+          : `<p class="empty">${t("emergency.contacts.none")}</p>`
+      }
     </div>
 
     <p class="disclaimer">${t("app.disclaimer")}</p>
+  `;
+}
+
+function emergencyContactRowMarkup(c) {
+  const phoneDigits = String(c.phone || "").replace(/[^+\d]/g, "");
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(c.name)}</strong>
+        <span class="muted">${escapeHtml(c.role || "")}</span>
+      </div>
+      ${phoneDigits ? `<a class="btn-link" href="tel:${phoneDigits}">${t("common.call")}</a>` : ""}
+    </li>
   `;
 }
 
@@ -425,22 +454,53 @@ function emergencyMarkup(settings) {
 // Food & body guide
 // ---------------------------------------------------------------------------
 
+const guideState = { foodlog: [] };
+
 async function renderGuideView(outlet) {
   outlet.innerHTML = genericSkeleton(8);
 
   try {
-    const [dash, weeksData, foodData, warningsData] = await Promise.all([
+    const [dash, weeksData, foodData, warningsData, foodlog] = await Promise.all([
       api.call("dashboard.get", {}).catch(() => api.getCached("dashboard.get", {})),
       loadJson("./data/weeks.json"),
       loadJson("./data/food.json"),
-      loadJson("./data/warnings.json")
+      loadJson("./data/warnings.json"),
+      api.call("foodlog.list", {}).catch(() => [])
     ]);
+    guideState.foodlog = foodlog;
     outlet.innerHTML = guideMarkup(dash, weeksData, foodData, warningsData);
     attachNavButtons(outlet);
+    attachFoodlogHandlers(outlet);
   } catch (err) {
     outlet.innerHTML = errorMarkup(err);
     attachRetryHandler(outlet, () => renderGuideView(outlet));
   }
+}
+
+function attachFoodlogHandlers(outlet) {
+  const form = outlet.querySelector("#foodlog-form");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const payload = {
+      date: formatDateInput(new Date()),
+      meal: fd.get("meal"),
+      items: fd.get("items").trim(),
+      craving_or_aversion: fd.get("craving_or_aversion").trim(),
+      notes: ""
+    };
+    if (!payload.items && !payload.craving_or_aversion) return;
+    const saveBtn = form.querySelector('button[type="submit"]');
+    saveBtn.disabled = true;
+    try {
+      await api.call("foodlog.create", payload);
+      await renderGuideView(outlet);
+    } catch (err) {
+      saveBtn.disabled = false;
+      alert(err.message || t("common.error"));
+    }
+  });
 }
 
 function guideMarkup(dash, weeksData, foodData, warningsData) {
@@ -496,7 +556,44 @@ function guideMarkup(dash, weeksData, foodData, warningsData) {
       <button class="btn btn-emergency" data-nav="#/emergency">${t("dashboard.emergency")}</button>
     </div>
 
+    <div class="card">
+      <h2>${t("foodlog.title")}</h2>
+      <form id="foodlog-form">
+        ${formField(
+          t("foodlog.meal"),
+          `<select class="field" name="meal">
+            ${["Breakfast", "Lunch", "Dinner", "Snack"].map((m) => `<option value="${m}">${m}</option>`).join("")}
+          </select>`
+        )}
+        ${formField(t("foodlog.items"), `<input class="field" name="items" />`)}
+        ${formField(t("foodlog.craving"), `<input class="field" name="craving_or_aversion" />`)}
+        <button type="submit" class="btn btn-secondary">${t("foodlog.add")}</button>
+      </form>
+      <h3>${t("foodlog.recent.title")}</h3>
+      ${
+        guideState.foodlog.length
+          ? `<ul class="entity-list">${[...guideState.foodlog]
+              .sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)))
+              .slice(0, 10)
+              .map((f) => foodlogRowMarkup(f))
+              .join("")}</ul>`
+          : `<p class="empty">${t("foodlog.recent.none")}</p>`
+      }
+    </div>
+
     <p class="disclaimer">${escapeHtml(warningsData.disclaimer || t("app.disclaimer"))}</p>
+  `;
+}
+
+function foodlogRowMarkup(f) {
+  const parts = [f.meal, f.items].filter(Boolean);
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(formatDisplayDate(dateStrOf(f.date)))} · ${escapeHtml(parts.join(" — "))}</strong>
+        ${f.craving_or_aversion ? `<span class="muted">${escapeHtml(f.craving_or_aversion)}</span>` : ""}
+      </div>
+    </li>
   `;
 }
 
@@ -1592,6 +1689,307 @@ function formatFileSize(bytes) {
 }
 
 // ---------------------------------------------------------------------------
+// Checklists
+// ---------------------------------------------------------------------------
+
+const CHECKLIST_TABS = ["hospital_bag", "documents", "baby_items"];
+const checklistState = { items: [], loading: true, activeList: "hospital_bag" };
+
+async function renderChecklistView(outlet) {
+  checklistState.loading = true;
+  outlet.innerHTML = genericSkeleton(5);
+  try {
+    checklistState.items = await api.call("checklist.list", {});
+    checklistState.loading = false;
+    renderChecklistBody(outlet);
+  } catch (err) {
+    checklistState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderChecklistView(outlet));
+  }
+}
+
+function renderChecklistBody(outlet) {
+  const items = checklistState.items.filter((i) => i.list === checklistState.activeList);
+  const doneCount = items.filter((i) => isTruthy(i.done)).length;
+
+  outlet.innerHTML = `
+    <div class="tab-bar">
+      ${CHECKLIST_TABS.map((tab) => `<button class="tab-btn ${checklistState.activeList === tab ? "tab-btn-active" : ""}" data-tab="${tab}">${t("checklist.tab." + tab)}</button>`).join("")}
+    </div>
+
+    <div class="card">
+      <h2>${t("checklist.progress", { done: doneCount, total: items.length })}</h2>
+      ${
+        items.length
+          ? `<ul class="checklist-items">${items.map((i) => checklistItemMarkup(i)).join("")}</ul>`
+          : `<p class="empty">${t("checklist.none")}</p>`
+      }
+      <form id="checklist-add-form" class="checklist-add-form">
+        <input class="field" name="item" placeholder="${t("checklist.addPlaceholder")}" required />
+        <button type="submit" class="btn btn-primary">${t("common.add")}</button>
+      </form>
+    </div>
+  `;
+
+  outlet.querySelectorAll("[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      checklistState.activeList = btn.dataset.tab;
+      renderChecklistBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll('input[type="checkbox"][data-checklist-id]').forEach((cb) => {
+    cb.addEventListener("change", async () => {
+      const id = cb.dataset.checklistId;
+      const done = cb.checked;
+      cb.disabled = true;
+      try {
+        await api.call("checklist.update", { id, done });
+        const item = checklistState.items.find((i) => i.id === id);
+        if (item) item.done = done;
+        renderChecklistBody(outlet);
+      } catch (err) {
+        cb.checked = !done;
+        cb.disabled = false;
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-checklist]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("checklist.confirmDelete"))) return;
+      try {
+        await api.call("checklist.delete", { id: btn.dataset.deleteChecklist });
+        await renderChecklistView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const addForm = outlet.querySelector("#checklist-add-form");
+  addForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = addForm.querySelector('input[name="item"]');
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      await api.call("checklist.create", { list: checklistState.activeList, item: text });
+      await renderChecklistView(outlet);
+    } catch (err) {
+      alert(err.message || t("common.error"));
+    }
+  });
+}
+
+function checklistItemMarkup(item) {
+  const done = isTruthy(item.done);
+  return `
+    <li class="checklist-item">
+      <label class="checklist-check">
+        <input type="checkbox" data-checklist-id="${escapeHtml(item.id)}" ${done ? "checked" : ""} />
+        <span class="${done ? "med-check-done" : ""}">${escapeHtml(item.item)}</span>
+      </label>
+      <button class="btn-link btn-link--danger" data-delete-checklist="${escapeHtml(item.id)}">${t("common.delete")}</button>
+    </li>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Settings (+ Contacts)
+// ---------------------------------------------------------------------------
+
+const settingsState = { settings: {}, contacts: [], loading: true, contactFormItem: null };
+
+async function renderSettingsView(outlet) {
+  settingsState.loading = true;
+  settingsState.contactFormItem = null;
+  outlet.innerHTML = genericSkeleton(8);
+  try {
+    const [settings, contacts] = await Promise.all([api.call("settings.get", {}), api.call("contacts.list", {})]);
+    settingsState.settings = settings;
+    settingsState.contacts = contacts;
+    settingsState.loading = false;
+    renderSettingsBody(outlet);
+  } catch (err) {
+    settingsState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderSettingsView(outlet));
+  }
+}
+
+function renderSettingsBody(outlet) {
+  const s = settingsState.settings;
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("settings.pregnancy.title")}</h2>
+      <form id="settings-form">
+        ${formField(t("settings.dueDate"), `<input class="field" type="date" name="due_date" value="${escapeHtml(s.due_date)}" />`)}
+        ${formField(t("settings.lmpDate"), `<input class="field" type="date" name="lmp_date" value="${escapeHtml(s.lmp_date)}" />`, t("settings.lmpHint"))}
+        ${formField(t("settings.wifeName"), `<input class="field" name="wife_name" value="${escapeHtml(s.wife_name)}" />`)}
+        ${formField(t("settings.bloodGroup"), `<input class="field" name="blood_group" value="${escapeHtml(s.blood_group)}" />`)}
+        ${formField(t("settings.allergies"), `<textarea class="field" name="allergies" rows="2">${escapeHtml(s.allergies)}</textarea>`)}
+        ${formField(t("settings.hospitalName"), `<input class="field" name="hospital_name" value="${escapeHtml(s.hospital_name)}" />`)}
+        ${formField(t("settings.hospitalPhone"), `<input class="field" type="tel" name="hospital_phone" value="${escapeHtml(s.hospital_phone)}" />`)}
+        ${formField(t("settings.hospitalAddress"), `<input class="field" name="hospital_address" value="${escapeHtml(s.hospital_address)}" />`)}
+        ${formField(t("settings.insurance"), `<textarea class="field" name="insurance_info" rows="2">${escapeHtml(s.insurance_info)}</textarea>`)}
+        ${formField(t("settings.language"), `<select class="field" name="language"><option value="en" selected>English</option></select>`, t("settings.languageHint"))}
+        <p class="error-text" id="settings-form-error" hidden></p>
+        <p class="success-text" id="settings-form-success" hidden>${t("settings.saved")}</p>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>${t("settings.contacts.title")}</h2>
+      ${
+        settingsState.contacts.length
+          ? `<ul class="entity-list">${settingsState.contacts.map((c) => contactRowMarkup(c)).join("")}</ul>`
+          : `<p class="empty">${t("settings.contacts.none")}</p>`
+      }
+      ${settingsState.contactFormItem ? contactFormMarkup(settingsState.contactFormItem) : `<button class="btn btn-secondary" id="add-contact-btn">${t("settings.contacts.add")}</button>`}
+    </div>
+
+    <div class="card">
+      <h2>${t("settings.pin.title")}</h2>
+      <p class="muted">${t("settings.pin.instructions")}</p>
+      <button class="btn btn-secondary" id="settings-lock-btn">${t("more.lockNow")}</button>
+    </div>
+  `;
+
+  attachSettingsHandlers(outlet);
+}
+
+function contactRowMarkup(c) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(c.name)}</strong>
+        <span class="muted">${escapeHtml([c.role, c.phone].filter(Boolean).join(" · "))}</span>
+        ${isTruthy(c.is_emergency) ? `<span class="badge">${t("settings.contacts.emergency")}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        <button class="btn-link" data-edit-contact="${escapeHtml(c.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-contact="${escapeHtml(c.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function contactFormMarkup(item) {
+  const isNew = item === "new";
+  const c = isNew ? {} : item;
+  return `
+    <form id="contact-form">
+      ${formField(t("settings.contacts.name"), `<input class="field" name="name" required value="${escapeHtml(c.name)}" />`)}
+      ${formField(t("settings.contacts.role"), `<input class="field" name="role" value="${escapeHtml(c.role)}" />`)}
+      ${formField(t("settings.contacts.phone"), `<input class="field" type="tel" name="phone" value="${escapeHtml(c.phone)}" />`)}
+      ${formField(t("settings.contacts.address"), `<input class="field" name="address" value="${escapeHtml(c.address)}" />`)}
+      ${formField(t("settings.contacts.mapsLink"), `<input class="field" name="maps_link" value="${escapeHtml(c.maps_link)}" />`)}
+      <label class="checkbox-field">
+        <input type="checkbox" name="is_emergency" ${isTruthy(c.is_emergency) ? "checked" : ""} />
+        <span>${t("settings.contacts.isEmergency")}</span>
+      </label>
+      <p class="error-text" id="contact-form-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="contact-form-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
+function attachSettingsHandlers(outlet) {
+  const form = outlet.querySelector("#settings-form");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const payload = {};
+    ["due_date", "lmp_date", "wife_name", "blood_group", "allergies", "hospital_name", "hospital_phone", "hospital_address", "insurance_info", "language"].forEach((key) => {
+      payload[key] = (fd.get(key) || "").toString().trim();
+    });
+    const errEl = outlet.querySelector("#settings-form-error");
+    const okEl = outlet.querySelector("#settings-form-success");
+    errEl.hidden = true;
+    okEl.hidden = true;
+    try {
+      settingsState.settings = await api.call("settings.set", payload);
+      okEl.hidden = false;
+    } catch (err) {
+      errEl.textContent = err.message || t("common.error");
+      errEl.hidden = false;
+    }
+  });
+
+  outlet.querySelector("#settings-lock-btn").addEventListener("click", () => {
+    api.clearPin();
+    state.locked = true;
+    renderRoute();
+  });
+
+  const addContactBtn = outlet.querySelector("#add-contact-btn");
+  if (addContactBtn) {
+    addContactBtn.addEventListener("click", () => {
+      settingsState.contactFormItem = "new";
+      renderSettingsBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-edit-contact]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settingsState.contactFormItem = settingsState.contacts.find((c) => c.id === btn.dataset.editContact) || "new";
+      renderSettingsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-contact]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("settings.contacts.confirmDelete"))) return;
+      try {
+        await api.call("contacts.delete", { id: btn.dataset.deleteContact });
+        await renderSettingsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const contactForm = outlet.querySelector("#contact-form");
+  if (contactForm) {
+    outlet.querySelector("#contact-form-cancel").addEventListener("click", () => {
+      settingsState.contactFormItem = null;
+      renderSettingsBody(outlet);
+    });
+    contactForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(contactForm);
+      const payload = {
+        name: fd.get("name").trim(),
+        role: fd.get("role").trim(),
+        phone: fd.get("phone").trim(),
+        address: fd.get("address").trim(),
+        maps_link: fd.get("maps_link").trim(),
+        is_emergency: fd.get("is_emergency") === "on"
+      };
+      try {
+        if (settingsState.contactFormItem === "new") {
+          await api.call("contacts.create", payload);
+        } else {
+          await api.call("contacts.update", { id: settingsState.contactFormItem.id, ...payload });
+        }
+        await renderSettingsView(outlet);
+      } catch (err) {
+        const errEl = outlet.querySelector("#contact-form-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // More menu
 // ---------------------------------------------------------------------------
 
@@ -1601,8 +1999,8 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/emergency">${t("more.emergency")}</button></li>
       <li><button data-nav="#/health">${t("more.health")}</button></li>
       <li><button data-nav="#/guide">${t("more.guide")}</button></li>
-      <li><button disabled>${t("more.checklists")} <span class="badge">${t("more.comingSoon")}</span></button></li>
-      <li><button disabled>${t("more.settings")} <span class="badge">${t("more.comingSoon")}</span></button></li>
+      <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>
+      <li><button data-nav="#/settings">${t("more.settings")}</button></li>
       <li><button id="lock-now-btn">${t("more.lockNow")}</button></li>
     </ul>
   `;

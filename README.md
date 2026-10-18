@@ -18,7 +18,7 @@ clone to a working install with no guessing.
 - [x] Step 5 — medicines + appointments
 - [x] Step 6 — health log + charts
 - [x] Step 7 — records vault + upload
-- [ ] Step 8 — checklists + settings
+- [x] Step 8 — checklists + settings
 - [ ] Step 9 — PWA (manifest, service worker, icons)
 - [ ] Step 10 — Telegram reminders
 - [ ] Step 11 — final polish
@@ -161,6 +161,16 @@ _Added in step 11._
 ## Troubleshooting
 
 _Added in step 11._
+
+## Scope notes
+
+Two small deviations from the original 10-view list, both logical fits for
+existing views rather than new tabs:
+- **Contacts** (doctor/emergency numbers) has no dedicated screen — it's
+  managed in Settings and surfaced read-only on the Emergency card.
+- **FoodLog** (meal/craving/aversion logging) has no dedicated screen either
+  — it's a quick-add section at the bottom of the Food & body guide view,
+  since that's its natural home.
 
 ## Content & medical disclaimer
 

@@ -722,6 +722,74 @@ a { color: var(--color-primary-dark); }
   margin-top: 8px;
 }
 
+/* ---------- Checklists ---------- */
+
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+
+.tab-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 36px;
+}
+
+.tab-btn-active {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  border-color: var(--color-primary);
+}
+
+.checklist-items {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.checklist-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.checklist-item:last-child { border-bottom: none; }
+
+.checklist-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.checklist-check input { width: 22px; height: 22px; }
+
+.checklist-add-form {
+  display: flex;
+  gap: 8px;
+}
+
+.checklist-add-form .field { flex: 1; }
+.checklist-add-form .btn { width: auto; padding: 0 16px; }
+
+.success-text {
+  color: var(--color-success);
+  font-size: 0.9rem;
+  margin-top: 8px;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {
