@@ -13,7 +13,7 @@ clone to a working install with no guessing.
 
 - [x] Step 1 — repo scaffold
 - [x] Step 2 — backend (Code.gs: setup, auth, settings, dashboard)
-- [ ] Step 3 — frontend shell, lock screen, dashboard, Emergency card
+- [x] Step 3 — frontend shell, lock screen, dashboard, Emergency card
 - [ ] Step 4 — content JSON + guide view
 - [ ] Step 5 — medicines + appointments
 - [ ] Step 6 — health log + charts
@@ -37,7 +37,7 @@ clone to a working install with no guessing.
 /backend/Code.gs  /backend/appsscript.json
 ```
 
-## Local setup (placeholder)
+## Local setup
 
 ```sh
 cp js/config.example.js js/config.js
@@ -51,6 +51,17 @@ python3 -m http.server 8000
 ```
 
 Then open `http://localhost:8000`.
+
+With `MOCK: true`, `js/api.js` serves fixtures from `js/mock.js` instead of
+calling the real backend — any PIN unlocks it, and the dashboard shows
+sample data. This is how the app works right after cloning, with no Apps
+Script deployment needed. Flip `MOCK` to `false` and set `API_URL` once
+you've deployed the backend (see "Apps Script deploy" below) and want to
+test against your real Sheet/Drive data.
+
+If `js/config.js` doesn't exist at all (fresh clone, before the `cp`
+above), the app shows a plain "not set up yet" screen instead of a blank
+page or console error.
 
 ## Apps Script deploy
 
