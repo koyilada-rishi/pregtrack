@@ -2,40 +2,57 @@
 
 A private, mobile-first PWA for tracking my wife's pregnancy care. Static
 frontend on GitHub Pages, Google Apps Script as the API, Google Sheets +
-Drive as the database. No other backend, no paid services, only two people
-use it.
+Drive as the database. No other backend, no paid services. 2-5 users.
 
-This README is a skeleton for now — each section below is filled in as the
-matching build step lands. By the end it should let you go from a fresh
-clone to a working install with no guessing.
+> **Mid-migration to v2.** The app was fully built once already (v1: all 11
+> steps, see `git log`), then revised with a bigger work order — no
+> `config.js` at all (first-run screen instead), `data_version`-based
+> freshness polling, an offline write queue, thumbnails, a batch
+> `bootstrap` endpoint, and a live local countdown. We're rebuilding in
+> place per the new step list below rather than starting over, so some
+> sections of this README (and the app itself) still describe the v1
+> behavior until their step lands. `DEVELOPMENT.md` has the full history of
+> both versions.
 
-## Status
+## Status (v2 work order)
 
-- [x] Step 1 — repo scaffold
-- [x] Step 2 — backend (Code.gs: setup, auth, settings, dashboard)
-- [x] Step 3 — frontend shell, lock screen, dashboard, Emergency card
-- [x] Step 4 — content JSON + guide view
-- [x] Step 5 — medicines + appointments
-- [x] Step 6 — health log + charts
-- [x] Step 7 — records vault + upload
-- [x] Step 8 — checklists + settings
-- [x] Step 9 — PWA (manifest, service worker, icons)
-- [x] Step 10 — Telegram reminders
-- [x] Step 11 — final polish
+- [x] Step 1 — scaffold, mock-mode flag groundwork (`js/store.js`, `js/countdown.js`)
+- [ ] Step 2 — backend: setup, auth, settings, version, dashboard, bootstrap
+- [ ] Step 3 — frontend shell, first-run screen, router, Home with live countdown, Emergency card
+- [ ] Step 4 — content JSON + guide
+- [ ] Step 5 — medicines + appointments
+- [ ] Step 6 — health log + charts
+- [ ] Step 7 — records vault: upload, thumbnails, viewer, syncFolder
+- [ ] Step 8 — checklists + settings
+- [ ] Step 9 — PWA, offline cache + write queue, icons
+- [ ] Step 10 — Telegram reminders
+- [ ] Step 11 — final README
 
-## Repo layout
+Steps 4, 8 (partially), 9 (PWA shell/icons), and 10 are already functionally
+done from v1 and mostly need re-verifying against the v2 data layer rather
+than rebuilding from scratch — marked as their step is actually revisited.
+
+## Repo layout (target)
 
 ```
 /index.html
 /css/style.css
 /js/app.js               router + views
-/js/api.js                all fetch calls
+/js/api.js                raw network calls (POST, PIN/URL storage)
+/js/store.js               data layer: mock mode, caching, version polling,
+                           offline write queue (grows through steps 1/2/3/9)
+/js/countdown.js            live local countdown math (step 3)
 /js/i18n.js                string table (English now, Telugu-ready)
-/js/config.example.js       API_URL / MOCK placeholder — copy to js/config.js
 /data/weeks.json  food.json  warnings.json
 /manifest.json  /sw.js  /icons/
 /backend/Code.gs  /backend/appsscript.json
 ```
+
+No `config.js` / `config.example.js` in v2 — the first-run screen (step 3)
+collects the API URL and PIN together and stores both in `localStorage`.
+`js/mock.js` and the old config files are still present and in active use
+by the current (v1) `app.js`/`api.js` until step 3's cutover removes them;
+see the note at the top of `js/mock.js`.
 
 Working on the code itself (new views, new backend actions, understanding
 how the pieces fit together)? See **[DEVELOPMENT.md](DEVELOPMENT.md)** —

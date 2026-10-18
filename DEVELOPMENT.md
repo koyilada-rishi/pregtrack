@@ -5,6 +5,17 @@ together, and the day-to-day commands (run, stop, PIN, testing). `README.md`
 is the deploy/setup guide for *using* the app; this file is for *changing*
 it.
 
+> **v2 migration in progress.** Everything below this note describes **v1**
+> (fully built, all 11 original steps — still accurate for the files it
+> hasn't touched yet). A revised work order is now being built in place on
+> top of it: no `config.js`, `data_version` polling, offline write queue,
+> thumbnails, `bootstrap`/`syncFolder`, a live local countdown. See
+> `README.md`'s Status section for current v2 step progress. This file gets
+> a full rewrite at v2's step 11 ("final README"); until then, treat
+> anything here about `js/mock.js`, `js/config.js`, or the PIN/API-URL flow
+> as v1-accurate but soon-superseded by `js/store.js` + the first-run screen
+> (step 3).
+
 ## What this is, in one paragraph
 
 A PIN-locked, installable PWA for tracking a pregnancy: dashboard/countdown,

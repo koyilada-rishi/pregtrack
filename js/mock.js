@@ -1,4 +1,12 @@
-// Pregnancy Care Tracker — mock backend.
+// Pregnancy Care Tracker — mock backend (v1, being replaced).
+//
+// SUPERSEDED BY js/store.js as of the v2 work order. Still used by the
+// current app.js/api.js (config.js-based MOCK flag) until step 3's frontend
+// shell rewrite does the real cutover — removing this file, config.js, and
+// config.example.js, and wiring everything through store.js instead. Don't
+// add new actions here; add them to store.js's mockCall() instead, and keep
+// this file's behavior as-is until step 3 deletes it.
+//
 // Used when js/config.js has MOCK: true, so the UI can be built and tested
 // with no Apps Script deployment. Shapes match the real backend's actions
 // in backend/Code.gs — keep the two in sync as new actions are added.
