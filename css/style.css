@@ -624,6 +624,14 @@ a { color: var(--color-primary-dark); }
 
 .history-day:last-child { border-bottom: none; }
 
+/* ---------- Charts ---------- */
+
+.chart-container {
+  position: relative;
+  height: 220px;
+  margin-bottom: 8px;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {

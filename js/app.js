@@ -33,7 +33,8 @@ const ROUTES = {
   "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
   "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
-  "/log-vitals": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.logVitals.title"), 6), navKey: null, title: () => t("placeholder.logVitals.title") }
+  "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
+  "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") }
 };
 
 boot().catch((err) => {
@@ -266,7 +267,7 @@ function dashboardMarkup(data, weekEntry) {
     </div>
 
     <div class="dashboard-actions">
-      <button class="btn btn-secondary" data-nav="#/log-vitals">${t("dashboard.logVitals")}</button>
+      <button class="btn btn-secondary" data-nav="#/health/new">${t("dashboard.logVitals")}</button>
       <button class="btn btn-emergency" data-nav="#/emergency">${t("dashboard.emergency")}</button>
     </div>
 
@@ -960,6 +961,315 @@ function toDatetimeLocalValue(iso) {
 }
 
 // ---------------------------------------------------------------------------
+// Health log + charts
+// ---------------------------------------------------------------------------
+
+// Gentle reference thresholds for the "discuss with your doctor" notice —
+// not a diagnosis, just a nudge to mention a reading at the next visit.
+// Flagged in the README as general guidance that can vary by doctor.
+const HEALTH_THRESHOLDS = {
+  bp_sys: 140,
+  bp_dia: 90,
+  sugar_fasting: 95,
+  sugar_pp: 140
+};
+
+const healthState = { entries: [], loading: true, formOpen: false, editItem: null, charts: {} };
+
+async function renderHealthView(outlet, openFormInitially) {
+  healthState.loading = true;
+  healthState.formOpen = !!openFormInitially;
+  healthState.editItem = null;
+  outlet.innerHTML = genericSkeleton(6);
+
+  try {
+    healthState.entries = await api.call("healthlog.list", {});
+    healthState.loading = false;
+    await renderHealthBody(outlet);
+  } catch (err) {
+    healthState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderHealthView(outlet, false));
+  }
+}
+
+async function renderHealthBody(outlet) {
+  destroyHealthCharts();
+  if (healthState.formOpen) {
+    outlet.innerHTML = healthFormMarkup(healthState.editItem);
+    attachHealthFormHandlers(outlet);
+    return;
+  }
+
+  const sorted = [...healthState.entries].sort((a, b) => dateStrOf(a.date).localeCompare(dateStrOf(b.date)));
+  outlet.innerHTML = healthListMarkup(sorted);
+  attachHealthListHandlers(outlet);
+
+  try {
+    await loadChartJs();
+    renderHealthCharts(sorted);
+  } catch {
+    const note = outlet.querySelector("#chart-load-error");
+    if (note) note.hidden = false;
+  }
+}
+
+function healthListMarkup(sortedAsc) {
+  const latest = sortedAsc[sortedAsc.length - 1];
+  const descending = [...sortedAsc].reverse();
+
+  return `
+    <button class="btn btn-primary" id="add-health-btn">${t("health.add")}</button>
+
+    ${latest ? healthNoticeMarkup(latest) : ""}
+
+    <div class="card">
+      <h2>${t("health.chart.weight")}</h2>
+      <div class="chart-container"><canvas id="chart-weight"></canvas></div>
+      <p class="error-text" id="chart-load-error" hidden>${t("health.chart.loadError")}</p>
+    </div>
+
+    <div class="card">
+      <h2>${t("health.chart.bp")}</h2>
+      <div class="chart-container"><canvas id="chart-bp"></canvas></div>
+      <p class="muted">${t("health.chart.bpNote", { sys: HEALTH_THRESHOLDS.bp_sys, dia: HEALTH_THRESHOLDS.bp_dia })}</p>
+    </div>
+
+    <div class="card">
+      <h2>${t("health.chart.sugar")}</h2>
+      <div class="chart-container"><canvas id="chart-sugar"></canvas></div>
+      <p class="muted">${t("health.chart.sugarNote", { fasting: HEALTH_THRESHOLDS.sugar_fasting, pp: HEALTH_THRESHOLDS.sugar_pp })}</p>
+    </div>
+
+    <div class="card">
+      <h2>${t("health.history.title")}</h2>
+      ${
+        descending.length
+          ? `<ul class="entity-list">${descending.map((e) => healthRowMarkup(e)).join("")}</ul>`
+          : `<p class="empty">${t("health.history.none")}</p>`
+      }
+    </div>
+
+    <p class="disclaimer">${t("health.disclaimer")}</p>
+  `;
+}
+
+function healthNoticeMarkup(latest) {
+  const flags = [];
+  if (isAboveThreshold(latest.bp_sys, HEALTH_THRESHOLDS.bp_sys) || isAboveThreshold(latest.bp_dia, HEALTH_THRESHOLDS.bp_dia)) {
+    flags.push(t("health.notice.bp"));
+  }
+  if (isAboveThreshold(latest.sugar_fasting, HEALTH_THRESHOLDS.sugar_fasting) || isAboveThreshold(latest.sugar_pp, HEALTH_THRESHOLDS.sugar_pp)) {
+    flags.push(t("health.notice.sugar"));
+  }
+  if (!flags.length) return "";
+  return `<div class="review-note">${flags.join(" ")} ${t("health.notice.suffix")}</div>`;
+}
+
+function isAboveThreshold(value, threshold) {
+  return value !== "" && value !== null && value !== undefined && Number(value) >= threshold;
+}
+
+function healthRowMarkup(e) {
+  const parts = [];
+  if (e.weight_kg !== "" && e.weight_kg !== undefined) parts.push(t("health.field.weight", { v: e.weight_kg }));
+  if (e.bp_sys !== "" && e.bp_sys !== undefined && e.bp_dia !== "" && e.bp_dia !== undefined) {
+    parts.push(t("health.field.bp", { sys: e.bp_sys, dia: e.bp_dia }));
+  }
+  if (e.sugar_fasting !== "" && e.sugar_fasting !== undefined) parts.push(t("health.field.sugarFasting", { v: e.sugar_fasting }));
+  if (e.sugar_pp !== "" && e.sugar_pp !== undefined) parts.push(t("health.field.sugarPp", { v: e.sugar_pp }));
+  if (e.kicks !== "" && e.kicks !== undefined) parts.push(t("health.field.kicks", { v: e.kicks }));
+
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(formatDisplayDate(dateStrOf(e.date)))}</strong>
+        <span class="muted">${escapeHtml(parts.join(" · "))}</span>
+        ${e.mood ? `<span class="muted">${t("health.field.mood", { v: escapeHtml(e.mood) })}</span>` : ""}
+        ${e.symptoms ? `<span class="muted">${escapeHtml(e.symptoms)}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        <button class="btn-link" data-edit-health="${escapeHtml(e.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-health="${escapeHtml(e.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function healthFormMarkup(item) {
+  const isNew = !item;
+  const e = isNew ? {} : item;
+  return `
+    <div class="card">
+      <h2>${isNew ? t("health.form.titleNew") : t("health.form.titleEdit")}</h2>
+      <form id="health-form">
+        ${formField(t("health.form.date"), `<input class="field" type="date" name="date" required value="${escapeHtml(dateStrOf(e.date) || formatDateInput(new Date()))}" />`)}
+        ${formField(t("health.form.weight"), `<input class="field" type="number" step="0.1" name="weight_kg" value="${escapeHtml(e.weight_kg)}" />`)}
+        ${formField(t("health.form.bpSys"), `<input class="field" type="number" name="bp_sys" value="${escapeHtml(e.bp_sys)}" />`)}
+        ${formField(t("health.form.bpDia"), `<input class="field" type="number" name="bp_dia" value="${escapeHtml(e.bp_dia)}" />`)}
+        ${formField(t("health.form.sugarFasting"), `<input class="field" type="number" name="sugar_fasting" value="${escapeHtml(e.sugar_fasting)}" />`)}
+        ${formField(t("health.form.sugarPp"), `<input class="field" type="number" name="sugar_pp" value="${escapeHtml(e.sugar_pp)}" />`)}
+        ${formField(t("health.form.kicks"), `<input class="field" type="number" name="kicks" value="${escapeHtml(e.kicks)}" />`)}
+        ${formField(t("health.form.mood"), `<input class="field" name="mood" value="${escapeHtml(e.mood)}" />`)}
+        ${formField(t("health.form.symptoms"), `<input class="field" name="symptoms" value="${escapeHtml(e.symptoms)}" />`)}
+        ${formField(t("health.form.notes"), `<textarea class="field" name="notes" rows="3">${escapeHtml(e.notes)}</textarea>`)}
+        <p class="error-text" id="health-form-error" hidden></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="health-form-cancel">${t("common.cancel")}</button>
+          <button type="submit" class="btn btn-primary" id="health-form-save">${t("common.save")}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function attachHealthListHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-health-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", async () => {
+      healthState.formOpen = true;
+      healthState.editItem = null;
+      await renderHealthBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-edit-health]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      healthState.formOpen = true;
+      healthState.editItem = healthState.entries.find((e) => e.id === btn.dataset.editHealth) || null;
+      await renderHealthBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-health]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("health.confirmDelete"))) return;
+      try {
+        await api.call("healthlog.delete", { id: btn.dataset.deleteHealth });
+        await renderHealthView(outlet, false);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+}
+
+function attachHealthFormHandlers(outlet) {
+  outlet.querySelector("#health-form-cancel").addEventListener("click", async () => {
+    healthState.formOpen = false;
+    healthState.editItem = null;
+    await renderHealthBody(outlet);
+  });
+
+  const form = outlet.querySelector("#health-form");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const payload = {
+      date: fd.get("date"),
+      weight_kg: fd.get("weight_kg"),
+      bp_sys: fd.get("bp_sys"),
+      bp_dia: fd.get("bp_dia"),
+      sugar_fasting: fd.get("sugar_fasting"),
+      sugar_pp: fd.get("sugar_pp"),
+      kicks: fd.get("kicks"),
+      mood: fd.get("mood").trim(),
+      symptoms: fd.get("symptoms").trim(),
+      notes: fd.get("notes").trim()
+    };
+    const saveBtn = outlet.querySelector("#health-form-save");
+    const errEl = outlet.querySelector("#health-form-error");
+    saveBtn.disabled = true;
+    try {
+      if (healthState.editItem) {
+        await api.call("healthlog.update", { id: healthState.editItem.id, ...payload });
+      } else {
+        await api.call("healthlog.create", payload);
+      }
+      await renderHealthView(outlet, false);
+    } catch (err) {
+      saveBtn.disabled = false;
+      errEl.textContent = err.message || t("common.error");
+      errEl.hidden = false;
+    }
+  });
+}
+
+let chartJsLoadPromise = null;
+function loadChartJs() {
+  if (window.Chart) return Promise.resolve();
+  if (chartJsLoadPromise) return chartJsLoadPromise;
+  chartJsLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js";
+    script.onload = () => resolve();
+    script.onerror = () => { chartJsLoadPromise = null; reject(new Error("Could not load chart library.")); };
+    document.head.appendChild(script);
+  });
+  return chartJsLoadPromise;
+}
+
+function destroyHealthCharts() {
+  Object.values(healthState.charts).forEach((chart) => { if (chart) chart.destroy(); });
+  healthState.charts = {};
+}
+
+function renderHealthCharts(sortedAsc) {
+  if (!window.Chart || !sortedAsc.length) return;
+  const labels = sortedAsc.map((e) => formatDisplayDate(dateStrOf(e.date)));
+  const baseOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    scales: { y: { beginAtZero: false } },
+    plugins: { legend: { position: "bottom" } }
+  };
+
+  const weightCanvas = document.getElementById("chart-weight");
+  if (weightCanvas) {
+    healthState.charts.weight = new Chart(weightCanvas, {
+      type: "line",
+      data: { labels, datasets: [{ label: t("health.chart.weight"), data: sortedAsc.map((e) => numOrNull(e.weight_kg)), borderColor: "#d97a7a", backgroundColor: "#d97a7a", spanGaps: true, tension: 0.3 }] },
+      options: baseOptions
+    });
+  }
+
+  const bpCanvas = document.getElementById("chart-bp");
+  if (bpCanvas) {
+    healthState.charts.bp = new Chart(bpCanvas, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: t("health.form.bpSys"), data: sortedAsc.map((e) => numOrNull(e.bp_sys)), borderColor: "#b85f5f", backgroundColor: "#b85f5f", spanGaps: true, tension: 0.3 },
+          { label: t("health.form.bpDia"), data: sortedAsc.map((e) => numOrNull(e.bp_dia)), borderColor: "#8fae8b", backgroundColor: "#8fae8b", spanGaps: true, tension: 0.3 }
+        ]
+      },
+      options: baseOptions
+    });
+  }
+
+  const sugarCanvas = document.getElementById("chart-sugar");
+  if (sugarCanvas) {
+    healthState.charts.sugar = new Chart(sugarCanvas, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: t("health.form.sugarFasting"), data: sortedAsc.map((e) => numOrNull(e.sugar_fasting)), borderColor: "#d97a7a", backgroundColor: "#d97a7a", spanGaps: true, tension: 0.3 },
+          { label: t("health.form.sugarPp"), data: sortedAsc.map((e) => numOrNull(e.sugar_pp)), borderColor: "#8fae8b", backgroundColor: "#8fae8b", spanGaps: true, tension: 0.3 }
+        ]
+      },
+      options: baseOptions
+    });
+  }
+}
+
+function numOrNull(value) {
+  return value === "" || value === undefined || value === null ? null : Number(value);
+}
+
+// ---------------------------------------------------------------------------
 // More menu
 // ---------------------------------------------------------------------------
 
@@ -967,6 +1277,7 @@ function renderMoreView(outlet) {
   outlet.innerHTML = `
     <ul class="menu-list">
       <li><button data-nav="#/emergency">${t("more.emergency")}</button></li>
+      <li><button data-nav="#/health">${t("more.health")}</button></li>
       <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button disabled>${t("more.checklists")} <span class="badge">${t("more.comingSoon")}</span></button></li>
       <li><button disabled>${t("more.settings")} <span class="badge">${t("more.comingSoon")}</span></button></li>

@@ -16,7 +16,7 @@ clone to a working install with no guessing.
 - [x] Step 3 — frontend shell, lock screen, dashboard, Emergency card
 - [x] Step 4 — content JSON + guide view
 - [x] Step 5 — medicines + appointments
-- [ ] Step 6 — health log + charts
+- [x] Step 6 — health log + charts
 - [ ] Step 7 — records vault + upload
 - [ ] Step 8 — checklists + settings
 - [ ] Step 9 — PWA (manifest, service worker, icons)
