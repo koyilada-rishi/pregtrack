@@ -95,6 +95,22 @@ function routeAction(action, payload) {
       return medicinesLogTaken(payload);
     case 'medicines.history':
       return medicinesHistory(payload);
+    case 'medicines.stop':
+      return medicinesStop(payload);
+
+    case 'medicinelog.list':
+      return medicineLogList(payload);
+
+    case 'packs.list':
+      return listRows('Packs');
+    case 'packs.create':
+      return packsCreate(payload);
+    case 'packs.update':
+      return packsUpdate(payload);
+    case 'packs.delete':
+      return packsDelete(payload);
+    case 'packs.tickAll':
+      return packsTickAll(payload);
 
     case 'appointments.list':
       return listRows('Appointments');
@@ -345,6 +361,7 @@ function bootstrap() {
     checklist: listRows('Checklist'),
     files: filesList({}),
     countdowns: listRows('Countdowns'),
+    packs: listRows('Packs'),
     // Most recent *taken* dose per medicine — enough for the frontend to
     // compute "next dose" for interval-kind countdowns pinned to Home,
     // without shipping the full MedicineLog on every load.
@@ -491,6 +508,18 @@ function isTruthy(value) {
 // Medicines + MedicineLog
 // ---------------------------------------------------------------------------
 
+var MEDICINE_SCHEDULE_TYPES = ['daily', 'interval', 'weekdays', 'every_n_days', 'weekly', 'monthly', 'prn'];
+var MEDICINE_ANCHOR_MODES = ['fixed', 'from_last'];
+var MEDICINE_INSTRUCTIONS = ['before_food', 'after_food', 'with_food', 'empty_stomach', 'bedtime', 'none'];
+var MEDICINE_STATUSES = ['active', 'finished', 'stopped'];
+var MEDICINE_LOG_STATUSES = ['taken', 'skipped', 'missed'];
+
+function validateEnum(value, allowed, fieldName) {
+  if (value !== undefined && value !== '' && allowed.indexOf(value) === -1) {
+    throw new Error('Invalid ' + fieldName + ': ' + value);
+  }
+}
+
 function medicinesCreate(payload) {
   requireFields(payload, ['name']);
   return createRow('Medicines', medicineFields(payload, true));
@@ -542,13 +571,103 @@ function medicineFields(payload, isCreate) {
     var value = sanitizeNumber(payload.refill_alert_days, 'refill_alert_days');
     fields.refill_alert_days = value === '' ? 3 : value; // never leave it blank once set
   }
+
+  // --- Phase 1 (v3) scheduling model — see js/schedule.js for the engine
+  // that actually interprets these. A blank schedule_type means "old row,
+  // treat as daily using times/frequency above" — enforced client-side,
+  // not here, so nothing needs backfilling.
+  if (isCreate || payload.hasOwnProperty('schedule_type')) {
+    var scheduleType = payload.schedule_type || 'daily';
+    validateEnum(scheduleType, MEDICINE_SCHEDULE_TYPES, 'schedule_type');
+    fields.schedule_type = scheduleType;
+  }
+  if (isCreate || payload.hasOwnProperty('anchor_mode')) {
+    var anchorMode = payload.anchor_mode || 'fixed';
+    validateEnum(anchorMode, MEDICINE_ANCHOR_MODES, 'anchor_mode');
+    fields.anchor_mode = anchorMode;
+  }
+  if (isCreate || payload.hasOwnProperty('weekdays')) fields.weekdays = sanitizeText(payload.weekdays, 50); // e.g. "mon,thu"
+  if (isCreate || payload.hasOwnProperty('interval_hours')) fields.interval_hours = sanitizeNumber(payload.interval_hours, 'interval_hours');
+  if (isCreate || payload.hasOwnProperty('interval_days')) fields.interval_days = sanitizeNumber(payload.interval_days, 'interval_days');
+  if (isCreate || payload.hasOwnProperty('month_day')) fields.month_day = sanitizeNumber(payload.month_day, 'month_day');
+  if (isCreate || payload.hasOwnProperty('every_n_weeks')) fields.every_n_weeks = sanitizeNumber(payload.every_n_weeks, 'every_n_weeks');
+  if (isCreate || payload.hasOwnProperty('total_doses')) fields.total_doses = sanitizeNumber(payload.total_doses, 'total_doses');
+  if (isCreate) {
+    fields.grace_minutes = (payload.grace_minutes === undefined || payload.grace_minutes === '')
+      ? 60
+      : sanitizeNumber(payload.grace_minutes, 'grace_minutes');
+  } else if (payload.hasOwnProperty('grace_minutes')) {
+    var graceMinutes = sanitizeNumber(payload.grace_minutes, 'grace_minutes');
+    fields.grace_minutes = graceMinutes === '' ? 60 : graceMinutes;
+  }
+  if (isCreate || payload.hasOwnProperty('instructions')) {
+    var instructions = payload.instructions || 'none';
+    validateEnum(instructions, MEDICINE_INSTRUCTIONS, 'instructions');
+    fields.instructions = instructions;
+  }
+  if (isCreate || payload.hasOwnProperty('prn_min_gap_hours')) fields.prn_min_gap_hours = sanitizeNumber(payload.prn_min_gap_hours, 'prn_min_gap_hours');
+  if (isCreate || payload.hasOwnProperty('prn_max_per_day')) fields.prn_max_per_day = sanitizeNumber(payload.prn_max_per_day, 'prn_max_per_day');
+  // phases: optional free-form JSON for future tapering-schedule UI — stored
+  // as-is, not parsed or validated server-side (the engine ignores it today).
+  if (isCreate || payload.hasOwnProperty('phases')) fields.phases = sanitizeText(payload.phases, 4000);
+  if (isCreate || payload.hasOwnProperty('reason')) fields.reason = sanitizeText(payload.reason, 500);
+  if (isCreate || payload.hasOwnProperty('pack_id')) fields.pack_id = sanitizeText(payload.pack_id, 100);
+  if (isCreate || payload.hasOwnProperty('source')) fields.source = sanitizeText(payload.source, 200);
+
+  if (isCreate) {
+    var initialStatus = payload.status || 'active';
+    validateEnum(initialStatus, MEDICINE_STATUSES, 'status');
+    fields.status = initialStatus;
+  } else if (payload.hasOwnProperty('status')) {
+    validateEnum(payload.status, MEDICINE_STATUSES, 'status');
+    fields.status = payload.status;
+  }
+  // Keep the older boolean `active` column (read by the existing dashboard
+  // "today's pending medicines" logic) in sync with the new `status` field,
+  // unless the caller is explicitly setting `active` itself this call.
+  if (fields.status && !payload.hasOwnProperty('active')) {
+    fields.active = fields.status === 'active';
+  }
+  if (isCreate || payload.hasOwnProperty('stopped_on')) {
+    fields.stopped_on = payload.stopped_on ? sanitizeDate(payload.stopped_on, 'stopped_on') : '';
+  }
+  if (isCreate || payload.hasOwnProperty('stop_note')) fields.stop_note = sanitizeText(payload.stop_note, 2000);
+
   return fields;
 }
 
+// Moves a medicine to History — never deletes it. Distinct from a plain
+// status update so the frontend has one obvious action for "I'm done
+// taking this" with its own confirmation copy.
+function medicinesStop(payload) {
+  requireId(payload);
+  return updateRowById('Medicines', payload.id, {
+    status: 'stopped',
+    active: false,
+    stopped_on: payload.stopped_on ? sanitizeDate(payload.stopped_on, 'stopped_on') : formatISODate(new Date()),
+    stop_note: sanitizeText(payload.stop_note, 2000)
+  });
+}
+
+// status (taken|skipped|missed) is the richer v3 shape; plain `taken: true/false`
+// (the v1/v2 shape) still works exactly as before — it's just read as
+// taken/skipped. `taken_at` is the real-world instant the dose was actually
+// logged (defaults to now when status is 'taken'), which is what from_last
+// anchor_mode medicines key their next dose off (see js/schedule.js) — it is
+// deliberately NOT the same as the nominal scheduled `date`+`time` slot,
+// since a dose logged late should shift every later dose, not just this one.
 function medicinesLogTaken(payload) {
   requireFields(payload, ['medicine_id', 'date', 'time']);
   var targetDate = sanitizeDate(payload.date, 'date');
-  var taken = payload.taken === undefined ? true : sanitizeBoolean(payload.taken);
+  var hasStatus = payload.hasOwnProperty('status');
+  if (hasStatus) validateEnum(payload.status, MEDICINE_LOG_STATUSES, 'status');
+  var status = hasStatus
+    ? payload.status
+    : ((payload.taken === undefined ? true : sanitizeBoolean(payload.taken)) ? 'taken' : 'skipped');
+  var taken = status === 'taken';
+  var hasNote = payload.hasOwnProperty('note');
+  var note = hasNote ? sanitizeText(payload.note, 1000) : undefined;
+  var takenAt = taken ? (payload.taken_at ? String(payload.taken_at) : new Date().toISOString()) : '';
 
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -561,8 +680,12 @@ function medicinesLogTaken(payload) {
     var dateCol = headers.indexOf('date');
     var timeCol = headers.indexOf('time');
     var takenCol = headers.indexOf('taken');
+    var statusCol = headers.indexOf('status');
+    var takenAtCol = headers.indexOf('taken_at');
+    var noteCol = headers.indexOf('note');
     var result;
     var wasTaken = false; // no prior row at all counts as "wasn't taken"
+    var resultNote = hasNote ? note : '';
 
     for (var i = 1; i < values.length; i++) {
       if (String(values[i][medCol]) === String(payload.medicine_id) &&
@@ -570,14 +693,29 @@ function medicinesLogTaken(payload) {
           String(values[i][timeCol]) === String(payload.time)) {
         wasTaken = isTruthy(values[i][takenCol]);
         sheet.getRange(i + 1, takenCol + 1).setValue(taken);
-        result = { id: values[i][idCol], medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+        if (statusCol !== -1) sheet.getRange(i + 1, statusCol + 1).setValue(status);
+        if (takenAtCol !== -1) sheet.getRange(i + 1, takenAtCol + 1).setValue(takenAt);
+        if (noteCol !== -1 && hasNote) sheet.getRange(i + 1, noteCol + 1).setValue(note);
+        if (!hasNote && noteCol !== -1) resultNote = values[i][noteCol] || ''; // preserve existing note on a bare taken-toggle
+        result = { id: values[i][idCol], medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken, status: status, taken_at: takenAt, note: resultNote };
         break;
       }
     }
     if (!result) {
       var id = Utilities.getUuid();
-      sheet.appendRow([id, payload.medicine_id, targetDate, payload.time, taken]);
-      result = { id: id, medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+      var newRow = headers.map(function (h) {
+        if (h === 'id') return id;
+        if (h === 'medicine_id') return payload.medicine_id;
+        if (h === 'date') return targetDate;
+        if (h === 'time') return payload.time;
+        if (h === 'taken') return taken;
+        if (h === 'status') return status;
+        if (h === 'taken_at') return takenAt;
+        if (h === 'note') return note || '';
+        return '';
+      });
+      sheet.appendRow(newRow);
+      result = { id: id, medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken, status: status, taken_at: takenAt, note: note || '' };
     }
 
     // Stock only moves on an actual state transition, so toggling the same
@@ -631,6 +769,72 @@ function medicinesHistory(payload) {
     return dateStrOf(b.date).localeCompare(dateStrOf(a.date)) || String(a.time).localeCompare(String(b.time));
   });
   return { days: days, logs: logs };
+}
+
+// Unbounded log fetch (optionally filtered to one medicine) — for the
+// "Medicines used" history view's doses-taken counts, which need the whole
+// history, not just the last 14 days. Lazy-loaded, not part of bootstrap.
+function medicineLogList(payload) {
+  var logs = sheetToObjects('MedicineLog');
+  if (payload && payload.medicine_id) {
+    logs = logs.filter(function (l) { return String(l.medicine_id) === String(payload.medicine_id); });
+  }
+  logs.sort(function (a, b) {
+    return dateStrOf(b.date).localeCompare(dateStrOf(a.date)) || String(a.time).localeCompare(String(b.time));
+  });
+  return logs;
+}
+
+// ---------------------------------------------------------------------------
+// Packs — a recurring daily group of medicines usually taken together at
+// one time (e.g. "Evening pack"). Each member still has its own MedicineLog
+// entries; tickAll is just a convenience that logs all of them at once.
+// ---------------------------------------------------------------------------
+
+function packsCreate(payload) {
+  requireFields(payload, ['name']);
+  return createRow('Packs', packFields(payload, true));
+}
+
+function packsUpdate(payload) {
+  requireId(payload);
+  return updateRowById('Packs', payload.id, packFields(payload, false));
+}
+
+function packsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Packs', payload.id);
+}
+
+function packFields(payload, isCreate) {
+  var fields = {};
+  if (isCreate || payload.hasOwnProperty('name')) fields.name = sanitizeText(payload.name, 200);
+  if (isCreate || payload.hasOwnProperty('times')) fields.times = sanitizeText(payload.times, 200);
+  if (isCreate || payload.hasOwnProperty('member_medicine_ids')) {
+    var ids = payload.member_medicine_ids;
+    fields.member_medicine_ids = sanitizeText(Array.isArray(ids) ? ids.join(',') : ids, 2000);
+  }
+  if (isCreate) fields.created_at = new Date().toISOString();
+  return fields;
+}
+
+function packMemberIds(pack) {
+  return String(pack.member_medicine_ids || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// Logs every member medicine at once (defaults to status 'taken'). Each
+// member gets its own MedicineLog upsert via medicinesLogTaken, so stock
+// and data_version bookkeeping all happen exactly as for a single tap.
+function packsTickAll(payload) {
+  requireFields(payload, ['id', 'date', 'time']);
+  var pack = getRowById('Packs', payload.id);
+  if (!pack) throw new Error('Not found: ' + payload.id);
+  var status = payload.status || 'taken';
+  validateEnum(status, MEDICINE_LOG_STATUSES, 'status');
+  var logs = packMemberIds(pack).map(function (medicineId) {
+    return medicinesLogTaken({ medicine_id: medicineId, date: payload.date, time: payload.time, status: status });
+  });
+  return { pack_id: payload.id, logs: logs };
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,9 +1509,16 @@ var SHEET_SCHEMA = {
   Settings: ['key', 'value'],
   Medicines: [
     'id', 'name', 'dose', 'frequency', 'times', 'start_date', 'end_date', 'prescribed_by', 'notes', 'active',
-    'stock_count', 'doses_per_day', 'refill_alert_days'
+    'stock_count', 'doses_per_day', 'refill_alert_days',
+    // Phase 1 (v3) scheduling model — see "Medicine scheduling" below. Old
+    // rows have none of these; the engine (js/schedule.js) treats a blank
+    // schedule_type as 'daily' using the existing times/frequency columns,
+    // so nothing here needs a backfill.
+    'schedule_type', 'anchor_mode', 'weekdays', 'interval_hours', 'interval_days', 'month_day', 'every_n_weeks',
+    'total_doses', 'grace_minutes', 'instructions', 'prn_min_gap_hours', 'prn_max_per_day', 'phases',
+    'reason', 'pack_id', 'status', 'stopped_on', 'stop_note', 'source'
   ],
-  MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken'],
+  MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken', 'status', 'taken_at', 'note'],
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
   HealthLog: ['id', 'date', 'weight_kg', 'bp_sys', 'bp_dia', 'sugar_fasting', 'sugar_pp', 'kicks', 'mood', 'symptoms', 'notes'],
   Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
@@ -1317,7 +1528,12 @@ var SHEET_SCHEMA = {
   Countdowns: [
     'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',
     'linked_medicine_id', 'show_on_home', 'pinned_order', 'notes', 'done', 'created_at'
-  ]
+  ],
+  // A pack is a recurring daily group of medicines usually taken together
+  // at one time (e.g. "Evening pack" at 8pm). member_medicine_ids is a
+  // comma-joined list of Medicines ids — kept as plain text (not a join
+  // table) since packs are small and this sheet is hand-readable.
+  Packs: ['id', 'name', 'times', 'member_medicine_ids', 'created_at']
 };
 
 // ss is optional — pass it explicitly from setup() (where SHEET_ID may only
