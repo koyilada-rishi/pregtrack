@@ -9,6 +9,15 @@
  *
  * All real requests come in as doPost({postData:{contents: JSON string}}),
  * body shape: {pin, action, payload}. Every action requires a valid pin.
+ *
+ * v2 additions (data_version freshness tracking, bootstrap, thumbnails):
+ * every mutating action bumps a `data_version` counter (Settings tab +
+ * CacheService, kept in sync — see "Data version" below), so the frontend
+ * can poll the cheap version.get action and only refetch when something
+ * actually changed. bootstrap() returns every tab in one call for the
+ * initial app load. The CRUD actions for medicines/appointments/healthlog/
+ * contacts/foodlog/checklist/files below predate this v2 pass (carried
+ * over as-is from v1) — see DEVELOPMENT.md for the full history.
  */
 
 // ---------------------------------------------------------------------------
@@ -69,6 +78,10 @@ function routeAction(action, payload) {
       return settingsSet(payload);
     case 'dashboard.get':
       return dashboardGet();
+    case 'version.get':
+      return { data_version: getDataVersion() };
+    case 'bootstrap':
+      return bootstrap();
 
     case 'medicines.list':
       return listRows('Medicines');
@@ -235,10 +248,86 @@ function settingsSet(payload) {
         sheet.appendRow([key, value]);
       }
     });
+    incrementDataVersion();
   } finally {
     lock.releaseLock();
   }
   return settingsGet();
+}
+
+// ---------------------------------------------------------------------------
+// Data version — a counter bumped on every write (see incrementDataVersion,
+// called from inside every mutating action's existing LockService lock), so
+// the frontend can poll the cheap version.get action instead of refetching
+// everything on a timer. Kept in both the Settings sheet (durable, and the
+// schema explicitly lists it as a Settings key) and CacheService (fast
+// reads — version.get should never need to open the Spreadsheet at all in
+// the common case).
+// ---------------------------------------------------------------------------
+
+var DATA_VERSION_CACHE_KEY = 'data_version';
+var DATA_VERSION_CACHE_TTL_SECONDS = 21600; // 6 hours — CacheService's max
+
+function getDataVersion() {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(DATA_VERSION_CACHE_KEY);
+  if (cached !== null) return Number(cached);
+
+  // Cold cache (first call since a cache eviction/expiry) — fall back to
+  // the sheet once, then repopulate the cache for next time.
+  var version = readDataVersionFromSheet();
+  cache.put(DATA_VERSION_CACHE_KEY, String(version), DATA_VERSION_CACHE_TTL_SECONDS);
+  return version;
+}
+
+function readDataVersionFromSheet() {
+  var row = sheetToObjects('Settings').find(function (r) { return r.key === 'data_version'; });
+  return row ? Number(row.value) || 0 : 0;
+}
+
+// Must be called from inside a LockService lock already held by the caller
+// (every mutating action acquires one) — it does not acquire its own, since
+// the whole point is to bump the counter atomically with the write that
+// triggered it, under the same lock.
+function incrementDataVersion() {
+  var sheet = getSheetByName('Settings');
+  var values = sheet.getDataRange().getValues();
+  var rowNum = -1;
+  for (var i = 1; i < values.length; i++) {
+    if (values[i][0] === 'data_version') { rowNum = i + 1; break; }
+  }
+  var current = rowNum === -1 ? 0 : (Number(values[rowNum - 1][1]) || 0);
+  var next = current + 1;
+  if (rowNum === -1) {
+    sheet.appendRow(['data_version', next]);
+  } else {
+    sheet.getRange(rowNum, 2).setValue(next);
+  }
+  CacheService.getScriptCache().put(DATA_VERSION_CACHE_KEY, String(next), DATA_VERSION_CACHE_TTL_SECONDS);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap — everything the app needs for its initial load, in one call,
+// to cut the round-trip latency of fetching each tab separately. MedicineLog
+// is deliberately left out: it's not needed for the first paint (Home,
+// nav), can grow large over months, and the Meds view fetches its own
+// medicines.history on demand.
+// ---------------------------------------------------------------------------
+
+function bootstrap() {
+  return {
+    data_version: getDataVersion(),
+    settings: settingsGet(),
+    dashboard: dashboardGet(),
+    medicines: listRows('Medicines'),
+    appointments: listRows('Appointments'),
+    healthlog: listRows('HealthLog'),
+    contacts: listRows('Contacts'),
+    foodlog: listRows('FoodLog'),
+    checklist: listRows('Checklist'),
+    files: filesList({})
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -409,18 +498,24 @@ function medicinesLogTaken(payload) {
     var dateCol = headers.indexOf('date');
     var timeCol = headers.indexOf('time');
     var takenCol = headers.indexOf('taken');
+    var result;
 
     for (var i = 1; i < values.length; i++) {
       if (String(values[i][medCol]) === String(payload.medicine_id) &&
           dateStrOf(values[i][dateCol]) === targetDate &&
           String(values[i][timeCol]) === String(payload.time)) {
         sheet.getRange(i + 1, takenCol + 1).setValue(taken);
-        return { id: values[i][idCol], medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+        result = { id: values[i][idCol], medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+        break;
       }
     }
-    var id = Utilities.getUuid();
-    sheet.appendRow([id, payload.medicine_id, targetDate, payload.time, taken]);
-    return { id: id, medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+    if (!result) {
+      var id = Utilities.getUuid();
+      sheet.appendRow([id, payload.medicine_id, targetDate, payload.time, taken]);
+      result = { id: id, medicine_id: payload.medicine_id, date: targetDate, time: payload.time, taken: taken };
+    }
+    incrementDataVersion();
+    return result;
   } finally {
     lock.releaseLock();
   }
@@ -754,6 +849,7 @@ function createRow(sheetName, fields) {
       return fields.hasOwnProperty(h) ? fields[h] : '';
     });
     sheet.appendRow(row);
+    incrementDataVersion();
   } finally {
     lock.releaseLock();
   }
@@ -779,6 +875,7 @@ function updateRowById(sheetName, id, fields) {
         sheet.getRange(rowNum, idx + 1).setValue(fields[h]);
       }
     });
+    incrementDataVersion();
   } finally {
     lock.releaseLock();
   }
@@ -799,6 +896,7 @@ function deleteRowById(sheetName, id) {
     }
     if (rowNum === -1) throw new Error('Not found: ' + id);
     sheet.deleteRow(rowNum);
+    incrementDataVersion();
   } finally {
     lock.releaseLock();
   }
@@ -960,7 +1058,12 @@ function setupSpreadsheet(props) {
     Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
     FoodLog: ['id', 'date', 'meal', 'items', 'craving_or_aversion', 'notes'],
     Checklist: ['id', 'list', 'item', 'done'],
-    Files: ['id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes']
+    // 'mime' and 'thumb_file_id' are appended at the end (not matching the
+    // spec's listed order) so re-running setup() on an existing sheet never
+    // shifts already-written data into the wrong column — setup() always
+    // rewrites row 1 unconditionally, and sheetToObjects() reads by header
+    // name, so column order doesn't matter functionally.
+    Files: ['id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes', 'mime', 'thumb_file_id']
   };
 
   Object.keys(schema).forEach(function (tabName) {
@@ -983,6 +1086,11 @@ function setupSpreadsheet(props) {
   SETTINGS_KEYS.forEach(function (key) {
     if (existingKeys.indexOf(key) === -1) settingsSheet.appendRow([key, '']);
   });
+  // data_version is tracked separately from SETTINGS_KEYS — it's not a
+  // user-editable setting, just the freshness counter (see "Data version").
+  if (existingKeys.indexOf('data_version') === -1) {
+    settingsSheet.appendRow(['data_version', 0]);
+  }
 
   return ss;
 }
@@ -1018,7 +1126,8 @@ function setupDriveFolders(props, ss) {
     DRIVE_FOLDER_REPORT: 'Reports',
     DRIVE_FOLDER_SCAN: 'Scans',
     DRIVE_FOLDER_PRESCRIPTION: 'Prescriptions',
-    DRIVE_FOLDER_DOCUMENT: 'Documents'
+    DRIVE_FOLDER_DOCUMENT: 'Documents',
+    DRIVE_FOLDER_THUMB: 'Thumbs'
   };
 
   Object.keys(subfolders).forEach(function (propKey) {

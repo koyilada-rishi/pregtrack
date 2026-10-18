@@ -17,7 +17,7 @@ Drive as the database. No other backend, no paid services. 2-5 users.
 ## Status (v2 work order)
 
 - [x] Step 1 — scaffold, mock-mode flag groundwork (`js/store.js`, `js/countdown.js`)
-- [ ] Step 2 — backend: setup, auth, settings, version, dashboard, bootstrap
+- [x] Step 2 — backend: setup, auth, settings, version, dashboard, bootstrap
 - [ ] Step 3 — frontend shell, first-run screen, router, Home with live countdown, Emergency card
 - [ ] Step 4 — content JSON + guide
 - [ ] Step 5 — medicines + appointments
@@ -169,6 +169,24 @@ whenever you change `backend/Code.gs`.
    step 3+). Try a wrong PIN too — you should get
    `{"ok":false,"error":"Incorrect PIN."}`, and seeing that 5 times in a row
    should lock you out for 15 minutes.
+
+   Two more worth trying (v2 additions):
+
+   ```sh
+   curl -s -X POST "<API_URL>" -H "Content-Type: text/plain" \
+     --data '{"pin":"<pin>","action":"version.get"}'
+   # {"ok":true,"data":{"data_version":1}} — the counter setup() seeded at 0,
+   # already bumped once if you've made any change since.
+
+   curl -s -X POST "<API_URL>" -H "Content-Type: text/plain" \
+     --data '{"pin":"<pin>","action":"bootstrap"}'
+   # One response with data_version, settings, dashboard, and every entity
+   # list (medicines, appointments, healthlog, contacts, foodlog, checklist,
+   # files) in one call.
+   ```
+
+   Then try any write (e.g. `settings.set` with a small payload) and call
+   `version.get` again — the number should have gone up by exactly 1.
 
 9. **Wire up the frontend.** For local dev, copy `js/config.example.js` to
    `js/config.js` (gitignored), set `API_URL` to the URL from step 6, and
