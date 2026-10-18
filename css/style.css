@@ -632,9 +632,100 @@ a { color: var(--color-primary-dark); }
   margin-bottom: 8px;
 }
 
+/* ---------- Records vault ---------- */
+
+.records-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.records-filter-bar .form-field { flex: 1; min-width: 100px; margin-bottom: 0; }
+
+.records-date-range {
+  display: flex;
+  gap: 8px;
+  flex: 2;
+  min-width: 180px;
+}
+
+.records-date-range .form-field { margin-bottom: 0; }
+
+.view-toggle {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.view-toggle-active {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+
+.records-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.record-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  cursor: pointer;
+  min-height: 110px;
+}
+
+.record-type-icon { font-size: 1.8rem; }
+
+.record-card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.record-row-main {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.upload-picker-buttons {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.upload-picker-buttons .btn { flex: 1; cursor: pointer; }
+
+.selected-file-chip {
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-control);
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+
+.file-preview-image {
+  width: 100%;
+  border-radius: var(--radius-control);
+  margin-top: 8px;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {
   .countdown-days { font-size: 2rem; }
   .dashboard-actions { flex-direction: column; }
+  .records-date-range { flex-direction: column; }
 }

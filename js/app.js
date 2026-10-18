@@ -29,7 +29,7 @@ const ROUTES = {
   "/dashboard": { render: renderDashboardView, navKey: "home", title: () => t("dashboard.title") },
   "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
   "/visits": { render: renderAppointmentsView, navKey: "visits", title: () => t("nav.visits") },
-  "/records": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.records.title"), 7), navKey: "records", title: () => t("nav.records") },
+  "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
   "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
@@ -1267,6 +1267,328 @@ function renderHealthCharts(sortedAsc) {
 
 function numOrNull(value) {
   return value === "" || value === undefined || value === null ? null : Number(value);
+}
+
+// ---------------------------------------------------------------------------
+// Records vault
+// ---------------------------------------------------------------------------
+
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const RECORD_TYPE_ICONS = { report: "📄", scan: "🩻", prescription: "💊", document: "🗂️" };
+
+const recordsState = {
+  files: [],
+  loading: true,
+  filterType: "",
+  filterFrom: "",
+  filterTo: "",
+  viewMode: "list",
+  uploadOpen: false,
+  pendingFile: null, // { base64, mimeType, filename, size }
+  viewingFile: null // result of files.get, shown inline
+};
+
+async function renderRecordsView(outlet) {
+  recordsState.loading = true;
+  recordsState.uploadOpen = false;
+  recordsState.pendingFile = null;
+  recordsState.viewingFile = null;
+  outlet.innerHTML = genericSkeleton(6);
+
+  try {
+    await reloadRecords();
+    recordsState.loading = false;
+    renderRecordsBody(outlet);
+  } catch (err) {
+    recordsState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderRecordsView(outlet));
+  }
+}
+
+async function reloadRecords() {
+  const payload = {};
+  if (recordsState.filterType) payload.type = recordsState.filterType;
+  if (recordsState.filterFrom) payload.date_from = recordsState.filterFrom;
+  if (recordsState.filterTo) payload.date_to = recordsState.filterTo;
+  recordsState.files = await api.call("files.list", payload);
+}
+
+function renderRecordsBody(outlet) {
+  if (recordsState.viewingFile) {
+    outlet.innerHTML = fileViewerMarkup(recordsState.viewingFile);
+    attachFileViewerHandlers(outlet);
+    return;
+  }
+  if (recordsState.uploadOpen) {
+    outlet.innerHTML = uploadFormMarkup();
+    attachUploadHandlers(outlet);
+    return;
+  }
+  outlet.innerHTML = recordsListMarkup();
+  attachRecordsListHandlers(outlet);
+}
+
+function recordsListMarkup() {
+  return `
+    <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
+
+    <div class="card">
+      <div class="records-filter-bar">
+        ${formField(
+          t("records.filter.type"),
+          `<select class="field" id="filter-type">
+            <option value="">${t("records.filter.allTypes")}</option>
+            ${["report", "scan", "prescription", "document"].map((ty) => `<option value="${ty}" ${recordsState.filterType === ty ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}
+          </select>`
+        )}
+        <div class="records-date-range">
+          ${formField(t("records.filter.from"), `<input class="field" type="date" id="filter-from" value="${escapeHtml(recordsState.filterFrom)}" />`)}
+          ${formField(t("records.filter.to"), `<input class="field" type="date" id="filter-to" value="${escapeHtml(recordsState.filterTo)}" />`)}
+        </div>
+      </div>
+      <div class="view-toggle">
+        <button class="btn-link ${recordsState.viewMode === "list" ? "view-toggle-active" : ""}" id="view-list-btn">${t("records.view.list")}</button>
+        <button class="btn-link ${recordsState.viewMode === "grid" ? "view-toggle-active" : ""}" id="view-grid-btn">${t("records.view.grid")}</button>
+      </div>
+    </div>
+
+    ${
+      recordsState.files.length
+        ? recordsState.viewMode === "grid"
+          ? `<div class="records-grid">${recordsState.files.map((f) => recordCardMarkup(f)).join("")}</div>`
+          : `<div class="card"><ul class="entity-list">${recordsState.files.map((f) => recordRowMarkup(f)).join("")}</ul></div>`
+        : `<div class="card"><p class="empty">${t("records.none")}</p></div>`
+    }
+  `;
+}
+
+function recordCardMarkup(f) {
+  return `
+    <button class="record-card" data-view-file="${escapeHtml(f.id)}">
+      <span class="record-type-icon">${RECORD_TYPE_ICONS[f.type] || "🗂️"}</span>
+      <span class="record-card-title">${escapeHtml(f.title)}</span>
+      <span class="muted">${escapeHtml(formatDisplayDate(f.date))}</span>
+    </button>
+  `;
+}
+
+function recordRowMarkup(f) {
+  return `
+    <li class="entity-row">
+      <button class="entity-main record-row-main" data-view-file="${escapeHtml(f.id)}">
+        <strong>${RECORD_TYPE_ICONS[f.type] || "🗂️"} ${escapeHtml(f.title)}</strong>
+        <span class="muted">${escapeHtml(t("records.type." + f.type))} · ${escapeHtml(formatDisplayDate(f.date))}${f.doctor ? " · " + escapeHtml(f.doctor) : ""}</span>
+      </button>
+      <div class="entity-actions">
+        <button class="btn-link btn-link--danger" data-delete-file="${escapeHtml(f.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function attachRecordsListHandlers(outlet) {
+  outlet.querySelector("#add-record-btn").addEventListener("click", () => {
+    recordsState.uploadOpen = true;
+    renderRecordsBody(outlet);
+  });
+
+  const refilter = async () => {
+    recordsState.filterType = outlet.querySelector("#filter-type").value;
+    recordsState.filterFrom = outlet.querySelector("#filter-from").value;
+    recordsState.filterTo = outlet.querySelector("#filter-to").value;
+    await reloadRecords();
+    renderRecordsBody(outlet);
+  };
+  outlet.querySelector("#filter-type").addEventListener("change", refilter);
+  outlet.querySelector("#filter-from").addEventListener("change", refilter);
+  outlet.querySelector("#filter-to").addEventListener("change", refilter);
+
+  outlet.querySelector("#view-list-btn").addEventListener("click", () => { recordsState.viewMode = "list"; renderRecordsBody(outlet); });
+  outlet.querySelector("#view-grid-btn").addEventListener("click", () => { recordsState.viewMode = "grid"; renderRecordsBody(outlet); });
+
+  outlet.querySelectorAll("[data-view-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.viewFile;
+      outlet.innerHTML = genericSkeleton(4);
+      try {
+        recordsState.viewingFile = await api.call("files.get", { id });
+        renderRecordsBody(outlet);
+      } catch (err) {
+        outlet.innerHTML = errorMarkup(err);
+        attachRetryHandler(outlet, () => renderRecordsView(outlet));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("records.confirmDelete"))) return;
+      try {
+        await api.call("files.delete", { id: btn.dataset.deleteFile });
+        await renderRecordsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+}
+
+function uploadFormMarkup() {
+  const pending = recordsState.pendingFile;
+  return `
+    <div class="card">
+      <h2>${t("records.upload.title")}</h2>
+      ${
+        pending
+          ? `<div class="selected-file-chip">${escapeHtml(pending.filename)} (${formatFileSize(pending.size)})</div>`
+          : `
+        <div class="upload-picker-buttons">
+          <label class="btn btn-secondary">
+            ${t("records.upload.takePhoto")}
+            <input type="file" accept="image/*" capture="environment" id="camera-input" hidden />
+          </label>
+          <label class="btn btn-secondary">
+            ${t("records.upload.chooseFile")}
+            <input type="file" accept="image/*,application/pdf,.doc,.docx" id="file-input" hidden />
+          </label>
+        </div>
+      `
+      }
+      <p class="error-text" id="upload-error" hidden></p>
+      ${
+        pending
+          ? `
+        <form id="upload-form">
+          ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(pending.filename.replace(/\.[^.]+$/, ""))}" />`)}
+          ${formField(
+            t("records.upload.type"),
+            `<select class="field" name="type" required>
+              ${["report", "scan", "prescription", "document"].map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
+            </select>`
+          )}
+          ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(formatDateInput(new Date()))}" />`)}
+          ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" />`)}
+          ${formField(t("records.upload.notes"), `<textarea class="field" name="notes" rows="2"></textarea>`)}
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="upload-cancel">${t("common.cancel")}</button>
+            <button type="submit" class="btn btn-primary" id="upload-save">${t("common.save")}</button>
+          </div>
+        </form>
+      `
+          : `<button class="btn btn-secondary" id="upload-cancel-initial">${t("common.cancel")}</button>`
+      }
+    </div>
+  `;
+}
+
+function attachUploadHandlers(outlet) {
+  const cancelBtn = outlet.querySelector("#upload-cancel") || outlet.querySelector("#upload-cancel-initial");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      recordsState.uploadOpen = false;
+      recordsState.pendingFile = null;
+      renderRecordsBody(outlet);
+    });
+  }
+
+  const errEl = outlet.querySelector("#upload-error");
+  const handleFile = async (file) => {
+    if (!file) return;
+    if (file.size > MAX_UPLOAD_BYTES) {
+      errEl.textContent = t("records.upload.tooLarge");
+      errEl.hidden = false;
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+      recordsState.pendingFile = {
+        base64: match ? match[2] : "",
+        mimeType: (match && match[1]) || file.type || "application/octet-stream",
+        filename: file.name,
+        size: file.size
+      };
+      renderRecordsBody(outlet);
+    } catch {
+      errEl.textContent = t("records.upload.readError");
+      errEl.hidden = false;
+    }
+  };
+
+  const cameraInput = outlet.querySelector("#camera-input");
+  if (cameraInput) cameraInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
+  const fileInput = outlet.querySelector("#file-input");
+  if (fileInput) fileInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
+
+  const form = outlet.querySelector("#upload-form");
+  if (form) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const saveBtn = outlet.querySelector("#upload-save");
+      saveBtn.disabled = true;
+      try {
+        await api.call("files.upload", {
+          title: fd.get("title").trim(),
+          type: fd.get("type"),
+          date: fd.get("date"),
+          doctor: fd.get("doctor").trim(),
+          notes: fd.get("notes").trim(),
+          filename: recordsState.pendingFile.filename,
+          mimeType: recordsState.pendingFile.mimeType,
+          base64: recordsState.pendingFile.base64
+        });
+        recordsState.uploadOpen = false;
+        recordsState.pendingFile = null;
+        await renderRecordsView(outlet);
+      } catch (err) {
+        saveBtn.disabled = false;
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+}
+
+function fileViewerMarkup(file) {
+  const dataUrl = `data:${file.mimeType};base64,${file.base64}`;
+  const isImage = file.mimeType.startsWith("image/");
+  return `
+    <button class="btn-link" id="viewer-back">${t("common.back")}</button>
+    <div class="card">
+      <h2>${escapeHtml(file.title)}</h2>
+      <p class="muted">${escapeHtml(t("records.type." + file.type))} · ${escapeHtml(formatDisplayDate(file.date))}${file.doctor ? " · " + escapeHtml(file.doctor) : ""}</p>
+      ${file.notes ? `<p class="muted">${escapeHtml(file.notes)}</p>` : ""}
+      ${
+        isImage
+          ? `<img src="${dataUrl}" alt="${escapeHtml(file.title)}" class="file-preview-image" />`
+          : `<p>${t("records.viewer.openExternally")}</p><a class="btn btn-secondary" href="${dataUrl}" target="_blank" rel="noopener">${t("records.viewer.open")}</a>`
+      }
+    </div>
+  `;
+}
+
+function attachFileViewerHandlers(outlet) {
+  outlet.querySelector("#viewer-back").addEventListener("click", () => {
+    recordsState.viewingFile = null;
+    renderRecordsBody(outlet);
+  });
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
 // ---------------------------------------------------------------------------

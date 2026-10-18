@@ -17,7 +17,7 @@ clone to a working install with no guessing.
 - [x] Step 4 — content JSON + guide view
 - [x] Step 5 — medicines + appointments
 - [x] Step 6 — health log + charts
-- [ ] Step 7 — records vault + upload
+- [x] Step 7 — records vault + upload
 - [ ] Step 8 — checklists + settings
 - [ ] Step 9 — PWA (manifest, service worker, icons)
 - [ ] Step 10 — Telegram reminders
