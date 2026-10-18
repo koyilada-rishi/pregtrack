@@ -53,6 +53,7 @@ history).
 | v2-2 | `v2 Step 2` | Backend: a `data_version` counter (Settings sheet + CacheService, bumped from inside every mutating action's existing lock — see `incrementDataVersion()`), the `version.get` and `bootstrap` actions, `Files` schema gains `mime`/`thumb_file_id` (appended, not inserted mid-row, so re-running `setup()` on a populated sheet never misaligns existing data), a `Thumbs` Drive folder. Extended the mock-Apps-Script Node test harness (real in-memory `CacheService` now, was a no-op stub) — 64 assertions passing. |
 | v2-3/4 | `v2 Step 3/4` (one commit) | The real cutover: deleted `js/config.js`, `js/config.example.js`, `js/mock.js`. Rewrote `js/api.js` to pure transport (no mock branching, no `CONFIG` — matches the exact `fetch()` shape verified against the live deployment: only a `Content-Type: text/plain` header, default redirect-follow). Grew `js/store.js` into the real data layer (`call`/`fetchWithCache`/`getCached`/`loadBootstrap`/`startVersionPolling` — see "Architecture" below). Real `js/countdown.js` (pure local math, unit-tested standalone). Rewrote `app.js`'s boot/router/shell into one first-run screen (URL + PIN together) and a Home view with a live countdown (1s ticker for seconds, 30s full re-render, paused/resumed on tab visibility) — then did a mechanical `api.` → `store.` rename through the already-built Meds/Appointments/Health/Records/Checklist/Settings view code rather than rewriting it (unchanged logic, just a different module to call). Settings' old two sign-out-ish buttons (PIN-only "Lock app now" in both Settings and More, a separate "Change server URL") collapsed into one "Sign out / change PIN or URL" per the new spec. Wired Home's "this week" card to `data/weeks.json` (content itself was already correct from v1 step 4, unchanged). Found and fixed two real bugs during this pass: a temporal-dead-zone crash (`boot()` was invoked before a `const` it transitively depended on had been declared later in the file — fixed by moving the boot call to the very end), and `store.js`'s mock fixtures never got `bootstrap`/`version.get` cases added despite `app.js` needing them immediately. |
 | v2-5 | `Countdowns + stock tracking + GitHub Pages readiness` (4 commits) | **Backend**: `ensureTabs(ss)` replaces the old unconditional-rewrite tab setup — appends only genuinely missing columns/tabs, never touches existing data, called from both `setup()` and every `bootstrap()` so a `Code.gs` redeploy alone migrates the Sheet. New `Countdowns` tab/actions (5 kinds: event/course/interval/recurring/countup), `Medicines` gains stock_count/doses_per_day/refill_alert_days, `medicines.logTaken` adjusts stock on real taken-state transitions only. **`js/countdown.js`**: pure per-kind math (`computeEventCountdown`/`computeCourseCountdown`/`computeStockCountdown`/`computeIntervalCountdown`/`nextRecurringOccurrence`+`computeRecurringCountdown`/`computeCountupCountdown`), a shared `classifyCountdownState` (upcoming/dueSoon(≤24h)/overdue/done), and a `computeCustomCountdown` dispatcher. **Frontend**: new `#/countdowns` view, Home's "Pinned countdowns" card (ticks every 1s, same mechanism as the pregnancy countdown), Medicines view shows next-dose/course/stock figures per row, the one-tap "taken" checkbox became genuinely optimistic (local state + re-render before the network call resolves). **GitHub Pages readiness**: found and fixed a real, serious bug — `sw.js`'s precache list still referenced `js/mock.js`, deleted in the v2 cutover; `cache.addAll()` is all-or-nothing, so the service worker had been **completely unable to install since that cutover**, silently breaking all offline support with no visible error. Also added `js/store.js`/`countdown.js` to the precache list (new files it was missing) and bumped `CACHE_VERSION`. Mock mode's default changed from an unconditional `true` to hostname-based (`isLocalDev()`): on in local dev, off in production — real mode and the first-run screen by default on any real domain, never silent sample data. Audited every asset reference for GitHub-Pages-subpath safety (all already relative — manifest, sw.js, imports, fetches) and the full git history for secrets (clean — confirmed via direct commands, not inferred). Added `.nojekyll`. Testing: backend harness grew to 103 assertions (was 64), `countdown.js` standalone tests grew to 59 (was 19), plus Playwright verification of the actual offline-after-subpath-deploy scenario (DNS-spoofed to a realistic hostname to test the production mock-mode default for real, not just in theory). |
+| v2-6 | `PIN-only first run` (3 commits) | New `js/defaults.js` (`DEFAULT_API_URL`, committed on purpose — see "The API URL" below). `js/api.js` now resolves the URL from a per-device override (`getApiUrlOverride`/`setApiUrlOverride`/`clearApiUrlOverride`/`hasApiUrlOverride`, Settings → Advanced) or that default; the first-run screen dropped its URL field entirely and asks for the PIN only. Settings' sign-in card split in two: sign-out now clears only the PIN (was PIN+URL together), and a new Advanced card owns the URL override independently. Found and fixed a real bug while testing: the Advanced override's `<input type="url">` let the browser's own native constraint validation silently block malformed submissions before the custom JS https-only check ever ran — switched to `type="text" inputmode="url"`. Also caught and fixed `sw.js` not precaching the new `js/defaults.js` (bumped to v3) — the same class of bug as the earlier `js/mock.js` incident, just a narrower blast radius this time. README/DEVELOPMENT.md updated throughout for the new flow and the updated secrets framing (API URL now intentionally committed; PIN/Sheet ID/Drive IDs still never). Testing: full mock-mode regression, and — since the override's https-only check meant a plain-HTTP fake backend could no longer even reach the first-run screen — stood up a throwaway self-signed HTTPS local server to test the real path faithfully (config-missing screen, PIN-only form, wrong/correct PIN, Advanced override set/validate/reset, sign-out clearing only the PIN while the override survives). Backend/countdown.js suites unaffected (not touched this round): 103/103 and 59/59 still passing. |
 
 ## Architecture
 
@@ -62,13 +63,15 @@ history).
 │  (static files only) │ ─────────────────────────────▶│  doPost → routeAction │
 │                      │ ◀───────────────────────────── │  {ok, data, error}    │
 │  js/app.js (router)  │        JSON response           │                      │
-│  js/store.js (data)  │                                 │  Sheet (9 tabs)       │
+│  js/store.js (data)  │                                 │  Sheet (10 tabs)      │
 │  js/api.js (network) │                                 │  Drive (5 folders)    │
+│  js/defaults.js (url)│                                 │                      │
 │  js/countdown.js     │                                 │                      │
 └─────────────────────┘                                 └──────────────────────┘
         │
         ▼
-  localStorage: PIN, API URL, bootstrap cache, last-good response per action
+  localStorage: PIN, API URL override (optional), bootstrap cache, last-good
+                response per action
 ```
 
 - **No CORS preflight**: the frontend always POSTs with `Content-Type:
@@ -134,13 +137,26 @@ js/store.js              The data layer every view actually imports — not
 
 js/api.js               Pure network transport. One call(action, payload)
                         that always hits the real backend (no mock
-                        branching — that's store.js), plus PIN/API-URL
-                        storage in localStorage.
+                        branching — that's store.js), PIN storage in
+                        localStorage, and API URL resolution (committed
+                        default + optional per-device override). See "The
+                        API URL" below.
+
+js/defaults.js             Exports DEFAULT_API_URL. Committed on purpose,
+                        unlike the PIN/Sheet ID/Drive IDs — see "The API
+                        URL" below for why. Ships with an obvious
+                        placeholder; edit + commit it yourself after
+                        deploying the backend.
 
 js/countdown.js           Pure local countdown math, no DOM/fetch/
                         localStorage — computeCountdown, formatDuration,
-                        msUntil, isTimePastToday. Unit-testable standalone
-                        (see "Testing approach" below).
+                        msUntil, isTimePastToday, plus the custom-countdown
+                        kinds (computeEventCountdown/computeCourseCountdown/
+                        computeStockCountdown/computeIntervalCountdown/
+                        nextRecurringOccurrence+computeRecurringCountdown/
+                        computeCountupCountdown), classifyCountdownState,
+                        and the computeCustomCountdown dispatcher.
+                        Unit-testable standalone (see "Testing approach").
 
 js/i18n.js                English string table behind t(key, vars). Every
                         user-visible string should go through this, not be
@@ -282,74 +298,108 @@ Force a mode without editing source: `?mock=1` / `?mock=0` in the URL once
 
 1. Deploy `backend/Code.gs` per the README's "Apps Script deploy" section
    and get the web app URL.
-2. Open `http://localhost:8000?mock=0`. This shows the real first-run
-   screen (same one the live site shows) asking for the URL and PIN
-   together.
-3. Enter both, submit. `app.js`'s `attemptFirstRun()` calls
-   `store.setApiUrl()` + `store.setPin()` (both to `localStorage`), then a
-   real `store.call("auth.check", {})`. A wrong PIN is genuinely rejected
-   (with the real 5-attempt lockout); a non-`https://` URL is rejected
-   client-side before any network call.
+2. Edit `js/defaults.js`'s `DEFAULT_API_URL` to that URL (this is also
+   what the live deployment needs — see "The API URL" below — so this step
+   doubles as wiring up production). Don't commit a throwaway/test value;
+   either use your real URL and commit it, or set a **per-device override**
+   instead (see step 4) and leave `defaults.js` at its placeholder locally.
+3. Open `http://localhost:8000?mock=0`. This shows the real first-run
+   screen — PIN only — same one the live site shows.
+4. Enter the PIN, submit. `app.js`'s `attemptFirstRun(pin)` calls
+   `store.setPin(pin)` then a real `store.call("auth.check", {})`. A wrong
+   PIN is genuinely rejected (with the real 5-attempt lockout).
 
-To skip the form while testing (e.g. driving it from a script), seed
-`localStorage` directly before reload: `pct_api_url` and `pct_pin`. That's
+   Prefer not to touch `js/defaults.js` at all for a quick local test?
+   Set a per-device override instead, from the browser console or a test
+   script, before loading the app:
+   ```js
+   localStorage.setItem('pct_api_url_override', 'https://your-test-url/exec');
+   ```
+   Same effect as pasting it into Settings → Advanced, just skippable
+   without signing in first.
+
+To skip the PIN form entirely while testing (e.g. driving it from a
+script), also seed `localStorage.pct_pin` directly before reload. That's
 what `boot()`'s own silent background re-check on every subsequent load
 exercises too — see "PIN" below.
 
 ## PIN: how it actually works
 
-- The PIN itself is **never stored in any file** — not in `Code.gs`, not
-  anywhere in git (there's no config file in v2 at all). It lives in two
-  places only:
+- The PIN itself is **never stored in any file, ever** — not in `Code.gs`,
+  not anywhere in git. It lives in two places only:
   1. **Apps Script Script Properties** (`APP_PIN`), set by hand via the
      Apps Script editor (Project Settings → Script properties).
   2. **Each device's own `localStorage`** (`pct_pin`), set the first time
      that device enters it successfully on the first-run screen.
-- **First entry on a device**: first-run screen → type URL + PIN together
-  → `app.js`'s `attemptFirstRun()` calls `store.setApiUrl()` +
-  `store.setPin()` (both written to localStorage) → one
-  `store.call("auth.check", {})`. Accepted → into the app, both values
-  stay stored. Rejected for a wrong PIN → `store.clearPin()` wipes the PIN
-  only (the URL stays, so there's no need to retype it) and the form
-  reappears. Rejected for a network failure → **both** are cleared, since
-  nothing was proven to work yet on this device.
+- **The first-run screen asks for the PIN only** — the server URL is
+  already resolved (see "The API URL" below) before this screen ever
+  renders. `app.js`'s `attemptFirstRun(pin)` calls `store.setPin(pin)`
+  then one `store.call("auth.check", {})`. Accepted → into the app, PIN
+  stays stored. Rejected for a wrong PIN → `store.clearPin()` and the form
+  reappears. Rejected for a network failure → the PIN is **not** cleared
+  (it's very likely fine — the URL is the more probable culprit, and
+  that's fixed in Settings → Advanced, not by retyping a correct PIN).
 - **Every subsequent app load**: `boot()` tries `auth.check` once,
-  silently, using whatever's already in localStorage. Success → straight
-  to Home. Rejected (`kind: "auth"`) → PIN cleared, first-run screen shown
-  again. Any other failure (network/server) → **trusts the stored
-  credentials and lets you in anyway**, so you can read cached data
-  offline without the app locking you out just because there's no signal.
-- **Signing out**: **More → Settings → "Sign out / change PIN or URL"**
-  clears *both* the PIN and the URL and shows the first-run screen again —
-  there's no separate "just lock, keep the URL" action anymore (v1 had
-  two different buttons for this; v2 collapsed them into one, per spec).
+  silently, using whatever PIN's already in localStorage. Success →
+  straight to Home. Rejected (`kind: "auth"`) → PIN cleared, first-run
+  screen shown again. Any other failure (network/server) → **trusts the
+  stored PIN and lets you in anyway**, so you can read cached data offline
+  without the app locking you out just because there's no signal.
+- **Signing out**: **More → Settings → Sign out** clears *only* the PIN.
+  It's deliberately independent from the server URL override (see below) —
+  "who's using this device" vs. "which backend this device talks to" are
+  different concerns now, unlike v1's combined "Sign out / change PIN or
+  URL" button.
 - **Changing the PIN**: edit `APP_PIN` in Apps Script's Script properties
-  (push a new deployment version isn't needed for a Script Properties
-  change, only for `Code.gs` edits), then sign out and re-enter it on each
-  device.
+  (a Script Properties change doesn't need a new deployment version — only
+  `Code.gs` edits do), then sign out and re-enter it on each device.
 - **Lockout**: 5 wrong attempts within 10 minutes → 15-minute lockout,
   tracked server-side via `CacheService` (not per-device, since there's one
   shared PIN) — see `isLockedOut`/`recordFailedAttempt` in `Code.gs`.
-- **Mock mode**: `boot()`/`renderRoute()` auto-provision dummy credentials
+- **Mock mode**: `boot()`/`renderRoute()` auto-provision a dummy PIN
   (`ensureMockCredentials()`) and never show the first-run screen at all —
   not even after signing out while in mock mode, which self-heals straight
-  back into the app instead of getting stuck on a form that mock mode
-  doesn't need filled in.
+  back into the app instead of getting stuck on a form mock mode doesn't
+  need filled in.
 
-## The API URL (companion to the PIN)
+## The API URL
 
-Same pattern as the PIN, entered together on the same form:
+Resolved, not entered, for almost every device — see `js/defaults.js` and
+`js/api.js`'s `getApiUrl()`:
 
-- Stored in `localStorage` (`pct_api_url`), entered once per device.
-- Validated client-side as `https://...` before any network call —
-  Apps Script URLs are always https, and this also means a plaintext PIN
-  never goes out over an insecure connection by accident.
-- To change it later (e.g. after redeploying Apps Script to a new URL):
-  same **"Sign out / change PIN or URL"** action as the PIN — there's no
-  separate "just the URL" control in v2.
-- There's no local-dev-only shortcut file for this anymore (v1's
-  `CONFIG.API_URL` in `config.js` is gone) — use `?mock=0` + the form, or
-  seed `localStorage` directly, per "Running it locally" above.
+- **`js/defaults.js`** exports `DEFAULT_API_URL` and is **committed**,
+  unlike the PIN — it isn't actually a secret once deployed (anyone using
+  the live site can already see it in their browser's network tab), and
+  committing it is what lets the first-run screen ask for only a PIN.
+  Ships with an obviously-not-a-URL placeholder
+  (`"REPLACE_WITH_YOUR_DEPLOYED_APPS_SCRIPT_URL"`) that must never be
+  guessed or invented — someone with repo access edits it to their real
+  deployed URL and commits that themselves.
+- **Per-device override**: `localStorage` (`pct_api_url_override`), set
+  via **Settings → Advanced**, independent of the PIN and independent of
+  signing out. Takes priority over the default when present; "Reset to
+  built-in URL" clears it. This exists for the gap between "the backend
+  got redeployed as a new deployment" (changes the URL) and "someone
+  updates and commits the new `js/defaults.js`" — or just for testing a
+  different backend without touching the committed default at all.
+- **`getApiUrl()`** = the override if one is set, else `DEFAULT_API_URL`.
+  **`hasApiUrl()`** = `isValidApiUrl(getApiUrl())` — true only once that
+  resolves to something that actually looks like `https://...`. False
+  (showing a "not set up yet" screen, `renderConfigMissing()`) only when
+  `defaults.js` is still its placeholder *and* no override is set either.
+- `isValidApiUrl()` requires `https://` specifically — both because Apps
+  Script URLs always are, and so a plaintext PIN never goes out over an
+  insecure connection by accident.
+- A real bug surfaced while building this: the Advanced override `<input>`
+  was `type="url"`, so the *browser's own* native constraint validation
+  silently blocked submitting anything that didn't look URL-shaped (e.g.
+  `"not-a-url"`) before the custom JS https-only check ever ran — no error
+  shown, nothing visibly happened. Fixed by switching to
+  `type="text" inputmode="url"` (keeps the mobile keyboard hint, loses the
+  native validation that was masking the real one). Worth remembering for
+  any future `type="url"`/`type="email"` input paired with custom JS
+  validation — the native check runs first and can eat the submit event
+  entirely for inputs that don't even reach your own code.
 
 ## Testing approach used during development
 

@@ -39,7 +39,8 @@ revisited in order.
 /index.html
 /css/style.css
 /js/app.js               router + views
-/js/api.js                raw network calls (POST, PIN/URL storage)
+/js/api.js                raw network calls (POST), PIN storage, URL resolution
+/js/defaults.js            DEFAULT_API_URL — committed, edit after deploying
 /js/store.js               data layer: mock mode, caching, version polling,
                            offline write queue (grows through steps 1/2/3/9)
 /js/countdown.js            live local countdown math (step 3)
@@ -49,10 +50,12 @@ revisited in order.
 /backend/Code.gs  /backend/appsscript.json
 ```
 
-No `config.js` / `config.example.js` / `js/mock.js` in v2 — the first-run
-screen collects the API URL and PIN together and stores both in
-`localStorage` (see "Local setup" below), and mock-mode fixtures live
-inside `js/store.js` itself, toggled with a URL flag instead of a file.
+No `config.js` / `config.example.js` / `js/mock.js` in v2. The API URL
+lives in the committed `js/defaults.js` (edit it once after deploying the
+backend — see "Apps Script deploy" below); the first-run screen asks for
+the PIN only and stores it in `localStorage` (see "Signing in" below).
+Mock-mode fixtures live inside `js/store.js` itself, toggled with a URL
+flag instead of a file.
 
 Working on the code itself (new views, new backend actions, understanding
 how the pieces fit together)? See **[DEVELOPMENT.md](DEVELOPMENT.md)** —
@@ -62,7 +65,8 @@ focused on deploying and running the app.
 
 ## Local setup
 
-No config file to copy — just serve the folder with any static file server:
+No per-device config file to copy — just serve the folder with any static
+file server:
 
 ```sh
 python3 -m http.server 8000
@@ -73,14 +77,16 @@ localhost** (and `file://`): the app runs entirely on sample data from
 `js/store.js`, no Apps Script deployment needed, no first-run screen — it
 goes straight to Home. This is how the app works right after a fresh
 clone, with zero setup. On any other host — including the real deployed
-site — it defaults the other way: real mode, first-run screen, never
-silently sample data.
+site — it defaults the other way: real mode, PIN-only first-run screen,
+never silently sample data.
 
 **To develop against your real deployed backend instead**, visit
 `http://localhost:8000?mock=0` once — this disables mock mode (remembered
 in `localStorage` after that) and shows the real first-run screen asking
-for your Apps Script URL and PIN. Switch back to mock mode any time with
-`?mock=1`.
+for your PIN. The server URL comes from `js/defaults.js` (see "Apps Script
+deploy" below) — edit that file if you're testing against a backend other
+than the one already configured there. Switch back to mock mode any time
+with `?mock=1`.
 
 **Stop the dev server** with `Ctrl+C` in that terminal (or
 `pkill -f "http.server 8000"`).
@@ -88,14 +94,19 @@ for your Apps Script URL and PIN. Switch back to mock mode any time with
 ## Signing in (first-run screen)
 
 The first time the app loads on a device (outside mock mode), it asks for
-two things together: the Apps Script web app URL (see "Apps Script deploy"
-below) and the PIN. Both are validated with one `auth.check` call and saved
-to that device's `localStorage` — never in a file, never committed. Every
-later visit skips straight past this screen.
+**just the PIN** — the server URL is already resolved from `js/defaults.js`
+(see "Apps Script deploy" step 9), no per-device entry needed. The PIN is
+validated with one `auth.check` call and saved to that device's
+`localStorage` — never in a file, never committed. Every later visit skips
+straight past this screen; the PIN stays remembered until you sign out or
+the backend rejects it (e.g. after you change `APP_PIN`).
 
-To sign out of a device (e.g. to switch URL or PIN, or hand the phone back
-after testing), use **More → Settings → "Sign out / change PIN or URL"** —
-this clears both values and shows the first-run screen again.
+To sign out of a device (e.g. to hand the phone back after testing, or
+before re-entering a changed PIN), use **More → Settings → Sign out** —
+this clears only the PIN. It does not touch any server URL override (see
+"Changing the server URL later" below) — those are deliberately
+independent, since one is "who's using this device" and the other is
+"which backend this device talks to."
 
 ## Apps Script deploy
 
@@ -222,9 +233,36 @@ whenever you change `backend/Code.gs`.
    preflight Apps Script can't answer) and the browser's default redirect
    handling, untouched.
 
-9. **Try it in the browser.** Open the app locally with `?mock=0` (see
-   "Local setup" above) and enter the URL from step 6 plus your PIN on the
-   first-run screen — same validation as the curl test, just through the UI.
+9. **Wire up the frontend.** Edit `js/defaults.js` — replace
+   `DEFAULT_API_URL`'s placeholder with the URL from step 6 — and commit
+   that file yourself:
+
+   ```sh
+   git add js/defaults.js
+   git commit -m "Set deployed Apps Script URL"
+   ```
+
+   This is the one file in the whole project where committing a real value
+   is intentional (see "Security notes" below for why that's fine). Never
+   commit the PIN, a Sheet ID, or a Drive folder ID anywhere, ever.
+
+10. **Try it in the browser.** Open the app locally with `?mock=0` (see
+    "Local setup" above) and enter just your PIN on the first-run screen —
+    the URL is already resolved from `js/defaults.js`.
+
+### Changing the server URL later
+
+If the Apps Script backend ever gets redeployed as a genuinely **new
+deployment** (not just a new version of the existing one — see step 7
+above), its URL changes. Two ways to point the app at the new URL:
+
+- **Permanently, for everyone**: edit `js/defaults.js` again and commit +
+  push. Every device picks it up automatically (once they load the new
+  version of the site) — no per-device action needed.
+- **Per device, without redeploying the site**: **More → Settings →
+  Advanced**, paste the new URL, save. This overrides `js/defaults.js` on
+  that device only — handy for testing a new deployment before making it
+  the default for everyone. "Reset to built-in URL" clears the override.
 
 ## Telegram reminders (optional)
 
@@ -307,32 +345,34 @@ left sidebar.
 
 5. **First visit, per device.** The very first time the app loads on a
    given phone/browser, it shows the one-time first-run screen asking for
-   the Apps Script web app URL (from "Apps Script deploy" step 6 above) and
-   the PIN together. After that it skips straight to Home on every future
-   visit. Do this once on each phone.
+   **just the PIN** — the server URL is already resolved from the committed
+   `js/defaults.js` (step 9 of "Apps Script deploy" above), no per-device
+   URL entry needed. After a correct PIN it skips straight to Home on every
+   future visit. Do this once on each phone.
 
-   If the Apps Script deployment is ever redeployed and gets a new URL, or
-   the PIN changes, use **More → Settings → "Sign out / change PIN or
-   URL"** to clear both and re-enter them.
+   If the PIN changes (you edited `APP_PIN` in Script Properties), sign out
+   on each device (**More → Settings → Sign out**) and re-enter the new
+   one. If the server URL changes instead (a genuinely new deployment, not
+   just a new version), see "Changing the server URL later" above.
 
 ### Why the repo can be public
 
-The non-negotiable rule is that no real data, Sheet ID, Drive ID, PIN, or
-API URL is ever **committed** — and nothing in this repo's tracked files is.
-There's no config file in the whole v2 architecture that could even hold a
-real API URL; the live site gets it from each device's own `localStorage`
-instead (step 4 above), entered once through the first-run screen, never
-from a file GitHub Pages serves. The PIN never appears in any file,
-committed or not — it only ever lives in Script Properties on the backend
-and in the browser's `localStorage` on each device. The actual medical data
-lives in your Google Sheet and Drive folder, neither of which this repo
-touches.
+The non-negotiable rule is that the **PIN**, a **Sheet ID**, or a **Drive
+folder ID** are never committed — and none of those are anywhere in this
+repo's tracked files, ever. The PIN only ever lives in Script Properties on
+the backend and in each device's own `localStorage` (entered via the
+first-run screen) — never in a file, committed or not. The actual medical
+data lives in your Google Sheet and Drive folder, neither of which this
+repo touches.
 
-The API URL itself isn't a secret once the app is running, anyway — anyone
-using the live site can see it in their browser's network tab, the same as
-any client-side API endpoint. The PIN (never shipped in any file) is the
-real gate, which is why it's constant-time-compared with a lockout, and why
-you should pick one that isn't easily guessed.
+The **API URL is different**, and is committed on purpose, in
+`js/defaults.js` — because it isn't actually a secret once the app is
+running: anyone using the live site can already see it in their browser's
+network tab, the same as any client-side API endpoint. Committing it is
+what lets the first-run screen ask for only a PIN instead of both. The PIN
+(never shipped in any file) is the real gate, which is why it's
+constant-time-compared with a lockout, and why you should pick one that
+isn't easily guessed.
 
 If you'd rather keep the source itself private, that's a GitHub Pro/Team
 feature (private-repo Pages) and is the one thing in this project that
@@ -349,12 +389,16 @@ signal. New API calls (and anything not read before) still need a connection.
 
 ## Troubleshooting
 
-**First-run screen keeps reappearing after you enter the URL.** The URL
-must start with `https://` (Apps Script URLs always do). Check for typos or
-a stray trailing space. If it still fails after a valid-looking URL is
-accepted, the problem is likely the next item below.
+**"This app isn't set up yet" instead of a PIN screen.** `js/defaults.js`
+still has its placeholder `DEFAULT_API_URL` and no override is set either.
+Edit that file (step 9 of "Apps Script deploy") or, if you're testing
+before committing it, set a temporary override in **Settings → Advanced**
+— except you can't reach Settings without signing in first, so for local
+testing just edit `js/defaults.js` directly (it's fine to leave uncommitted
+while testing, just don't forget to put the placeholder back — or just
+commit the real value once you're sure, per "Security notes" above).
 
-**Stuck on the first-run screen / "Incorrect PIN" even though it's right.**
+**Stuck on the PIN screen / "Incorrect PIN" even though it's right.**
 - Confirm `APP_PIN` is actually set in the Apps Script project's Script
   properties (Project Settings → Script properties) — without it, every PIN
   is rejected with a different-sounding error ("APP_PIN is not set...").
@@ -362,9 +406,10 @@ accepted, the problem is likely the next item below.
   the live URL until you do **Deploy → Manage deployments → (pencil) → New
   version → Deploy**.
 - 5 wrong attempts locks you out for 15 minutes (by design) — wait it out.
-- If you signed out (Settings → "Sign out / change PIN or URL") and the
-  server URL changed since, re-enter both fresh rather than assuming only
-  the PIN needs updating.
+- If the backend was redeployed as a genuinely new deployment (a new URL,
+  not just a new version) and `js/defaults.js` hasn't been updated yet, set
+  a temporary override in **Settings → Advanced** rather than assuming the
+  PIN itself is wrong.
 
 **"Could not reach the server" / everything stuck loading.**
 - Open the deployed web app URL directly in a browser tab. A correctly
@@ -427,18 +472,24 @@ having her doctor glance at just those flagged items.
 
 ## Security notes
 
-- No real data, Sheet ID, Drive IDs, PIN, or API URL is ever committed —
-  there's no config file at all in v2 to accidentally commit. Both the API
-  URL and the PIN live only in each device's own `localStorage`, entered
-  once via the first-run screen.
-- The PIN lives server-side only in Apps Script Script Properties
-  (`APP_PIN`), compared constant-time, with lockout after repeated
-  failures (5 wrong attempts / 10 minutes → 15-minute lockout).
-- Never paste the real API URL or PIN into a chat, commit, or shared
-  document — treat them like any other credential. If one is ever
-  accidentally exposed, rotate the PIN (edit `APP_PIN` in Script
-  properties, push a new deployment version) and re-enter it on both
-  phones via "Sign out / change PIN or URL" in Settings.
+- **The PIN, any Sheet ID, and any Drive folder ID must never appear in
+  this repo** — not committed, not in an issue, not in a commit message,
+  not pasted into a chat or shared document. They live only in Apps
+  Script's Script Properties (server-side) and, for the PIN, in each
+  device's own `localStorage` after a successful first-run sign-in.
+- **The API URL is the one exception, and that's intentional**: it's
+  committed in `js/defaults.js`. It isn't a secret once the app is
+  deployed — anyone using the live site can already see it in their
+  browser's network tab — so there's nothing lost by committing it, and it
+  means the first-run screen only has to ask for a PIN. Don't read "it's
+  committed" as "it's safe to also commit the PIN" — those are different
+  categories for different reasons.
+- The PIN is compared constant-time, with lockout after repeated failures
+  (5 wrong attempts / 10 minutes → 15-minute lockout).
+- If the PIN is ever accidentally exposed (pasted somewhere it shouldn't
+  have been, etc.), rotate it: edit `APP_PIN` in Script properties, push a
+  new deployment **version**, then sign out and re-enter the new PIN on
+  each device (**More → Settings → Sign out**).
 - Drive files are never made public; the backend serves them through the
   API.
 - This app does not replace medical advice from a doctor.
