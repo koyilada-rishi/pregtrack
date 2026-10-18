@@ -20,7 +20,7 @@ clone to a working install with no guessing.
 - [x] Step 7 — records vault + upload
 - [x] Step 8 — checklists + settings
 - [x] Step 9 — PWA (manifest, service worker, icons)
-- [ ] Step 10 — Telegram reminders
+- [x] Step 10 — Telegram reminders
 - [ ] Step 11 — final polish
 
 ## Repo layout
@@ -149,6 +149,45 @@ whenever you change `backend/Code.gs`.
 
 9. **Wire up the frontend.** Copy `js/config.example.js` to `js/config.js`
    (gitignored), set `API_URL` to the URL from step 6, and set `MOCK: false`.
+
+## Telegram reminders (optional)
+
+Once this is set up, the app sends a daily morning message (gestational
+week/days-to-go, any appointment in the next 24 hours, and today's medicine
+list) to a Telegram chat, via an Apps Script time-driven trigger. Nothing in
+the frontend depends on this — skip it if you don't want reminders.
+
+1. **Create a bot.** In Telegram, message **[@BotFather](https://t.me/BotFather)**,
+   send `/newbot`, and follow the prompts. BotFather replies with a token
+   that looks like `123456789:AAH...`. That's your `TELEGRAM_BOT_TOKEN`.
+
+2. **Get the chat ID.** Message your new bot anything (e.g. "hi") first —
+   bots can't message you until you've messaged them. Then message
+   **[@userinfobot](https://t.me/userinfobot)** (or any similar "get my
+   Telegram ID" bot) to get your numeric chat ID. That's your
+   `TELEGRAM_CHAT_ID`. (For a group chat instead, add the bot to the group
+   and use the group's chat ID, which is negative.)
+
+3. **Add both as script properties.** In the Apps Script editor: Project
+   Settings → Script properties → add `TELEGRAM_BOT_TOKEN` and
+   `TELEGRAM_CHAT_ID` with the values from above.
+
+4. **Create the trigger.** In the function dropdown, select
+   `createDailyReminderTrigger`, then click **Run**. This schedules
+   `sendDailyReminder` to run once a day around 7:00 AM Asia/Kolkata. The
+   first run will ask you to authorize a new permission (it now makes
+   external requests, to Telegram) — allow it.
+
+5. **Test it immediately.** Instead of waiting until tomorrow morning,
+   select `sendDailyReminder` in the function dropdown and click **Run**
+   once by hand. You should get a message in Telegram within a few seconds.
+   If nothing arrives, check **View > Executions** in the Apps Script editor
+   for the error (usually a wrong token, or the bot hasn't been messaged
+   first).
+
+To stop the reminders later, run `removeDailyReminderTriggers()` once from
+the editor, or delete the trigger from the clock icon ("Triggers") in the
+left sidebar.
 
 ## GitHub Pages setup
 
