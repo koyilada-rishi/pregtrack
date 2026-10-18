@@ -13,7 +13,10 @@
 import { CONFIG } from "./config.js";
 import { mockCall } from "./mock.js";
 
+export { CONFIG };
+
 const PIN_STORAGE_KEY = "pct_pin";
+const API_URL_STORAGE_KEY = "pct_api_url";
 const CACHE_PREFIX = "pct_cache:";
 const REQUEST_TIMEOUT_MS = 15000;
 
@@ -53,6 +56,44 @@ export function clearPin() {
 
 export function hasPin() {
   return getPin().length > 0;
+}
+
+// --- API URL storage --------------------------------------------------------
+//
+// js/config.js is gitignored and never committed (the security rules forbid
+// committing the real API URL), so a plain `git push` to main never ships a
+// working config.js to GitHub Pages. Instead, in non-mock mode, the API URL
+// is entered once per device (same as the PIN) and stored here — it never
+// needs to exist in any file served by Pages. CONFIG.API_URL still works as
+// a local-dev convenience (skips the prompt), and takes priority if both are
+// set, since a developer's js/config.js is a deliberate override.
+
+export function getApiUrl() {
+  try {
+    return CONFIG.API_URL || localStorage.getItem(API_URL_STORAGE_KEY) || "";
+  } catch {
+    return CONFIG.API_URL || "";
+  }
+}
+
+export function setApiUrl(url) {
+  try {
+    localStorage.setItem(API_URL_STORAGE_KEY, url);
+  } catch {
+    // localStorage unavailable — URL just won't persist across reloads.
+  }
+}
+
+export function clearApiUrl() {
+  try {
+    localStorage.removeItem(API_URL_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function hasApiUrl() {
+  return getApiUrl().length > 0;
 }
 
 // --- Response cache (last-good data per action, for offline reading) ------
@@ -97,15 +138,16 @@ async function callMock(action, payload) {
 }
 
 async function callReal(action, payload) {
-  if (!CONFIG.API_URL) {
-    throw new ApiError("API_URL is not set in js/config.js.", "server");
+  const apiUrl = getApiUrl();
+  if (!apiUrl) {
+    throw new ApiError("No server URL is set up on this device yet.", "server");
   }
 
   let response;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    response = await fetch(CONFIG.API_URL, {
+    response = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ pin: getPin(), action, payload: payload || {} }),

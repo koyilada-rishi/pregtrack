@@ -24,6 +24,13 @@ const STRINGS = {
     "lock.error.generic": "Something went wrong. Please try again.",
     "lock.error.needsConfig": "App isn't set up yet — copy js/config.example.js to js/config.js and add your API URL.",
 
+    "setup.title": "Set up this device",
+    "setup.subtitle": "Enter the Apps Script web app URL from your deploy. This is saved only on this device, never in the app's code.",
+    "setup.placeholder": "https://script.google.com/macros/s/.../exec",
+    "setup.submit": "Continue",
+    "setup.hint": "You'll find this URL in the README's \"Apps Script deploy\" section, step 6.",
+    "setup.error.invalid": "Please enter a valid https:// URL.",
+
     "common.back": "Back",
     "common.retry": "Retry",
     "common.loading": "Loading…",
@@ -235,6 +242,8 @@ const STRINGS = {
     "settings.contacts.confirmDelete": "Delete this contact?",
     "settings.pin.title": "PIN",
     "settings.pin.instructions": "The PIN is stored in the Apps Script project, not in this app. To change it: open the Apps Script project → Project Settings → Script properties → edit APP_PIN → save. Then enter the new PIN here on both your phones.",
+    "settings.connection.title": "Server URL",
+    "settings.connection.change": "Change server URL",
 
     "foodlog.title": "Log a meal, craving, or aversion",
     "foodlog.meal": "Meal",

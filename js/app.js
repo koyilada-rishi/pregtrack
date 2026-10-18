@@ -71,6 +71,11 @@ async function boot() {
   const config = api.CONFIG;
   if (config && config.LANGUAGE) setLanguage(config.LANGUAGE);
 
+  if (!config.MOCK && !api.hasApiUrl()) {
+    renderApiUrlSetup();
+    return;
+  }
+
   if (!api.hasPin()) {
     state.locked = true;
     renderLockScreen();
@@ -115,6 +120,47 @@ function renderConfigMissing() {
       <p>${t("lock.error.needsConfig")}</p>
     </div>
   `;
+}
+
+// ---------------------------------------------------------------------------
+// One-time API URL setup (per device) — see the comment in api.js on why
+// this isn't just read from a committed config.js.
+// ---------------------------------------------------------------------------
+
+function renderApiUrlSetup(message, onDone) {
+  appRoot.innerHTML = `
+    <div class="lock-screen">
+      <h1>${t("setup.title")}</h1>
+      <p>${t("setup.subtitle")}</p>
+      <form id="setup-form">
+        <input id="setup-url-input" class="field" type="url" inputmode="url" autocomplete="off"
+               placeholder="${t("setup.placeholder")}" value="${escapeHtml(api.getApiUrl())}" />
+        <button type="submit" class="btn btn-primary">${t("setup.submit")}</button>
+        <p class="error-text" id="setup-error" ${message ? "" : "hidden"}>${escapeHtml(message || "")}</p>
+      </form>
+      <p class="disclaimer">${t("setup.hint")}</p>
+    </div>
+  `;
+
+  const form = document.getElementById("setup-form");
+  const input = document.getElementById("setup-url-input");
+  input.focus();
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const url = input.value.trim();
+    if (!/^https:\/\/.+/.test(url)) {
+      renderApiUrlSetup(t("setup.error.invalid"), onDone);
+      return;
+    }
+    api.setApiUrl(url);
+    if (onDone) {
+      onDone();
+    } else {
+      state.locked = true;
+      renderLockScreen();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,6 +1918,18 @@ function renderSettingsBody(outlet) {
       <p class="muted">${t("settings.pin.instructions")}</p>
       <button class="btn btn-secondary" id="settings-lock-btn">${t("more.lockNow")}</button>
     </div>
+
+    ${
+      api.CONFIG.MOCK
+        ? ""
+        : `
+      <div class="card">
+        <h2>${t("settings.connection.title")}</h2>
+        <p class="muted">${escapeHtml(api.getApiUrl())}</p>
+        <button class="btn btn-secondary" id="settings-change-url-btn">${t("settings.connection.change")}</button>
+      </div>
+    `
+    }
   `;
 
   attachSettingsHandlers(outlet);
@@ -1943,6 +2001,13 @@ function attachSettingsHandlers(outlet) {
     state.locked = true;
     renderRoute();
   });
+
+  const changeUrlBtn = outlet.querySelector("#settings-change-url-btn");
+  if (changeUrlBtn) {
+    changeUrlBtn.addEventListener("click", () => {
+      renderApiUrlSetup(null, () => { renderRoute(); });
+    });
+  }
 
   const addContactBtn = outlet.querySelector("#add-contact-btn");
   if (addContactBtn) {

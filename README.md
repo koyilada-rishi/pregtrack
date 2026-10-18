@@ -21,7 +21,7 @@ clone to a working install with no guessing.
 - [x] Step 8 — checklists + settings
 - [x] Step 9 — PWA (manifest, service worker, icons)
 - [x] Step 10 — Telegram reminders
-- [ ] Step 11 — final polish
+- [x] Step 11 — final polish
 
 ## Repo layout
 
@@ -147,8 +147,12 @@ whenever you change `backend/Code.gs`.
    `{"ok":false,"error":"Incorrect PIN."}`, and seeing that 5 times in a row
    should lock you out for 15 minutes.
 
-9. **Wire up the frontend.** Copy `js/config.example.js` to `js/config.js`
-   (gitignored), set `API_URL` to the URL from step 6, and set `MOCK: false`.
+9. **Wire up the frontend.** For local dev, copy `js/config.example.js` to
+   `js/config.js` (gitignored), set `API_URL` to the URL from step 6, and
+   set `MOCK: false` — this skips the one-time URL prompt described in
+   "GitHub Pages setup" below. The deployed app on GitHub Pages never has
+   this file; it asks for the URL once per device instead, since the URL
+   can't be committed to a file GitHub Pages would serve.
 
 ## Telegram reminders (optional)
 
@@ -191,7 +195,55 @@ left sidebar.
 
 ## GitHub Pages setup
 
-_Added in step 11._
+1. **Create the GitHub repo and push.** GitHub Pages on a free personal
+   account only serves **public** repositories — and that's fine here: the
+   app's own code has no secrets in it (see "Why the repo can be public"
+   below). Create a repo (e.g. `preg`), then from this folder:
+
+   ```sh
+   git remote add origin https://github.com/<you>/preg.git
+   git push -u origin main
+   ```
+
+2. **Enable Pages.** In the GitHub repo: **Settings → Pages**. Under
+   "Build and deployment", set **Source: Deploy from a branch**, **Branch:
+   main**, folder **/ (root)**. Save.
+
+3. **Wait a minute, then open the site.** GitHub shows the URL at the top
+   of that same Pages settings page once it's live — typically
+   `https://<you>.github.io/preg/`.
+
+4. **First visit, per device.** The very first time the app loads on a
+   given phone/browser, it shows a one-time **"Set up this device"** screen
+   asking for the Apps Script web app URL (from "Apps Script deploy" step 6
+   above). After that it goes straight to the normal PIN lock screen on
+   every future visit. Do this once on your phone and once on your wife's.
+
+   If the Apps Script deployment is ever redeployed and gets a new URL, use
+   **More → Settings → Change server URL** to update it without needing to
+   re-enter anything else.
+
+### Why the repo can be public
+
+The non-negotiable rule is that no real data, Sheet ID, Drive ID, PIN, or
+API URL is ever **committed** — and nothing in this repo's tracked files is.
+`js/config.js` (the only file that could hold a real API URL) is gitignored
+and was never committed; the live site gets its API URL from each device's
+own `localStorage` instead (step 4 above), never from a file GitHub Pages
+serves. The PIN never appears in any file, committed or not — it only ever
+lives in Script Properties on the backend and in the browser's `localStorage`
+on each device. The actual medical data lives in your Google Sheet and
+Drive folder, neither of which this repo touches.
+
+The API URL itself isn't a secret once the app is running, anyway — anyone
+using the live site can see it in their browser's network tab, the same as
+any client-side API endpoint. The PIN (never shipped in any file) is the
+real gate, which is why it's constant-time-compared with a lockout, and why
+you should pick one that isn't easily guessed.
+
+If you'd rather keep the source itself private, that's a GitHub Pro/Team
+feature (private-repo Pages) and is the one thing in this project that
+isn't free — everything else here stays within "no paid services".
 
 ## Install to home screen
 
@@ -204,7 +256,54 @@ signal. New API calls (and anything not read before) still need a connection.
 
 ## Troubleshooting
 
-_Added in step 11._
+**"App isn't set up yet" on load.** `js/config.js` is missing. Run
+`cp js/config.example.js js/config.js` (local dev only — the live site
+doesn't need this file at all; see "GitHub Pages setup").
+
+**"Set up this device" keeps reappearing after you enter the URL.** The URL
+must start with `https://` (Apps Script URLs always do). Check for typos or
+a stray trailing space. If it still fails after a valid-looking URL is
+accepted, the problem is likely the next item below.
+
+**Stuck on the PIN screen / "Incorrect PIN" even though it's right.**
+- Confirm `APP_PIN` is actually set in the Apps Script project's Script
+  properties (Project Settings → Script properties) — without it, every PIN
+  is rejected with a different-sounding error ("APP_PIN is not set...").
+- Check you're on the latest deployment: editing `Code.gs` doesn't update
+  the live URL until you do **Deploy → Manage deployments → (pencil) → New
+  version → Deploy**.
+- 5 wrong attempts locks you out for 15 minutes (by design) — wait it out.
+
+**"Could not reach the server" / everything stuck loading.**
+- Open the deployed web app URL directly in a browser tab. A correctly
+  deployed Apps Script web app returns
+  `{"ok":false,"error":"This API only accepts POST requests."}` on a plain
+  GET — if you see a Google sign-in page or a 404 instead, the deployment
+  itself is broken (re-check "Execute as: Me" / "Who has access: Anyone" in
+  the deployment settings).
+- Check you're online — the offline banner should appear automatically,
+  and the app falls back to the last-saved data per view.
+
+**Dashboard/views show nothing, no errors.** Normal on a fresh setup — fill
+in a due date in Settings, then add a medicine/appointment/health entry to
+see the dashboard populate.
+
+**Uploads fail with a size error.** The limit is 8 MB per file (Apps
+Script's own request-size ceiling is the real constraint here). Compress
+the photo or split a multi-page scan into smaller files.
+
+**Telegram reminder never arrives.** See step 5 of "Telegram reminders"
+above — check **View → Executions** in the Apps Script editor for the
+actual error. The most common cause is not having messaged the bot first
+(bots can't initiate a conversation).
+
+**Changes to `Code.gs` don't seem to take effect.** Same as above — Apps
+Script requires a new deployment version after every edit; saving the file
+alone isn't enough.
+
+**Install-to-home-screen option missing.** Some browsers only offer this
+after the service worker has registered and the page has been visited at
+least once over HTTPS. Reload once, wait a few seconds, then check again.
 
 ## Scope notes
 
