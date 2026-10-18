@@ -27,8 +27,8 @@ const NAV_ITEMS = [
 
 const ROUTES = {
   "/dashboard": { render: renderDashboardView, navKey: "home", title: () => t("dashboard.title") },
-  "/meds": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.meds.title"), 5), navKey: "meds", title: () => t("nav.meds") },
-  "/visits": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.visits.title"), 5), navKey: "visits", title: () => t("nav.visits") },
+  "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
+  "/visits": { render: renderAppointmentsView, navKey: "visits", title: () => t("nav.visits") },
   "/records": { render: (outlet) => renderPlaceholderView(outlet, t("placeholder.records.title"), 7), navKey: "records", title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
@@ -511,6 +511,455 @@ function foodItemMarkup(item) {
 }
 
 // ---------------------------------------------------------------------------
+// Medicines
+// ---------------------------------------------------------------------------
+
+const medsState = { medicines: [], logs: [], loading: true, error: null, formItem: null };
+
+async function renderMedicinesView(outlet) {
+  medsState.loading = true;
+  medsState.error = null;
+  medsState.formItem = null;
+  outlet.innerHTML = genericSkeleton(6);
+
+  try {
+    const [medicines, history] = await Promise.all([
+      api.call("medicines.list", {}),
+      api.call("medicines.history", { days: 14 })
+    ]);
+    medsState.medicines = medicines;
+    medsState.logs = history.logs;
+    medsState.loading = false;
+    renderMedsBody(outlet);
+  } catch (err) {
+    medsState.loading = false;
+    medsState.error = err;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderMedicinesView(outlet));
+  }
+}
+
+function renderMedsBody(outlet) {
+  outlet.innerHTML = medsState.formItem !== null ? medicineFormMarkup(medsState.formItem) : medsListMarkup();
+  attachMedsHandlers(outlet);
+}
+
+function medsListMarkup() {
+  const todayStr = formatDateInput(new Date());
+  const takenToday = new Set(
+    medsState.logs.filter((l) => dateStrEq(l.date, todayStr) && isTruthy(l.taken)).map((l) => l.medicine_id + "|" + l.time)
+  );
+
+  const todayDoses = [];
+  medsState.medicines.filter((m) => isMedicineActiveOn(m, todayStr)).forEach((m) => {
+    splitTimes(m.times).forEach((time) => {
+      todayDoses.push({ medicine: m, time, taken: takenToday.has(m.id + "|" + time) });
+    });
+  });
+  todayDoses.sort((a, b) => a.time.localeCompare(b.time));
+
+  const historyByDate = {};
+  medsState.logs.forEach((l) => {
+    const d = dateStrOf(l.date);
+    if (!historyByDate[d]) historyByDate[d] = [];
+    historyByDate[d].push(l);
+  });
+  const historyDates = Object.keys(historyByDate).sort((a, b) => b.localeCompare(a));
+
+  return `
+    <div class="card">
+      <h2>${t("meds.today.title")}</h2>
+      ${
+        todayDoses.length
+          ? `
+        <ul class="med-list med-list--checkable">
+          ${todayDoses
+            .map(
+              (d) => `
+            <li>
+              <label class="med-check">
+                <input type="checkbox" data-med-id="${escapeHtml(d.medicine.id)}" data-med-time="${escapeHtml(d.time)}" ${d.taken ? "checked" : ""} />
+                <span class="${d.taken ? "med-check-done" : ""}">${escapeHtml(d.medicine.name)}${d.medicine.dose ? " · " + escapeHtml(d.medicine.dose) : ""}</span>
+              </label>
+              <span class="med-time">${escapeHtml(d.time)}</span>
+            </li>
+          `
+            )
+            .join("")}
+        </ul>
+      `
+          : `<p class="empty">${t("meds.today.none")}</p>`
+      }
+    </div>
+
+    <button class="btn btn-primary" id="add-med-btn">${t("meds.add")}</button>
+
+    <div class="card">
+      <h2>${t("meds.all.title")}</h2>
+      ${
+        medsState.medicines.length
+          ? `<ul class="entity-list">${medsState.medicines.map((m) => medicineRowMarkup(m)).join("")}</ul>`
+          : `<p class="empty">${t("meds.all.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <h2>${t("meds.history.title")}</h2>
+      ${
+        historyDates.length
+          ? historyDates
+              .slice(0, 14)
+              .map((d) => historyDayMarkup(d, historyByDate[d]))
+              .join("")
+          : `<p class="empty">${t("meds.history.none")}</p>`
+      }
+    </div>
+  `;
+}
+
+function medicineRowMarkup(m) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(m.name)}</strong>
+        <span class="muted">${escapeHtml([m.dose, m.frequency].filter(Boolean).join(" · "))}</span>
+        <span class="muted">${escapeHtml(m.times || "")}</span>
+        ${!isTruthy(m.active) ? `<span class="badge">${t("meds.inactive")}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        <button class="btn-link" data-edit-med="${escapeHtml(m.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-med="${escapeHtml(m.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function historyDayMarkup(dateStr, logs) {
+  const takenCount = logs.filter((l) => isTruthy(l.taken)).length;
+  return `
+    <div class="history-day">
+      <div class="history-date">${escapeHtml(formatDisplayDate(dateStr))}</div>
+      <div class="muted">${t("meds.history.ratio", { taken: takenCount, total: logs.length })}</div>
+    </div>
+  `;
+}
+
+function medicineFormMarkup(item) {
+  const isNew = item === "new";
+  const m = isNew ? {} : item;
+  return `
+    <div class="card">
+      <h2>${isNew ? t("meds.form.titleNew") : t("meds.form.titleEdit")}</h2>
+      <form id="med-form">
+        ${formField(t("meds.form.name"), `<input class="field" name="name" required value="${escapeHtml(m.name)}" />`)}
+        ${formField(t("meds.form.dose"), `<input class="field" name="dose" value="${escapeHtml(m.dose)}" />`)}
+        ${formField(t("meds.form.frequency"), `<input class="field" name="frequency" value="${escapeHtml(m.frequency)}" />`)}
+        ${formField(t("meds.form.times"), `<input class="field" name="times" placeholder="08:00, 20:00" value="${escapeHtml(m.times)}" />`, t("meds.form.timesHint"))}
+        ${formField(t("meds.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(dateStrOf(m.start_date) || formatDateInput(new Date()))}" />`)}
+        ${formField(t("meds.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(dateStrOf(m.end_date))}" />`)}
+        ${formField(t("meds.form.prescribedBy"), `<input class="field" name="prescribed_by" value="${escapeHtml(m.prescribed_by)}" />`)}
+        ${formField(t("meds.form.notes"), `<textarea class="field" name="notes" rows="3">${escapeHtml(m.notes)}</textarea>`)}
+        <label class="checkbox-field">
+          <input type="checkbox" name="active" ${isNew || isTruthy(m.active) ? "checked" : ""} />
+          <span>${t("meds.form.active")}</span>
+        </label>
+        <p class="error-text" id="med-form-error" hidden></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="med-form-cancel">${t("common.cancel")}</button>
+          <button type="submit" class="btn btn-primary" id="med-form-save">${t("common.save")}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function attachMedsHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-med-btn");
+  if (addBtn) addBtn.addEventListener("click", () => { medsState.formItem = "new"; renderMedsBody(outlet); });
+
+  outlet.querySelectorAll("[data-edit-med]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      medsState.formItem = medsState.medicines.find((m) => m.id === btn.dataset.editMed) || "new";
+      renderMedsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-med]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("meds.confirmDelete"))) return;
+      try {
+        await api.call("medicines.delete", { id: btn.dataset.deleteMed });
+        await renderMedicinesView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll('input[type="checkbox"][data-med-id]').forEach((checkbox) => {
+    checkbox.addEventListener("change", async () => {
+      const medicineId = checkbox.dataset.medId;
+      const time = checkbox.dataset.medTime;
+      const taken = checkbox.checked;
+      checkbox.disabled = true;
+      try {
+        await api.call("medicines.logTaken", { medicine_id: medicineId, date: formatDateInput(new Date()), time, taken });
+        await renderMedicinesView(outlet);
+      } catch (err) {
+        checkbox.checked = !taken;
+        checkbox.disabled = false;
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const form = outlet.querySelector("#med-form");
+  if (form) {
+    outlet.querySelector("#med-form-cancel").addEventListener("click", () => {
+      medsState.formItem = null;
+      renderMedsBody(outlet);
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const payload = {
+        name: fd.get("name").trim(),
+        dose: fd.get("dose").trim(),
+        frequency: fd.get("frequency").trim(),
+        times: fd.get("times").trim(),
+        start_date: fd.get("start_date"),
+        end_date: fd.get("end_date"),
+        prescribed_by: fd.get("prescribed_by").trim(),
+        notes: fd.get("notes").trim(),
+        active: fd.get("active") === "on"
+      };
+      const saveBtn = outlet.querySelector("#med-form-save");
+      saveBtn.disabled = true;
+      try {
+        if (medsState.formItem === "new") {
+          await api.call("medicines.create", payload);
+        } else {
+          await api.call("medicines.update", { id: medsState.formItem.id, ...payload });
+        }
+        await renderMedicinesView(outlet);
+      } catch (err) {
+        saveBtn.disabled = false;
+        const errEl = outlet.querySelector("#med-form-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+}
+
+function isMedicineActiveOn(m, dateStr) {
+  if (!isTruthy(m.active)) return false;
+  const start = dateStrOf(m.start_date);
+  const end = dateStrOf(m.end_date);
+  if (start && start > dateStr) return false;
+  if (end && end < dateStr) return false;
+  return true;
+}
+
+function splitTimes(times) {
+  return String(times || "").split(",").map((t) => t.trim()).filter(Boolean);
+}
+
+function isTruthy(value) {
+  return value === true || String(value).toUpperCase() === "TRUE";
+}
+
+// ---------------------------------------------------------------------------
+// Appointments
+// ---------------------------------------------------------------------------
+
+const apptState = { appointments: [], loading: true, formItem: null };
+
+async function renderAppointmentsView(outlet) {
+  apptState.loading = true;
+  apptState.formItem = null;
+  outlet.innerHTML = genericSkeleton(5);
+
+  try {
+    apptState.appointments = await api.call("appointments.list", {});
+    apptState.loading = false;
+    renderApptBody(outlet);
+  } catch (err) {
+    apptState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderAppointmentsView(outlet));
+  }
+}
+
+function renderApptBody(outlet) {
+  outlet.innerHTML = apptState.formItem !== null ? appointmentFormMarkup(apptState.formItem) : apptListMarkup();
+  attachApptHandlers(outlet);
+}
+
+function apptListMarkup() {
+  const upcoming = apptState.appointments
+    .filter((a) => a.status === "upcoming")
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const past = apptState.appointments
+    .filter((a) => a.status !== "upcoming")
+    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+
+  return `
+    <button class="btn btn-primary" id="add-appt-btn">${t("appt.add")}</button>
+
+    <div class="card">
+      <h2>${t("appt.upcoming.title")}</h2>
+      ${
+        upcoming.length
+          ? `<ul class="entity-list">${upcoming.map((a) => appointmentRowMarkup(a, true)).join("")}</ul>`
+          : `<p class="empty">${t("appt.upcoming.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <h2>${t("appt.past.title")}</h2>
+      ${
+        past.length
+          ? `<ul class="entity-list">${past.map((a) => appointmentRowMarkup(a, false)).join("")}</ul>`
+          : `<p class="empty">${t("appt.past.none")}</p>`
+      }
+    </div>
+  `;
+}
+
+function appointmentRowMarkup(a, isUpcoming) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(a.purpose || a.doctor || t("appt.form.titleNew"))}</strong>
+        <span class="muted">${formatApptDateTime(a.datetime)}${a.doctor ? " · " + escapeHtml(a.doctor) : ""}</span>
+        ${a.location ? `<span class="muted">${escapeHtml(a.location)}</span>` : ""}
+        ${!isUpcoming ? `<span class="badge">${escapeHtml(t("appt.status." + a.status))}</span>` : ""}
+        ${a.notes_after_visit ? `<span class="muted">${escapeHtml(a.notes_after_visit)}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        ${isUpcoming ? `<button class="btn-link" data-mark-done="${escapeHtml(a.id)}">${t("appt.markDone")}</button>` : ""}
+        <button class="btn-link" data-edit-appt="${escapeHtml(a.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-appt="${escapeHtml(a.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function appointmentFormMarkup(item) {
+  const isNew = item === "new";
+  const a = isNew ? {} : item;
+  return `
+    <div class="card">
+      <h2>${isNew ? t("appt.form.titleNew") : t("appt.form.titleEdit")}</h2>
+      <form id="appt-form">
+        ${formField(t("appt.form.datetime"), `<input class="field" type="datetime-local" name="datetime" required value="${escapeHtml(toDatetimeLocalValue(a.datetime))}" />`)}
+        ${formField(t("appt.form.doctor"), `<input class="field" name="doctor" value="${escapeHtml(a.doctor)}" />`)}
+        ${formField(t("appt.form.purpose"), `<input class="field" name="purpose" value="${escapeHtml(a.purpose)}" />`)}
+        ${formField(t("appt.form.location"), `<input class="field" name="location" value="${escapeHtml(a.location)}" />`)}
+        ${formField(
+          t("appt.form.status"),
+          `<select class="field" name="status">
+            ${["upcoming", "done", "missed"].map((s) => `<option value="${s}" ${(a.status || "upcoming") === s ? "selected" : ""}>${escapeHtml(t("appt.status." + s))}</option>`).join("")}
+          </select>`
+        )}
+        ${formField(t("appt.form.notes"), `<textarea class="field" name="notes_after_visit" rows="3">${escapeHtml(a.notes_after_visit)}</textarea>`)}
+        <p class="error-text" id="appt-form-error" hidden></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="appt-form-cancel">${t("common.cancel")}</button>
+          <button type="submit" class="btn btn-primary" id="appt-form-save">${t("common.save")}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function attachApptHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-appt-btn");
+  if (addBtn) addBtn.addEventListener("click", () => { apptState.formItem = "new"; renderApptBody(outlet); });
+
+  outlet.querySelectorAll("[data-edit-appt]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      apptState.formItem = apptState.appointments.find((a) => a.id === btn.dataset.editAppt) || "new";
+      renderApptBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-appt]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("appt.confirmDelete"))) return;
+      try {
+        await api.call("appointments.delete", { id: btn.dataset.deleteAppt });
+        await renderAppointmentsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-mark-done]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api.call("appointments.update", { id: btn.dataset.markDone, status: "done" });
+        await renderAppointmentsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const form = outlet.querySelector("#appt-form");
+  if (form) {
+    outlet.querySelector("#appt-form-cancel").addEventListener("click", () => {
+      apptState.formItem = null;
+      renderApptBody(outlet);
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const localDatetime = fd.get("datetime");
+      const parsed = new Date(localDatetime);
+      const saveBtn = outlet.querySelector("#appt-form-save");
+      const errEl = outlet.querySelector("#appt-form-error");
+      if (isNaN(parsed.getTime())) {
+        errEl.textContent = t("appt.form.invalidDate");
+        errEl.hidden = false;
+        return;
+      }
+      const payload = {
+        datetime: parsed.toISOString(),
+        doctor: fd.get("doctor").trim(),
+        purpose: fd.get("purpose").trim(),
+        location: fd.get("location").trim(),
+        status: fd.get("status"),
+        notes_after_visit: fd.get("notes_after_visit").trim()
+      };
+      saveBtn.disabled = true;
+      try {
+        if (apptState.formItem === "new") {
+          await api.call("appointments.create", payload);
+        } else {
+          await api.call("appointments.update", { id: apptState.formItem.id, ...payload });
+        }
+        await renderAppointmentsView(outlet);
+      } catch (err) {
+        saveBtn.disabled = false;
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+}
+
+function toDatetimeLocalValue(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ---------------------------------------------------------------------------
 // More menu
 // ---------------------------------------------------------------------------
 
@@ -591,6 +1040,47 @@ function attachNavButtons(outlet) {
   outlet.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => { location.hash = btn.dataset.nav; });
   });
+}
+
+// Renders a labeled form field, with an optional small hint line underneath.
+function formField(label, inputHtml, hint) {
+  return `
+    <label class="form-field">
+      <span>${label}</span>
+      ${inputHtml}
+      ${hint ? `<small class="field-hint">${hint}</small>` : ""}
+    </label>
+  `;
+}
+
+// "YYYY-MM-DD" for the given Date, in the browser's local time — used for
+// <input type="date"> values and for comparing against sheet date strings.
+function formatDateInput(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// Normalizes a date-ish value (Date, ISO string, or "YYYY-MM-DD") from the
+// API into a plain "YYYY-MM-DD" string for display and comparison.
+function dateStrOf(value) {
+  if (!value) return "";
+  if (value instanceof Date) return formatDateInput(value);
+  const str = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+  const parsed = new Date(str);
+  return isNaN(parsed.getTime()) ? "" : formatDateInput(parsed);
+}
+
+function dateStrEq(a, b) {
+  return dateStrOf(a) === dateStrOf(b);
+}
+
+function formatDisplayDate(dateStr) {
+  try {
+    return new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", year: "numeric" }).format(new Date(dateStr));
+  } catch {
+    return dateStr;
+  }
 }
 
 function escapeHtml(value) {

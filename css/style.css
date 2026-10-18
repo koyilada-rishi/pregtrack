@@ -497,6 +497,133 @@ a { color: var(--color-primary-dark); }
 
 .muted { color: var(--color-text-muted); font-size: 0.85rem; }
 
+/* ---------- Forms ---------- */
+
+.form-field {
+  display: block;
+  margin-bottom: 14px;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.form-field > span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.form-field .field { margin-top: 0; }
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  margin-bottom: 14px;
+}
+
+.checkbox-field input { width: 20px; height: 20px; }
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.form-actions .btn { flex: 1; }
+
+/* ---------- Entity lists (medicines, appointments, contacts, checklist) ---------- */
+
+.entity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entity-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.entity-row:last-child { border-bottom: none; }
+
+.entity-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.92rem;
+}
+
+.entity-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--color-primary-dark);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 4px 2px;
+  cursor: pointer;
+  min-height: 32px;
+}
+
+.btn-link--danger { color: var(--color-emergency); }
+
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+  border-radius: 999px;
+  padding: 2px 8px;
+  width: fit-content;
+}
+
+/* ---------- Medicines: today's checklist ---------- */
+
+.med-list--checkable li { align-items: center; }
+
+.med-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.med-check input { width: 22px; height: 22px; }
+
+.med-check-done {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+.history-day {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.9rem;
+}
+
+.history-day:last-child { border-bottom: none; }
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {

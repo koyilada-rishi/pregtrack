@@ -15,7 +15,7 @@ clone to a working install with no guessing.
 - [x] Step 2 — backend (Code.gs: setup, auth, settings, dashboard)
 - [x] Step 3 — frontend shell, lock screen, dashboard, Emergency card
 - [x] Step 4 — content JSON + guide view
-- [ ] Step 5 — medicines + appointments
+- [x] Step 5 — medicines + appointments
 - [ ] Step 6 — health log + charts
 - [ ] Step 7 — records vault + upload
 - [ ] Step 8 — checklists + settings
