@@ -55,6 +55,17 @@ history).
 | v2-5 | `Countdowns + stock tracking + GitHub Pages readiness` (4 commits) | **Backend**: `ensureTabs(ss)` replaces the old unconditional-rewrite tab setup — appends only genuinely missing columns/tabs, never touches existing data, called from both `setup()` and every `bootstrap()` so a `Code.gs` redeploy alone migrates the Sheet. New `Countdowns` tab/actions (5 kinds: event/course/interval/recurring/countup), `Medicines` gains stock_count/doses_per_day/refill_alert_days, `medicines.logTaken` adjusts stock on real taken-state transitions only. **`js/countdown.js`**: pure per-kind math (`computeEventCountdown`/`computeCourseCountdown`/`computeStockCountdown`/`computeIntervalCountdown`/`nextRecurringOccurrence`+`computeRecurringCountdown`/`computeCountupCountdown`), a shared `classifyCountdownState` (upcoming/dueSoon(≤24h)/overdue/done), and a `computeCustomCountdown` dispatcher. **Frontend**: new `#/countdowns` view, Home's "Pinned countdowns" card (ticks every 1s, same mechanism as the pregnancy countdown), Medicines view shows next-dose/course/stock figures per row, the one-tap "taken" checkbox became genuinely optimistic (local state + re-render before the network call resolves). **GitHub Pages readiness**: found and fixed a real, serious bug — `sw.js`'s precache list still referenced `js/mock.js`, deleted in the v2 cutover; `cache.addAll()` is all-or-nothing, so the service worker had been **completely unable to install since that cutover**, silently breaking all offline support with no visible error. Also added `js/store.js`/`countdown.js` to the precache list (new files it was missing) and bumped `CACHE_VERSION`. Mock mode's default changed from an unconditional `true` to hostname-based (`isLocalDev()`): on in local dev, off in production — real mode and the first-run screen by default on any real domain, never silent sample data. Audited every asset reference for GitHub-Pages-subpath safety (all already relative — manifest, sw.js, imports, fetches) and the full git history for secrets (clean — confirmed via direct commands, not inferred). Added `.nojekyll`. Testing: backend harness grew to 103 assertions (was 64), `countdown.js` standalone tests grew to 59 (was 19), plus Playwright verification of the actual offline-after-subpath-deploy scenario (DNS-spoofed to a realistic hostname to test the production mock-mode default for real, not just in theory). |
 | v2-6 | `PIN-only first run` (3 commits) | New `js/defaults.js` (`DEFAULT_API_URL`, committed on purpose — see "The API URL" below). `js/api.js` now resolves the URL from a per-device override (`getApiUrlOverride`/`setApiUrlOverride`/`clearApiUrlOverride`/`hasApiUrlOverride`, Settings → Advanced) or that default; the first-run screen dropped its URL field entirely and asks for the PIN only. Settings' sign-in card split in two: sign-out now clears only the PIN (was PIN+URL together), and a new Advanced card owns the URL override independently. Found and fixed a real bug while testing: the Advanced override's `<input type="url">` let the browser's own native constraint validation silently block malformed submissions before the custom JS https-only check ever ran — switched to `type="text" inputmode="url"`. Also caught and fixed `sw.js` not precaching the new `js/defaults.js` (bumped to v3) — the same class of bug as the earlier `js/mock.js` incident, just a narrower blast radius this time. README/DEVELOPMENT.md updated throughout for the new flow and the updated secrets framing (API URL now intentionally committed; PIN/Sheet ID/Drive IDs still never). Testing: full mock-mode regression, and — since the override's https-only check meant a plain-HTTP fake backend could no longer even reach the first-run screen — stood up a throwaway self-signed HTTPS local server to test the real path faithfully (config-missing screen, PIN-only form, wrong/correct PIN, Advanced override set/validate/reset, sign-out clearing only the PIN while the override survives). Backend/countdown.js suites unaffected (not touched this round): 103/103 and 59/59 still passing. |
 
+**v2 is where the table above ends.** A third work order ("v3") then
+revised Home, medicine scheduling, and day-to-day tracking — again built
+in place, same repo, same `main`. v3 is split into 4 phases; only Phase 1
+has shipped so far.
+
+| # | Commit(s) | What it added |
+|---|--------|----------------|
+| v3-1 | `Backend: v3 medicine scheduling…` | `Medicines` gains the full scheduling model (`schedule_type, anchor_mode, weekdays, interval_hours/days, month_day, every_n_weeks, total_doses, grace_minutes, instructions, prn_min_gap_hours/max_per_day, phases, reason, pack_id, status, stopped_on, stop_note, source`) — additive via `ensureTabs`, a blank `schedule_type` on an old row still means "daily". `medicines.stop` moves a medicine to history instead of deleting it, keeping the old `active` boolean in sync for the still-unmodified dashboard code. `medicinesLogTaken` now accepts `{status: taken\|skipped\|missed, note, taken_at}` alongside the original `{taken: true/false}` (unchanged, still works) — `taken_at` is the *real* instant a dose was logged, which `anchor_mode: from_last` medicines key their next dose off. New `medicinelog.list` (unbounded, lazy) and a `Packs` entity (`packs.list/create/update/delete/tickAll`). New `test/backend.test.js` (the mock-Apps-Script Node harness, finally committed instead of living only in a scratch file) — 140 assertions, `node test/backend.test.js`. |
+| v3-2 | `js/schedule.js: pure medicine-scheduling engine` | New dependency-free module: `slotsForDay`, `nextDose` (interval, fixed vs. from_last), `courseProgress`, `stockDaysLeft` (daily/weekly/monthly/interval/PRN-average), `weeklyMonthlyDueState` (overdue/due_today/due_soon/upcoming, calendar-based), `canTakeNow` (PRN gap+cap — advisory only, never blocks), `packStatus`, `timeOfDayBucket`. New `test/schedule.test.mjs` — 60 assertions covering every must-pass case from the work order (from_last recompute after a late dose, Mon/Thu course, weekly/monthly due-state incl. Feb/Apr clamping, PRN gap+cap, a course ending mid-week, a rolled-back device clock, pack tick-all/untick), `node test/schedule.test.mjs`. |
+| v3-3 | `Frontend: Home redesign, progressive Add Medicine, Packs, Medicines used` | Home rebuilt: static day-count hero (tap to expand hours/minutes, no more ticking seconds), "Today's medicines" grouped Morning/Afternoon/Evening/Night via `schedule.js`, Packs card (tick-all), "Coming up" (weekly/monthly shots due within 2 days or overdue), pinned countdowns/next appointment/quick actions now open as bottom sheets. New shared bottom-sheet + 6-second-undo-toast infrastructure (`openSheet`/`closeSheet`/`showUndoToast` near the top of `app.js`) — every delete/stop applies locally first and only calls the network if the toast's undo isn't pressed. One shared progressive-disclosure "Add Medicine" sheet (`openMedicineSheet`) used from both Home and the Meds page: chips reveal only their own sub-fields (same show/hide pattern the Countdowns form already used), a live plain-language summary, and the required "Enter exactly what your doctor or the label says" line. New "Medicines used" view (`#/meds/history`). Found and fixed a real pre-existing bug while wiring this up: `store.js`'s mock `todayStr()` formatted via `toISOString()` (UTC) after computing the date in local time — off by a day for part of the day in any timezone ahead of UTC, invisible until `schedule.js`'s real date arithmetic started depending on it. Verified via Playwright against mock mode (every Home section tappable, zero console/page errors, all four sheet types open/close cleanly). `sw.js` bumped to v4 (added `js/schedule.js`). |
+
 ## Architecture
 
 ```
@@ -63,7 +74,7 @@ history).
 │  (static files only) │ ─────────────────────────────▶│  doPost → routeAction │
 │                      │ ◀───────────────────────────── │  {ok, data, error}    │
 │  js/app.js (router)  │        JSON response           │                      │
-│  js/store.js (data)  │                                 │  Sheet (10 tabs)      │
+│  js/store.js (data)  │                                 │  Sheet (11 tabs)      │
 │  js/api.js (network) │                                 │  Drive (5 folders)    │
 │  js/defaults.js (url)│                                 │                      │
 │  js/countdown.js     │                                 │                      │
@@ -118,15 +129,18 @@ index.html            Static shell — just a <div id="app">, everything else is
                        rendered by app.js. Links css/style.css, manifest.json,
                        and loads js/app.js as a module.
 
-js/app.js              ~2200 lines. Router (hash-based, see ROUTES table
+js/app.js              ~3900 lines. Router (hash-based, see ROUTES table
                        below), first-run screen, every view's render +
-                       event-handler functions, shared helpers (escapeHtml,
-                       formField, date formatting, genericSkeleton,
-                       errorMarkup). This is where almost all new frontend
-                       work happens. boot() and registerServiceWorker() are
-                       invoked at the very bottom of the file, not the top —
-                       see the comment where ROUTES is defined for why
-                       (a temporal-dead-zone bug bit this once already).
+                       event-handler functions, the shared bottom-sheet +
+                       undo-toast infrastructure (openSheet/closeSheet/
+                       showUndoToast, near the top, right after the module
+                       imports), shared helpers (escapeHtml, formField, date
+                       formatting, genericSkeleton, errorMarkup). This is
+                       where almost all new frontend work happens. boot()
+                       and registerServiceWorker() are invoked at the very
+                       bottom of the file, not the top — see the comment
+                       where ROUTES is defined for why (a temporal-dead-zone
+                       bug bit this once already).
 
 js/store.js              The data layer every view actually imports — not
                         js/api.js directly. Mock-mode flag + fixtures, plus
@@ -158,17 +172,38 @@ js/countdown.js           Pure local countdown math, no DOM/fetch/
                         and the computeCustomCountdown dispatcher.
                         Unit-testable standalone (see "Testing approach").
 
+js/schedule.js            Pure medicine-scheduling math (v3), same no-DOM/
+                        fetch/localStorage rule as countdown.js — imports
+                        only parseLocalDateOnly from it. slotsForDay,
+                        nextDose (interval, fixed vs. from_last anchor),
+                        courseProgress, stockDaysLeft, weeklyMonthlyDueState,
+                        canTakeNow (PRN), packStatus, timeOfDayBucket. Every
+                        function takes the device clock as an explicit `now`
+                        parameter — never reads Date.now()/new Date()
+                        itself — which is what makes it unit-testable with
+                        exact, reproducible timestamps. See
+                        test/schedule.test.mjs.
+
 js/i18n.js                English string table behind t(key, vars). Every
                         user-visible string should go through this, not be
                         hardcoded in app.js, so Telugu can be added later by
                         adding a "te" object with the same keys.
 
-css/style.css            ~800+ lines. Design tokens on :root, dark mode via
+css/style.css            ~1250 lines. Design tokens on :root (incl. the
+                        shared dose-state colors --color-state-calm/amber/
+                        rose/sage, light + dark), dark mode via
                         prefers-color-scheme + explicit [data-theme], bottom
-                        nav, cards, forms, charts container, the first-run
-                        screen's two-field form (.field-pin vs the plain
-                        .field[type="url"] — don't let the PIN's large
-                        letter-spaced style leak onto the URL input), etc.
+                        nav, cards, forms, charts container, chips, tick
+                        circles, the hero countdown card, and the shared
+                        bottom-sheet + undo-toast components.
+
+test/backend.test.js      Node mock-Apps-Script harness (fakes
+                        SpreadsheetApp/PropertiesService/CacheService/
+                        LockService/Utilities/DriveApp, then eval()s the
+                        real backend/Code.gs) — run with
+                        `node test/backend.test.js`.
+test/schedule.test.mjs    Standalone unit tests for js/schedule.js — run
+                        with `node test/schedule.test.mjs`.
 
 data/weeks.json           37 entries (weeks 4-40): size comparison, length/
                         weight, development note, common symptoms, tips.
@@ -178,13 +213,14 @@ data/food.json            Per-trimester recommended/limit lists + an
                         reason and the same review flag convention.
 data/warnings.json        14 red-flag symptoms with action + urgency.
 
-backend/Code.gs            ~1250 lines. setup(), auth, routeAction() switch,
+backend/Code.gs            ~1730 lines. setup(), auth, routeAction() switch,
                         data_version machinery, bootstrap(), per-entity CRUD
                         (medicines/appointments/healthlog/contacts/foodlog/
-                        checklist/files), generic createRow/updateRowById/
-                        deleteRowById helpers (each bumps data_version),
-                        validation helpers, date helpers, Telegram reminder
-                        functions. See "Backend action reference" below.
+                        checklist/files/countdowns/packs), generic createRow/
+                        updateRowById/deleteRowById helpers (each bumps
+                        data_version), validation helpers, date helpers,
+                        Telegram reminder functions. See "Backend action
+                        reference" below.
 backend/appsscript.json    Apps Script manifest: Asia/Kolkata timezone,
                         webapp execute-as/access config.
 
@@ -221,8 +257,9 @@ it (or, in mock mode, self-heals straight past it — see `renderRoute()`).
 
 | Hash | View | Bottom nav? |
 |---|---|---|
-| `#/home` | Home: live countdown, next appointment, today's meds | Home |
+| `#/home` | Home: hero countdown, today's meds by time of day, packs, coming-up shots, next appointment, pinned countdowns | Home |
 | `#/meds` | Medicines | Meds |
+| `#/meds/history` | Medicines used (active + finished + stopped) | — (via Meds "See medicines used") |
 | `#/visits` | Appointments | Visits |
 | `#/records` | Records vault | Records |
 | `#/more` | More menu | More |
@@ -249,7 +286,8 @@ dashboard.get
 version.get                 -- cheap, cache-backed: {data_version}
 bootstrap                   -- settings + dashboard + every entity list in one call
 
-medicines.list / .create / .update / .delete / .logTaken / .history
+medicines.list / .create / .update / .delete / .logTaken / .history / .stop
+medicinelog.list          -- unbounded log fetch (optional medicine_id filter), lazy-loaded
 appointments.list / .create / .update / .delete
 healthlog.list / .create / .update / .delete
 contacts.list / .create / .update / .delete
@@ -257,7 +295,19 @@ foodlog.list / .create / .update / .delete
 checklist.list / .create / .update / .delete
 files.list / .upload / .get / .delete
 countdowns.list / .add / .update / .delete / .markDone
+packs.list / .create / .update / .delete / .tickAll
 ```
+
+`medicines.create`/`.update` now also accept the full v3 scheduling fields
+(`schedule_type`, `anchor_mode`, `weekdays`, `interval_hours`,
+`interval_days`, `month_day`, `every_n_weeks`, `total_doses`,
+`grace_minutes`, `instructions`, `prn_min_gap_hours`, `prn_max_per_day`,
+`phases`, `reason`, `pack_id`, `status`, `source`) — all optional, a blank
+`schedule_type` still means "daily" (interpreted in `js/schedule.js`, never
+rewritten server-side). `medicines.logTaken` accepts either the original
+`{taken: true/false}` or the richer `{status: taken|skipped|missed, note,
+taken_at}` — both still work, the richer shape is what the v3 frontend
+actually sends.
 
 `medicines.logTaken` is an upsert keyed on `(medicine_id, date, time)` —
 calling it twice for the same dose on the same day updates the existing
@@ -403,39 +453,45 @@ Resolved, not entered, for almost every device — see `js/defaults.js` and
 
 ## Testing approach used during development
 
-There's no committed automated test suite (the brief didn't ask for a CI
-pipeline), but everything was verified before each commit:
+As of v3 phase 1, there's a small **committed** automated test suite —
+plain Node scripts, no framework, no `package.json`/dependencies:
 
-- **Backend logic**: a throwaway Node harness (not committed) fakes just
-  enough of the Apps Script runtime (`SpreadsheetApp`, `PropertiesService`,
+- **`node test/backend.test.js`** — a Node harness that fakes just enough
+  of the Apps Script runtime (`SpreadsheetApp`, `PropertiesService`,
   `DriveApp`, `Utilities`, a real in-memory `CacheService` — real SHA-256
   via Node's `crypto` for the PIN compare) to `eval()` the real
   `backend/Code.gs` and run assertions against it: CRUD round-trips,
-  validation rejections, the `medicines.logTaken` upsert path, the 8MB
-  file-size limit, `dashboard.get` integration, `data_version` bumping on
-  every write path (verified by tampering the underlying fake sheet
-  directly and confirming cache-hit reads ignore it, and that a cold cache
-  falls back to the sheet correctly), and `bootstrap`'s shape. 64
-  assertions as of v2 step 2. Re-run it after any `Code.gs` change by
-  recreating that harness — or just re-deploy and use the `curl` smoke
-  tests in the README.
-- **`js/countdown.js`**: unit-tested standalone in Node (it's dependency-free
-  by design) — parseLocalDateOnly, gestational age at several week
-  boundaries, overdue vs. upcoming, formatDuration, msUntil,
-  isTimePastToday. 19 assertions.
+  validation rejections, the `medicines.logTaken` upsert path (both the
+  old boolean shape and the v3 `status`/`note`/`taken_at` shape), Packs
+  CRUD + `tickAll`, `medicines.stop`, the 8MB file-size limit,
+  `dashboard.get` integration, `data_version` bumping on every write path,
+  schema migration safety (`ensureTabs()` on a simulated pre-v3 sheet), and
+  `bootstrap`'s shape. 140 assertions. Run it after any `Code.gs` change —
+  it won't catch everything (it's a fake Apps Script runtime, not the real
+  one), but it catches off-by-one row/column bugs and validation gaps
+  before you touch Script Properties for real.
+- **`node test/schedule.test.mjs`** — standalone unit tests for
+  `js/schedule.js` (the medicine-scheduling engine): every `schedule_type`,
+  `nextDose`'s fixed vs. from_last anchor modes, course/stock math,
+  weekly/monthly due-state (including Feb/Apr month-end clamping), PRN
+  gap+cap, a rolled-back device clock, zero/missing fields, pack
+  tick-all/untick. 60 assertions.
+- **`js/countdown.js`**: unit-tested standalone in Node too (it's
+  dependency-free by design) — parseLocalDateOnly, gestational age at
+  several week boundaries, overdue vs. upcoming, formatDuration, msUntil,
+  isTimePastToday, the custom-countdown kinds. Not yet moved into `test/`
+  (still scratch-only) — doing that is good future cleanup, not required.
 - **Frontend**: headless Playwright (Chromium) driving a local
   `python3 -m http.server`, exercising real user flows in mock mode (no
-  credentials needed) — first-run/sign-out, every CRUD form, chart
-  rendering, file upload with size-limit rejection, offline mode after a
-  real service-worker registration, the live countdown actually ticking
-  second-to-second, timers correctly stopping when navigating away from
-  Home (a leaked `setInterval` was a real risk given the 1s ticker), and a
-  full regression pass loading every route. Separately, a small local HTTP
-  server stood in for Apps Script to verify the real (non-mock) `fetch()`
-  path end-to-end — first-run validation, wrong/correct PIN, bootstrap
-  data flowing into Home and Emergency identically. None of this is
-  committed to the repo (it was scratch tooling), so there's nothing to run
-  here directly — if you want a repeatable test suite, that'd be new work.
+  credentials needed) — first-run/sign-out, every CRUD form and bottom
+  sheet, chip switching in the Add Medicine sheet, chart rendering, file
+  upload with size-limit rejection, offline mode after a real
+  service-worker registration, timers correctly stopping when navigating
+  away from Home, and a full regression pass loading every route.
+  Separately, a small local HTTP server stood in for Apps Script to verify
+  the real (non-mock) `fetch()` path end-to-end. This part is still
+  scratch tooling (not committed) — if you want a repeatable Playwright
+  suite, that'd be new work.
 - **Real credentials**: this session never had the real deployed API URL
   or PIN, by design (see README's security notes) — everything above was
   verified against mock data or a local fake backend standing in for Apps

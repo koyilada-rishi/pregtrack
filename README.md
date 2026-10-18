@@ -4,34 +4,18 @@ A private, mobile-first PWA for tracking my wife's pregnancy care. Static
 frontend on GitHub Pages, Google Apps Script as the API, Google Sheets +
 Drive as the database. No other backend, no paid services. 2-5 users.
 
-> **Mid-migration to v2.** The app was fully built once already (v1: all 11
-> steps, see `git log`), then revised with a bigger work order — no
-> `config.js` at all (first-run screen instead), `data_version`-based
-> freshness polling, an offline write queue, thumbnails, a batch
-> `bootstrap` endpoint, and a live local countdown. We're rebuilding in
-> place per the new step list below rather than starting over, so some
-> sections of this README (and the app itself) still describe the v1
-> behavior until their step lands. `DEVELOPMENT.md` has the full history of
-> both versions.
+> **v1 and v2 are both complete.** v3 ("friendly Home, real medicine
+> scheduling, daily check-in, bookings and reimbursement, timeline") is the
+> current work order, built in 4 phases, in place on top of v2 rather than
+> starting over. `DEVELOPMENT.md`'s "Build history" table has the full
+> history of all three.
 
-## Status (v2 work order)
+## Status (v3 work order)
 
-- [x] Step 1 — scaffold, mock-mode flag groundwork (`js/store.js`, `js/countdown.js`)
-- [x] Step 2 — backend: setup, auth, settings, version, dashboard, bootstrap
-- [x] Step 3 — frontend shell, first-run screen, router, Home with live countdown, Emergency card
-- [x] Step 4 — content JSON + guide
-- [ ] Step 5 — medicines + appointments
-- [ ] Step 6 — health log + charts
-- [ ] Step 7 — records vault: upload, thumbnails, viewer, syncFolder
-- [ ] Step 8 — checklists + settings
-- [ ] Step 9 — PWA, offline cache + write queue, icons
-- [ ] Step 10 — Telegram reminders
-- [ ] Step 11 — final README
-
-Steps 5, 6, 8 (partially), 9 (PWA shell/icons), and 10 are already
-functionally built from v1 and mostly need re-verifying against the v2 data
-layer rather than rebuilding from scratch — marked done as each is actually
-revisited in order.
+- [x] Phase 1 — Home redesign, simple medicine entry, schedule engine, packs, history
+- [ ] Phase 2 — daily check-in, symptoms, water, food, timeline
+- [ ] Phase 3 — bookings, doctor visits, records, bills, reimbursement
+- [ ] Phase 4 — medicine photos and details, expiry, polish
 
 ## Repo layout (target)
 
@@ -44,10 +28,15 @@ revisited in order.
 /js/store.js               data layer: mock mode, caching, version polling,
                            offline write queue (grows through steps 1/2/3/9)
 /js/countdown.js            live local countdown math (step 3)
+/js/schedule.js             medicine-scheduling math (v3 — slots, next
+                           dose, course/stock, due dates, PRN gating)
 /js/i18n.js                string table (English now, Telugu-ready)
 /data/weeks.json  food.json  warnings.json
 /manifest.json  /sw.js  /icons/
 /backend/Code.gs  /backend/appsscript.json
+/test/backend.test.js  /test/schedule.test.mjs   committed unit tests —
+                           run with `node test/backend.test.js` and
+                           `node test/schedule.test.mjs`
 ```
 
 No `config.js` / `config.example.js` / `js/mock.js` in v2. The API URL
