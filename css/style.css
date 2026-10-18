@@ -812,6 +812,54 @@ a { color: var(--color-primary-dark); }
   margin-top: 8px;
 }
 
+/* ---------- Countdowns ---------- */
+
+.countdown-state-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 8px;
+  width: fit-content;
+}
+
+.countdown-state-upcoming { color: var(--color-text-muted); }
+.countdown-state-badge.countdown-state-upcoming { background: var(--color-surface-muted); color: var(--color-text-muted); }
+
+.countdown-state-dueSoon { color: var(--color-warning-text); }
+.countdown-state-badge.countdown-state-dueSoon { background: var(--color-warning-bg); color: var(--color-warning-text); }
+
+.countdown-state-overdue { color: var(--color-emergency); }
+.countdown-state-badge.countdown-state-overdue { background: var(--color-emergency); color: var(--color-emergency-contrast); }
+
+.countdown-state-done { color: var(--color-text-muted); text-decoration: line-through; }
+.countdown-state-badge.countdown-state-done { background: var(--color-surface-muted); color: var(--color-text-muted); }
+
+.countdown-row.countdown-state-overdue { border-left: 3px solid var(--color-emergency); padding-left: 10px; }
+.countdown-row.countdown-state-dueSoon { border-left: 3px solid var(--color-warning-text); padding-left: 10px; }
+
+.pinned-countdown-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.pinned-countdown-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.92rem;
+}
+
+.pinned-countdown-list li:last-child { border-bottom: none; }
+
+.pinned-countdown-list .countdown-ticker {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {

@@ -246,10 +246,15 @@ const db = {
     language: "en"
   },
   medicines: [
-    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true },
-    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Once daily", times: "20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true }
+    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3 },
+    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Twice daily", times: "08:00,20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true, stock_count: 9, doses_per_day: 2, refill_alert_days: 5 },
+    { id: "mock-med-3", name: "Amoxicillin", dose: "500mg", frequency: "3x daily", times: "08:00,14:00,20:00", start_date: todayStr(-2), end_date: todayStr(5), prescribed_by: "Dr. Rao", notes: "Finish full course", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3 }
   ],
-  medicineLog: [],
+  // A couple of taken doses for Iron, so the interval-kind mock countdown
+  // below has a real "last dose" to anchor to.
+  medicineLog: [
+    { id: "mock-ml-1", medicine_id: "mock-med-2", date: todayStr(), time: "08:00", taken: true }
+  ],
   appointments: [
     { id: "mock-appt-1", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Routine checkup", location: "City Women's Hospital", status: "upcoming", notes_after_visit: "" },
     { id: "mock-appt-2", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Anomaly scan", location: "City Women's Hospital", status: "done", notes_after_visit: "Everything looked normal." }
@@ -270,7 +275,18 @@ const db = {
     { id: "mock-cl-3", list: "documents", item: "ID proof", done: false },
     { id: "mock-cl-4", list: "baby_items", item: "Onesies", done: false }
   ],
-  files: []
+  files: [],
+  // One example of every kind, covering upcoming/dueSoon/overdue/done states
+  // for visual testing without touching a real backend.
+  countdowns: [
+    { id: "mock-cd-1", title: "Baby shower", kind: "event", target_datetime: new Date(Date.now() + 9 * 86400000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: true, pinned_order: 1, notes: "At Priya's parents' place", done: false, created_at: new Date(Date.now() - 10 * 86400000).toISOString() },
+    { id: "mock-cd-2", title: "Amoxicillin course", kind: "course", target_datetime: new Date(Date.now() + 5 * 86400000).toISOString(), start_date: todayStr(-2), repeat: "none", interval_hours: "", linked_medicine_id: "mock-med-3", show_on_home: true, pinned_order: 2, notes: "", done: false, created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
+    { id: "mock-cd-3", title: "Iron dose", kind: "interval", target_datetime: "", start_date: "", repeat: "none", interval_hours: 12, linked_medicine_id: "mock-med-2", show_on_home: true, pinned_order: 3, notes: "", done: false, created_at: new Date(Date.now() - 30 * 86400000).toISOString() },
+    { id: "mock-cd-4", title: "Weekly midwife check-in", kind: "recurring", target_datetime: new Date(Date.now() - 2 * 86400000).toISOString(), start_date: "", repeat: "weekly", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "Phone call", done: false, created_at: new Date(Date.now() - 40 * 86400000).toISOString() },
+    { id: "mock-cd-5", title: "Trying since", kind: "countup", target_datetime: "", start_date: todayStr(-220), repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "", done: false, created_at: new Date(Date.now() - 220 * 86400000).toISOString() },
+    { id: "mock-cd-6", title: "Pack hospital bag", kind: "event", target_datetime: new Date(Date.now() - 36 * 3600000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "Overdue on purpose, for visual testing", done: false, created_at: new Date(Date.now() - 15 * 86400000).toISOString() },
+    { id: "mock-cd-7", title: "First prenatal yoga class", kind: "event", target_datetime: new Date(Date.now() - 5 * 86400000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "", done: true, created_at: new Date(Date.now() - 20 * 86400000).toISOString() }
+  ]
 };
 
 function requireFields(payload, fields) {
@@ -307,6 +323,51 @@ function computeGestationalAge() {
     trimester: daysSinceLmp < 13 * 7 ? 1 : daysSinceLmp < 28 * 7 ? 2 : 3,
     days_left: due ? Math.round((due - today) / 86400000) : null
   };
+}
+
+// Mirrors the backend's adjustMedicineStock() — same +-1/clamp-at-0/
+// opt-in-only rules, kept in sync so mock mode behaves identically.
+function adjustMockMedicineStock(medicineId, delta) {
+  const med = db.medicines.find((m) => m.id === medicineId);
+  if (!med || med.stock_count === "" || med.stock_count === undefined || med.stock_count === null) return;
+  const current = Number(med.stock_count);
+  if (isNaN(current)) return;
+  med.stock_count = Math.max(0, current + delta);
+}
+
+// Mirrors the backend's getLatestMedicineDoses().
+function mockLatestMedicineDoses() {
+  const latestByMedicine = {};
+  db.medicineLog.forEach((log) => {
+    if (!log.taken) return;
+    const sortKey = log.date + " " + log.time;
+    const current = latestByMedicine[log.medicine_id];
+    if (!current || sortKey > current._sortKey) {
+      latestByMedicine[log.medicine_id] = { medicine_id: log.medicine_id, date: log.date, time: log.time, _sortKey: sortKey };
+    }
+  });
+  return Object.values(latestByMedicine).map(({ _sortKey, ...rest }) => rest);
+}
+
+// Mirrors backend/Code.gs's validateCountdownFieldsForKind, loosely — just
+// enough to keep mock mode's dev experience consistent with the real thing.
+function validateMockCountdown(fields, kind) {
+  if (!["event", "course", "interval", "recurring", "countup"].includes(kind)) {
+    throw new Error("Invalid countdown kind: " + kind);
+  }
+  if (kind === "event" && !fields.target_datetime) throw new Error('A "event" countdown requires target_datetime');
+  if (kind === "course" && (!fields.start_date || !fields.target_datetime)) {
+    throw new Error('A "course" countdown requires start_date and target_datetime');
+  }
+  if (kind === "interval") {
+    if (!fields.linked_medicine_id) throw new Error('An "interval" countdown requires linked_medicine_id');
+    if (!fields.interval_hours || fields.interval_hours <= 0) throw new Error('An "interval" countdown requires a positive interval_hours');
+  }
+  if (kind === "recurring") {
+    if (!fields.target_datetime) throw new Error('A "recurring" countdown requires target_datetime');
+    if (!fields.repeat || fields.repeat === "none") throw new Error('A "recurring" countdown requires a repeat value other than "none"');
+  }
+  if (kind === "countup" && !fields.start_date) throw new Error('A "countup" countdown requires start_date');
 }
 
 function mockDashboard() {
@@ -383,14 +444,16 @@ export async function mockCall(action, payload) {
         contacts: clone(db.contacts),
         foodlog: clone(db.foodlog),
         checklist: clone(db.checklist),
-        files: clone(db.files).map(({ _base64, _mimeType, _filename, ...rest }) => rest)
+        files: clone(db.files).map(({ _base64, _mimeType, _filename, ...rest }) => rest),
+        countdowns: clone(db.countdowns),
+        latest_medicine_doses: mockLatestMedicineDoses()
       };
 
     case "medicines.list":
       return clone(db.medicines);
     case "medicines.create": {
       requireFields(payload, ["name"]);
-      const row = { id: payload.id || uid(), name: "", dose: "", frequency: "", times: "", start_date: todayStr(), end_date: "", prescribed_by: "", notes: "", active: true, ...payload };
+      const row = { id: payload.id || uid(), name: "", dose: "", frequency: "", times: "", start_date: todayStr(), end_date: "", prescribed_by: "", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, ...payload };
       db.medicines.push(row);
       return clone(row);
     }
@@ -404,9 +467,16 @@ export async function mockCall(action, payload) {
       requireFields(payload, ["medicine_id", "date", "time"]);
       const taken = payload.taken === undefined ? true : !!payload.taken;
       const existing = db.medicineLog.find((l) => l.medicine_id === payload.medicine_id && l.date === payload.date && l.time === payload.time);
-      if (existing) { existing.taken = taken; return clone(existing); }
-      const row = { id: payload.id || uid(), medicine_id: payload.medicine_id, date: payload.date, time: payload.time, taken };
-      db.medicineLog.push(row);
+      const wasTaken = existing ? !!existing.taken : false;
+      let row;
+      if (existing) {
+        existing.taken = taken;
+        row = existing;
+      } else {
+        row = { id: payload.id || uid(), medicine_id: payload.medicine_id, date: payload.date, time: payload.time, taken };
+        db.medicineLog.push(row);
+      }
+      if (taken !== wasTaken) adjustMockMedicineStock(payload.medicine_id, taken ? -1 : 1);
       return clone(row);
     }
     case "medicines.history": {
@@ -526,6 +596,36 @@ export async function mockCall(action, payload) {
     case "files.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.files, payload.id);
+
+    case "countdowns.list": {
+      let rows = clone(db.countdowns);
+      if (payload.kind) rows = rows.filter((c) => c.kind === payload.kind);
+      if (payload.show_on_home) rows = rows.filter((c) => !!c.show_on_home);
+      return rows;
+    }
+    case "countdowns.add": {
+      requireFields(payload, ["title", "kind"]);
+      validateMockCountdown(payload, payload.kind);
+      const row = {
+        id: payload.id || uid(), target_datetime: "", start_date: "", repeat: "none", interval_hours: "",
+        linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "", done: false,
+        ...payload, created_at: new Date().toISOString()
+      };
+      db.countdowns.push(row);
+      return clone(row);
+    }
+    case "countdowns.update": {
+      requireFields(payload, ["id"]);
+      const existingCd = db.countdowns.find((c) => c.id === payload.id);
+      validateMockCountdown({ ...existingCd, ...payload }, payload.kind || (existingCd && existingCd.kind));
+      return upsertInto(db.countdowns, payload.id, payload);
+    }
+    case "countdowns.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.countdowns, payload.id);
+    case "countdowns.markDone":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.countdowns, payload.id, { done: payload.done === undefined ? true : !!payload.done });
 
     default:
       throw new Error("Mock backend: unknown action " + action);

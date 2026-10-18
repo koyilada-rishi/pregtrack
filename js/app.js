@@ -7,7 +7,10 @@
 
 import { t, setLanguage } from "./i18n.js";
 import * as store from "./store.js";
-import { computeCountdown, formatDuration, msUntil, isTimePastToday } from "./countdown.js";
+import {
+  computeCountdown, formatDuration, msUntil, isTimePastToday,
+  computeCustomCountdown, computeStockCountdown, classifyCountdownState
+} from "./countdown.js";
 
 const appRoot = document.getElementById("app");
 
@@ -35,6 +38,7 @@ const ROUTES = {
   "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
   "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") },
   "/checklist": { render: renderChecklistView, navKey: null, title: () => t("checklist.title") },
+  "/countdowns": { render: renderCountdownsView, navKey: null, title: () => t("countdowns.title") },
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
 
@@ -217,6 +221,8 @@ function renderRoute() {
 
 function renderShell(route) {
   stopHomeTimers(); // harmless no-op unless Home was the previous view
+  stopCountdownsTimers(); // ditto for the Countdowns view's 30s refresh
+  stopMedsTimers(); // ditto for the Medicines view's 30s refresh
   appRoot.innerHTML = `
     <div id="offline-banner" class="offline-banner" ${state.online ? "hidden" : ""}>${t("offline.banner")}</div>
     <header class="topbar">
@@ -377,7 +383,36 @@ function homeMarkup(boot, weekEntry) {
           : `<p class="empty">${t("home.medicines.none")}</p>`
       }
     </div>
+
+    <div class="card">
+      <h2>${t("home.pinnedCountdowns.title")}</h2>
+      ${
+        pinnedCountdownsOf(boot).length
+          ? `
+        <ul class="pinned-countdown-list" id="pinned-countdown-list">
+          ${pinnedCountdownsOf(boot)
+            .map(
+              (cd) => `
+            <li data-countdown-id="${escapeHtml(cd.id)}">
+              <span>${escapeHtml(cd.title)}</span>
+              <span class="countdown-ticker" id="pinned-cd-${escapeHtml(cd.id)}"></span>
+            </li>
+          `
+            )
+            .join("")}
+        </ul>
+      `
+          : `<p class="empty">${t("home.pinnedCountdowns.none")}</p>`
+      }
+      <a class="card-link" data-nav="#/countdowns">${t("countdowns.seeAll")}</a>
+    </div>
   `;
+}
+
+function pinnedCountdownsOf(boot) {
+  return (boot.countdowns || [])
+    .filter((c) => isTruthy(c.show_on_home) && !isTruthy(c.done))
+    .sort((a, b) => Number(a.pinned_order || 0) - Number(b.pinned_order || 0));
 }
 
 // 1s ticker: cheap textContent updates only, no DOM rebuild — keeps the
@@ -425,6 +460,34 @@ function tickHomeCountdown(outlet) {
   outlet.querySelectorAll("#home-med-list li[data-med-time]").forEach((li) => {
     li.classList.toggle("med-overdue", isTimePastToday(li.dataset.medTime, now));
   });
+
+  tickPinnedCountdowns(outlet, now);
+}
+
+function tickPinnedCountdowns(outlet, now) {
+  const boot = homeState.bootstrap;
+  if (!boot) return;
+  const medicinesById = indexById(boot.medicines || []);
+  const lastDoseByMedicine = indexById(boot.latest_medicine_doses || [], "medicine_id");
+
+  pinnedCountdownsOf(boot).forEach((cd) => {
+    const el = document.getElementById("pinned-cd-" + cd.id);
+    if (!el) return;
+    const computed = computeCustomCountdown(cd, countdownContext(cd, medicinesById, lastDoseByMedicine), now);
+    el.textContent = countdownDetailLine(cd, computed);
+    const li = outlet.querySelector('[data-countdown-id="' + cssEscape(cd.id) + '"]');
+    if (li) {
+      li.classList.remove("countdown-state-upcoming", "countdown-state-dueSoon", "countdown-state-overdue", "countdown-state-done");
+      li.classList.add("countdown-state-" + computed.state);
+    }
+  });
+}
+
+// Minimal CSS.escape fallback (not guaranteed available in every target
+// browser) — ids here are UUIDs, so this only ever needs to handle the
+// characters a UUID can contain, not arbitrary user text.
+function cssEscape(value) {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
 function startHomeTimers(outlet) {
@@ -720,7 +783,7 @@ function foodItemMarkup(item) {
 // Medicines
 // ---------------------------------------------------------------------------
 
-const medsState = { medicines: [], logs: [], loading: true, error: null, formItem: null };
+const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, formItem: null, refreshIntervalId: null };
 
 async function renderMedicinesView(outlet) {
   medsState.loading = true;
@@ -729,12 +792,14 @@ async function renderMedicinesView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
   try {
-    const [medicines, history] = await Promise.all([
+    const [medicines, history, countdowns] = await Promise.all([
       store.call("medicines.list", {}),
-      store.call("medicines.history", { days: 14 })
+      store.call("medicines.history", { days: 14 }),
+      store.call("countdowns.list", {}).catch(() => [])
     ]);
     medsState.medicines = medicines;
     medsState.logs = history.logs;
+    medsState.countdowns = countdowns;
     medsState.loading = false;
     renderMedsBody(outlet);
   } catch (err) {
@@ -745,9 +810,65 @@ async function renderMedicinesView(outlet) {
   }
 }
 
+function stopMedsTimers() {
+  if (medsState.refreshIntervalId) {
+    clearInterval(medsState.refreshIntervalId);
+    medsState.refreshIntervalId = null;
+  }
+}
+
 function renderMedsBody(outlet) {
+  stopMedsTimers();
   outlet.innerHTML = medsState.formItem !== null ? medicineFormMarkup(medsState.formItem) : medsListMarkup();
   attachMedsHandlers(outlet);
+
+  // Next-dose/course/stock figures refresh every 30s while this view is
+  // open and showing the list (not mid-edit) — Home's pinned items are the
+  // only thing that ticks every 1s, per spec.
+  if (medsState.formItem === null) {
+    medsState.refreshIntervalId = setInterval(() => {
+      outlet.innerHTML = medsListMarkup();
+      attachMedsHandlers(outlet);
+    }, 30000);
+  }
+}
+
+// Mirrors the backend's (and mock's) logTaken + stock-adjustment logic
+// client-side, for the optimistic UI update: same upsert-by-(medicine,
+// date, time) rule, same +-1/clamp-at-0/opt-in-only stock rule, so the
+// local guess matches what the server will actually do in the common case.
+function applyOptimisticLogTaken(medicineId, date, time, taken) {
+  const existing = medsState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === date && String(l.time) === String(time));
+  const wasTaken = existing ? isTruthy(existing.taken) : false;
+  if (existing) {
+    existing.taken = taken;
+  } else {
+    medsState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date, time, taken });
+  }
+  if (taken === wasTaken) return;
+
+  const medicine = medsState.medicines.find((m) => m.id === medicineId);
+  if (!medicine || medicine.stock_count === "" || medicine.stock_count === undefined || medicine.stock_count === null) return;
+  const current = Number(medicine.stock_count);
+  if (isNaN(current)) return;
+  medicine.stock_count = Math.max(0, current + (taken ? -1 : 1));
+}
+
+// Most recent *taken* MedicineLog entry per medicine, computed from this
+// view's own 14-day history fetch (mirrors the backend's
+// getLatestMedicineDoses(), just computed client-side here since this view
+// already has the raw log — no need for bootstrap's summary version of it).
+function lastDoseByMedicineFrom(logs) {
+  const latest = {};
+  logs.forEach((l) => {
+    if (!isTruthy(l.taken)) return;
+    const sortKey = dateStrOf(l.date) + " " + String(l.time || "");
+    const current = latest[l.medicine_id];
+    if (!current || sortKey > current._sortKey) {
+      latest[l.medicine_id] = { medicine_id: l.medicine_id, date: dateStrOf(l.date), time: l.time, _sortKey: sortKey };
+    }
+  });
+  return latest;
 }
 
 function medsListMarkup() {
@@ -804,7 +925,7 @@ function medsListMarkup() {
       <h2>${t("meds.all.title")}</h2>
       ${
         medsState.medicines.length
-          ? `<ul class="entity-list">${medsState.medicines.map((m) => medicineRowMarkup(m)).join("")}</ul>`
+          ? `<ul class="entity-list">${medsState.medicines.map((m) => medicineRowMarkup(m, medsState.countdowns, lastDoseByMedicineFrom(medsState.logs))).join("")}</ul>`
           : `<p class="empty">${t("meds.all.none")}</p>`
       }
     </div>
@@ -823,13 +944,36 @@ function medsListMarkup() {
   `;
 }
 
-function medicineRowMarkup(m) {
+function medicineRowMarkup(m, countdowns, lastDoseByMedicine) {
+  const now = new Date();
+  const linked = (countdowns || []).filter((c) => c.linked_medicine_id === m.id && !isTruthy(c.done));
+  const intervalCd = linked.find((c) => c.kind === "interval");
+  const courseCd = linked.find((c) => c.kind === "course");
+  const stock = computeStockCountdown(m);
+
+  const extraLines = [];
+  if (intervalCd) {
+    const computed = computeCustomCountdown(intervalCd, { lastDose: lastDoseByMedicine[m.id] }, now);
+    extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.nextDose", { text: computed.msRemaining === null ? t("countdowns.display.noDoseYet") : formatRemainingLabel(computed.msRemaining) })}</span>`);
+  }
+  if (courseCd) {
+    const computed = computeCustomCountdown(courseCd, { dosesPerDay: numOrEmpty(m.doses_per_day) }, now);
+    if (computed.daysLeft !== null) {
+      extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.courseEnds", { n: computed.daysLeft })}</span>`);
+    }
+  }
+  if (stock) {
+    const stateClass = stock.outOfStock ? "countdown-state-overdue" : stock.needsRefill ? "countdown-state-dueSoon" : "countdown-state-upcoming";
+    extraLines.push(`<span class="muted ${stateClass}">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}${stock.needsRefill && !stock.outOfStock ? " · " + t("medicines.stock.needsRefill") : ""}</span>`);
+  }
+
   return `
     <li class="entity-row">
       <div class="entity-main">
         <strong>${escapeHtml(m.name)}</strong>
         <span class="muted">${escapeHtml([m.dose, m.frequency].filter(Boolean).join(" · "))}</span>
         <span class="muted">${escapeHtml(m.times || "")}</span>
+        ${extraLines.join("")}
         ${!isTruthy(m.active) ? `<span class="badge">${t("meds.inactive")}</span>` : ""}
       </div>
       <div class="entity-actions">
@@ -864,6 +1008,9 @@ function medicineFormMarkup(item) {
         ${formField(t("meds.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(dateStrOf(m.start_date) || formatDateInput(new Date()))}" />`)}
         ${formField(t("meds.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(dateStrOf(m.end_date))}" />`)}
         ${formField(t("meds.form.prescribedBy"), `<input class="field" name="prescribed_by" value="${escapeHtml(m.prescribed_by)}" />`)}
+        ${formField(t("meds.form.stockCount"), `<input class="field" type="number" min="0" step="1" name="stock_count" value="${escapeHtml(m.stock_count)}" />`, t("meds.form.stockHint"))}
+        ${formField(t("meds.form.dosesPerDay"), `<input class="field" type="number" min="0" step="0.5" name="doses_per_day" value="${escapeHtml(m.doses_per_day)}" />`)}
+        ${formField(t("meds.form.refillAlertDays"), `<input class="field" type="number" min="0" step="1" name="refill_alert_days" value="${escapeHtml(isNew ? (m.refill_alert_days === undefined ? 3 : m.refill_alert_days) : m.refill_alert_days)}" />`)}
         ${formField(t("meds.form.notes"), `<textarea class="field" name="notes" rows="3">${escapeHtml(m.notes)}</textarea>`)}
         <label class="checkbox-field">
           <input type="checkbox" name="active" ${isNew || isTruthy(m.active) ? "checked" : ""} />
@@ -907,13 +1054,26 @@ function attachMedsHandlers(outlet) {
       const medicineId = checkbox.dataset.medId;
       const time = checkbox.dataset.medTime;
       const taken = checkbox.checked;
-      checkbox.disabled = true;
+      const todayStr = formatDateInput(new Date());
+
+      // Optimistic: apply the change to local state and re-render
+      // immediately, before the network call resolves — Apps Script is
+      // 1-2s per call, and waiting for that on every tap feels sluggish.
+      // There's no offline write queue yet (that's a later build step), so
+      // this is "don't block the UI on the network", not "works offline";
+      // a failure below reverts the local guess and shows an error.
+      const logsSnapshot = medsState.logs.map((l) => ({ ...l }));
+      const medicinesSnapshot = medsState.medicines.map((m) => ({ ...m }));
+      applyOptimisticLogTaken(medicineId, todayStr, time, taken);
+      renderMedsBody(outlet);
+
       try {
-        await store.call("medicines.logTaken", { medicine_id: medicineId, date: formatDateInput(new Date()), time, taken });
-        await renderMedicinesView(outlet);
+        await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, taken });
+        await renderMedicinesView(outlet); // reconcile with the server's actual state
       } catch (err) {
-        checkbox.checked = !taken;
-        checkbox.disabled = false;
+        medsState.logs = logsSnapshot;
+        medsState.medicines = medicinesSnapshot;
+        renderMedsBody(outlet);
         alert(err.message || t("common.error"));
       }
     });
@@ -936,6 +1096,9 @@ function attachMedsHandlers(outlet) {
         start_date: fd.get("start_date"),
         end_date: fd.get("end_date"),
         prescribed_by: fd.get("prescribed_by").trim(),
+        stock_count: fd.get("stock_count"),
+        doses_per_day: fd.get("doses_per_day"),
+        refill_alert_days: fd.get("refill_alert_days"),
         notes: fd.get("notes").trim(),
         active: fd.get("active") === "on"
       };
@@ -2106,6 +2269,371 @@ function attachSettingsHandlers(outlet) {
 }
 
 // ---------------------------------------------------------------------------
+// Countdowns — custom countdown/timer entries. Shares store.js's bootstrap
+// cache (countdowns + medicines + latest_medicine_doses all come from one
+// call) rather than fetching each separately.
+// ---------------------------------------------------------------------------
+
+const COUNTDOWN_KINDS = ["event", "course", "interval", "recurring", "countup"];
+
+const countdownsState = {
+  boot: null,
+  kindFilter: "",
+  formItem: null, // null | "new" | existing countdown row
+  refreshIntervalId: null
+};
+
+async function renderCountdownsView(outlet) {
+  outlet.innerHTML = genericSkeleton(6);
+  countdownsState.formItem = null;
+
+  const paint = (boot) => {
+    countdownsState.boot = boot;
+    renderCountdownsBody(outlet);
+  };
+
+  try {
+    const boot = await store.loadBootstrap(paint);
+    paint(boot);
+  } catch (err) {
+    const cached = store.getCachedBootstrap();
+    if (cached) {
+      paint(cached);
+    } else {
+      outlet.innerHTML = errorMarkup(err);
+      attachRetryHandler(outlet, () => renderCountdownsView(outlet));
+    }
+  }
+}
+
+function stopCountdownsTimers() {
+  if (countdownsState.refreshIntervalId) {
+    clearInterval(countdownsState.refreshIntervalId);
+    countdownsState.refreshIntervalId = null;
+  }
+}
+
+function renderCountdownsBody(outlet) {
+  stopCountdownsTimers();
+  if (!countdownsState.boot) return;
+
+  outlet.innerHTML = countdownsState.formItem !== null
+    ? countdownFormMarkup(countdownsState.formItem, countdownsState.boot.medicines || [])
+    : countdownsListMarkup(countdownsState.boot);
+  attachCountdownsHandlers(outlet);
+
+  // Everything not pinned to Home still refreshes every 30s while this
+  // view is open (Home's own pinned items tick every 1s instead).
+  if (countdownsState.formItem === null) {
+    countdownsState.refreshIntervalId = setInterval(() => {
+      outlet.innerHTML = countdownsListMarkup(countdownsState.boot);
+      attachCountdownsHandlers(outlet);
+    }, 30000);
+  }
+}
+
+function countdownsListMarkup(boot) {
+  const medicinesById = indexById(boot.medicines || []);
+  const lastDoseByMedicine = indexById(boot.latest_medicine_doses || [], "medicine_id");
+  const now = new Date();
+
+  let rows = boot.countdowns || [];
+  if (countdownsState.kindFilter) rows = rows.filter((c) => c.kind === countdownsState.kindFilter);
+  rows = [...rows].sort((a, b) => {
+    const ca = computeCustomCountdown(a, countdownContext(a, medicinesById, lastDoseByMedicine), now);
+    const cb = computeCustomCountdown(b, countdownContext(b, medicinesById, lastDoseByMedicine), now);
+    return stateSortRank(ca.state) - stateSortRank(cb.state);
+  });
+
+  return `
+    <button class="btn btn-primary" id="add-countdown-btn">${t("countdowns.add")}</button>
+
+    <div class="tab-bar">
+      <button class="tab-btn ${!countdownsState.kindFilter ? "tab-btn-active" : ""}" data-kind-filter="">${t("countdowns.filter.all")}</button>
+      ${COUNTDOWN_KINDS.map((k) => `<button class="tab-btn ${countdownsState.kindFilter === k ? "tab-btn-active" : ""}" data-kind-filter="${k}">${t("countdowns.kind." + k)}</button>`).join("")}
+    </div>
+
+    <div class="card">
+      ${
+        rows.length
+          ? `<ul class="entity-list">${rows.map((cd) => countdownRowMarkup(cd, computeCustomCountdown(cd, countdownContext(cd, medicinesById, lastDoseByMedicine), now), medicinesById[cd.linked_medicine_id])).join("")}</ul>`
+          : `<p class="empty">${t("countdowns.none")}</p>`
+      }
+    </div>
+  `;
+}
+
+function stateSortRank(state) {
+  return { overdue: 0, dueSoon: 1, upcoming: 2, done: 3 }[state] ?? 2;
+}
+
+function indexById(list, key) {
+  const out = {};
+  (list || []).forEach((item) => { out[item[key || "id"]] = item; });
+  return out;
+}
+
+function countdownContext(cd, medicinesById, lastDoseByMedicine) {
+  const medicine = medicinesById[cd.linked_medicine_id];
+  return {
+    dosesPerDay: medicine ? numOrEmpty(medicine.doses_per_day) : null,
+    lastDose: lastDoseByMedicine[cd.linked_medicine_id] || null
+  };
+}
+
+function numOrEmpty(v) {
+  return v === "" || v === undefined || v === null ? null : Number(v);
+}
+
+function countdownRowMarkup(cd, computed, medicine) {
+  const stateLabel = t("countdowns.state." + computed.state);
+  return `
+    <li class="entity-row countdown-row countdown-state-${computed.state}">
+      <div class="entity-main">
+        <strong>${escapeHtml(cd.title)}</strong>
+        <span class="muted">${t("countdowns.kind." + cd.kind)}${medicine ? " · " + escapeHtml(medicine.name) : ""}</span>
+        <span class="countdown-state-badge countdown-state-${computed.state}">${stateLabel}</span>
+        <span class="muted">${escapeHtml(countdownDetailLine(cd, computed))}</span>
+        ${cd.show_on_home ? `<span class="badge">${t("countdowns.pinnedToHome")}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        ${!cd.done ? `<button class="btn-link" data-mark-done-countdown="${escapeHtml(cd.id)}">${t("countdowns.markDone")}</button>` : ""}
+        <button class="btn-link" data-edit-countdown="${escapeHtml(cd.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-countdown="${escapeHtml(cd.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+// One human-readable line summarizing the computed state, per kind.
+function countdownDetailLine(cd, computed) {
+  if (cd.done) return t("countdowns.state.done");
+  switch (cd.kind) {
+    case "event":
+      return computed.msRemaining === null ? t("countdowns.display.noDate") : formatRemainingLabel(computed.msRemaining);
+    case "course": {
+      if (computed.daysLeft === null) return t("countdowns.display.noDate");
+      const days = t("countdowns.display.daysLeft", { n: computed.daysLeft });
+      return computed.dosesLeft !== null ? days + " · " + t("countdowns.display.dosesLeft", { n: computed.dosesLeft }) : days;
+    }
+    case "interval":
+      return computed.msRemaining === null ? t("countdowns.display.noDoseYet") : formatRemainingLabel(computed.msRemaining);
+    case "recurring":
+      return computed.msRemaining === null ? t("countdowns.display.noDate") : formatRemainingLabel(computed.msRemaining);
+    case "countup":
+      return computed.msElapsed === null ? t("countdowns.display.noDate") : t("countdowns.display.elapsed", { text: formatMsParts(computed.msElapsed) });
+    default:
+      return "";
+  }
+}
+
+function formatRemainingLabel(msRemaining) {
+  const text = formatMsParts(msRemaining);
+  return msRemaining < 0 ? t("countdowns.display.overdueBy", { text }) : t("countdowns.display.inTime", { text });
+}
+
+// "3d 4h", "4h 12m", "12m" — drops leading zero units rather than always
+// showing days/hours/minutes, so a same-day countdown doesn't read "0d 4h".
+function formatMsParts(ms) {
+  const dur = formatDuration(ms);
+  const parts = [];
+  if (dur.days > 0) parts.push(dur.days + t("countdowns.unit.d"));
+  if (dur.days > 0 || dur.hours > 0) parts.push(dur.hours + t("countdowns.unit.h"));
+  parts.push(dur.minutes + t("countdowns.unit.m"));
+  return parts.join(" ");
+}
+
+function countdownFormMarkup(item, medicines) {
+  const isNew = item === "new";
+  const cd = isNew ? { kind: "event", repeat: "none" } : item;
+
+  return `
+    <div class="card">
+      <h2>${isNew ? t("countdowns.form.titleNew") : t("countdowns.form.titleEdit")}</h2>
+      <form id="countdown-form">
+        ${formField(t("countdowns.form.title"), `<input class="field" name="title" required value="${escapeHtml(cd.title)}" />`)}
+        ${formField(
+          t("countdowns.form.kind"),
+          `<select class="field" name="kind" id="countdown-kind-select" ${!isNew ? "disabled" : ""}>
+            ${COUNTDOWN_KINDS.map((k) => `<option value="${k}" ${cd.kind === k ? "selected" : ""}>${t("countdowns.kind." + k)}</option>`).join("")}
+          </select>`,
+          !isNew ? t("countdowns.form.kindLockedHint") : ""
+        )}
+        ${!isNew ? `<input type="hidden" name="kind" value="${escapeHtml(cd.kind)}" />` : ""}
+
+        <div data-kind-fields="event,course,recurring">
+          ${formField(cd.kind === "course" ? t("countdowns.form.endDatetime") : t("countdowns.form.targetDatetime"), `<input class="field" type="datetime-local" name="target_datetime" value="${escapeHtml(toDatetimeLocalValue(cd.target_datetime))}" />`)}
+        </div>
+        <div data-kind-fields="course,countup">
+          ${formField(t("countdowns.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(dateStrOf(cd.start_date))}" />`)}
+        </div>
+        <div data-kind-fields="recurring">
+          ${formField(
+            t("countdowns.form.repeat"),
+            `<select class="field" name="repeat">
+              ${["none", "daily", "weekly", "monthly"].map((r) => `<option value="${r}" ${(cd.repeat || "none") === r ? "selected" : ""}>${t("countdowns.form.repeat." + r)}</option>`).join("")}
+            </select>`
+          )}
+        </div>
+        <div data-kind-fields="interval">
+          ${formField(
+            t("countdowns.form.linkedMedicine"),
+            `<select class="field" name="linked_medicine_id">
+              <option value="">${t("countdowns.form.linkedMedicine.none")}</option>
+              ${medicines.map((m) => `<option value="${escapeHtml(m.id)}" ${cd.linked_medicine_id === m.id ? "selected" : ""}>${escapeHtml(m.name)}</option>`).join("")}
+            </select>`
+          )}
+          ${formField(t("countdowns.form.intervalHours"), `<input class="field" type="number" min="0.5" step="0.5" name="interval_hours" value="${escapeHtml(cd.interval_hours)}" />`)}
+        </div>
+        <div data-kind-fields="course">
+          ${formField(
+            t("countdowns.form.linkedMedicine") + " (" + t("common.optional") + ")",
+            `<select class="field" name="linked_medicine_id">
+              <option value="">${t("countdowns.form.linkedMedicine.none")}</option>
+              ${medicines.map((m) => `<option value="${escapeHtml(m.id)}" ${cd.linked_medicine_id === m.id ? "selected" : ""}>${escapeHtml(m.name)}</option>`).join("")}
+            </select>`
+          )}
+        </div>
+
+        <label class="checkbox-field">
+          <input type="checkbox" name="show_on_home" ${isTruthy(cd.show_on_home) ? "checked" : ""} />
+          <span>${t("countdowns.form.showOnHome")}</span>
+        </label>
+        ${formField(t("countdowns.form.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(cd.notes)}</textarea>`)}
+
+        <p class="error-text" id="countdown-form-error" hidden></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="countdown-form-cancel">${t("common.cancel")}</button>
+          <button type="submit" class="btn btn-primary" id="countdown-form-save">${t("common.save")}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function applyCountdownKindVisibility(outlet, kind) {
+  outlet.querySelectorAll("[data-kind-fields]").forEach((el) => {
+    const kinds = el.dataset.kindFields.split(",");
+    el.hidden = !kinds.includes(kind);
+  });
+}
+
+function attachCountdownsHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-countdown-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      countdownsState.formItem = "new";
+      renderCountdownsBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-kind-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      countdownsState.kindFilter = btn.dataset.kindFilter;
+      renderCountdownsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-edit-countdown]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      countdownsState.formItem = (countdownsState.boot.countdowns || []).find((c) => c.id === btn.dataset.editCountdown) || "new";
+      renderCountdownsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-countdown]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("countdowns.confirmDelete"))) return;
+      try {
+        await store.call("countdowns.delete", { id: btn.dataset.deleteCountdown });
+        await store.loadBootstrap(null, true);
+        await renderCountdownsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll("[data-mark-done-countdown]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await store.call("countdowns.markDone", { id: btn.dataset.markDoneCountdown });
+        await store.loadBootstrap(null, true);
+        await renderCountdownsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const kindSelect = outlet.querySelector("#countdown-kind-select");
+  if (kindSelect) {
+    applyCountdownKindVisibility(outlet, kindSelect.value);
+    kindSelect.addEventListener("change", () => applyCountdownKindVisibility(outlet, kindSelect.value));
+  } else {
+    const hiddenKind = outlet.querySelector('#countdown-form input[name="kind"]');
+    if (hiddenKind) applyCountdownKindVisibility(outlet, hiddenKind.value);
+  }
+
+  const form = outlet.querySelector("#countdown-form");
+  if (form) {
+    outlet.querySelector("#countdown-form-cancel").addEventListener("click", () => {
+      countdownsState.formItem = null;
+      renderCountdownsBody(outlet);
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const kind = fd.get("kind");
+      const payload = { title: fd.get("title").trim(), kind, show_on_home: fd.get("show_on_home") === "on", notes: fd.get("notes").trim() };
+
+      if (["event", "course", "recurring"].includes(kind)) {
+        const localDatetime = fd.get("target_datetime");
+        if (localDatetime) {
+          const parsed = new Date(localDatetime);
+          if (isNaN(parsed.getTime())) {
+            showCountdownFormError(outlet, t("appt.form.invalidDate"));
+            return;
+          }
+          payload.target_datetime = parsed.toISOString();
+        } else {
+          payload.target_datetime = "";
+        }
+      }
+      if (["course", "countup"].includes(kind)) payload.start_date = fd.get("start_date");
+      if (kind === "recurring") payload.repeat = fd.get("repeat");
+      if (kind === "interval") {
+        payload.linked_medicine_id = fd.get("linked_medicine_id");
+        payload.interval_hours = fd.get("interval_hours");
+      }
+      if (kind === "course") payload.linked_medicine_id = fd.get("linked_medicine_id");
+
+      const saveBtn = outlet.querySelector("#countdown-form-save");
+      saveBtn.disabled = true;
+      try {
+        if (countdownsState.formItem === "new") {
+          await store.call("countdowns.add", payload);
+        } else {
+          await store.call("countdowns.update", { id: countdownsState.formItem.id, ...payload });
+        }
+        await store.loadBootstrap(null, true);
+        await renderCountdownsView(outlet);
+      } catch (err) {
+        saveBtn.disabled = false;
+        showCountdownFormError(outlet, err.message || t("common.error"));
+      }
+    });
+  }
+}
+
+function showCountdownFormError(outlet, message) {
+  const errEl = outlet.querySelector("#countdown-form-error");
+  if (!errEl) return;
+  errEl.textContent = message;
+  errEl.hidden = false;
+}
+
+// ---------------------------------------------------------------------------
 // More menu
 // ---------------------------------------------------------------------------
 
@@ -2116,6 +2644,7 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/health">${t("more.health")}</button></li>
       <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>
+      <li><button data-nav="#/countdowns">${t("more.countdowns")}</button></li>
       <li><button data-nav="#/settings">${t("more.settings")}</button></li>
     </ul>
   `;
