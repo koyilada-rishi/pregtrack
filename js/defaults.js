@@ -15,4 +15,4 @@
 // of the same one) changes the URL — update it here, or use Settings →
 // Advanced → override the URL per device without touching this file.
 
-export const DEFAULT_API_URL = "REPLACE_WITH_YOUR_DEPLOYED_APPS_SCRIPT_URL";
+export const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbzGXFv4W_QFQCRCjx0k2i6NoMqN0b_wcXYrzpC3yFh8J1wY1Cvj3NSY89rPCzI4LwldqQ/exec";
