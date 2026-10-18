@@ -19,7 +19,7 @@ clone to a working install with no guessing.
 - [x] Step 6 — health log + charts
 - [x] Step 7 — records vault + upload
 - [x] Step 8 — checklists + settings
-- [ ] Step 9 — PWA (manifest, service worker, icons)
+- [x] Step 9 — PWA (manifest, service worker, icons)
 - [ ] Step 10 — Telegram reminders
 - [ ] Step 11 — final polish
 
@@ -156,7 +156,12 @@ _Added in step 11._
 
 ## Install to home screen
 
-_Added in step 11._
+**iPhone (Safari):** open the site → Share button → "Add to Home Screen".
+**Android (Chrome):** open the site → ⋮ menu → "Install app" (or "Add to Home screen").
+
+Once installed, the app opens full-screen (no browser address bar), and the
+service worker lets it open — showing the last-saved data — even with no
+signal. New API calls (and anything not read before) still need a connection.
 
 ## Troubleshooting
 

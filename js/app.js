@@ -44,6 +44,21 @@ boot().catch((err) => {
   appRoot.innerHTML = `<div class="lock-screen"><h1>${t("app.name")}</h1><p>${t("lock.error.generic")}</p></div>`;
 });
 
+registerServiceWorker();
+
+// Caches the app shell for offline reading and installing to the home
+// screen. Registration failures (unsupported browser, non-secure context
+// during local dev over plain HTTP on a non-localhost host, etc.) are
+// logged but never block the app itself.
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
 async function boot() {
   try {
     api = await import("./api.js");
