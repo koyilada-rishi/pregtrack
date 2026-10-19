@@ -205,6 +205,10 @@ function routeAction(action, payload) {
       return filesUpdate(payload);
     case 'files.delete':
       return filesDelete(payload);
+    case 'files.link':
+      return filesLink(payload);
+    case 'files.unlink':
+      return filesUnlink(payload);
 
     case 'bookings.list':
       return bookingsList(payload);
@@ -1360,7 +1364,7 @@ function filesList(payload) {
   var rows = listRows('Files').map(function (r) {
     return {
       id: r.id, title: r.title, type: r.type, date: dateStrOf(r.date), doctor: r.doctor, notes: r.notes,
-      type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || ''
+      type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || '', linked_file_ids: r.linked_file_ids || ''
     };
   });
   if (payload) {
@@ -1388,13 +1392,51 @@ function filesUpdate(payload) {
   if (payload.hasOwnProperty('linked_booking_id')) fields.linked_booking_id = sanitizeText(payload.linked_booking_id, 100);
   if (payload.hasOwnProperty('doctor')) fields.doctor = sanitizeText(payload.doctor, 200);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
-  if (payload.hasOwnProperty('date')) fields.date = sanitizeDate(payload.date, 'date');
+  if (payload.hasOwnProperty('date')) fields.date = payload.date ? sanitizeDate(payload.date, 'date') : '';
   return updateRowById('Files', payload.id, fields);
+}
+
+function fileLinkedIds(file) {
+  return String(file.linked_file_ids || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// Links two records to each other (a bill to its report, two reports from
+// the same scan, anything to anything) — always symmetric: linking A to B
+// adds B to A's list and A to B's list in the same call, so it reads the
+// same "linked records" either way you open it.
+function filesLink(payload) {
+  requireFields(payload, ['id', 'link_to_id']);
+  if (payload.id === payload.link_to_id) throw new Error('A record cannot be linked to itself.');
+  var a = getRowById('Files', payload.id);
+  var b = getRowById('Files', payload.link_to_id);
+  if (!a || !b) throw new Error('One of these records was not found.');
+
+  var aLinks = fileLinkedIds(a);
+  if (aLinks.indexOf(payload.link_to_id) === -1) aLinks.push(payload.link_to_id);
+  var bLinks = fileLinkedIds(b);
+  if (bLinks.indexOf(payload.id) === -1) bLinks.push(payload.id);
+
+  updateRowById('Files', payload.id, { linked_file_ids: aLinks.join(',') });
+  return updateRowById('Files', payload.link_to_id, { linked_file_ids: bLinks.join(',') });
+}
+
+function filesUnlink(payload) {
+  requireFields(payload, ['id', 'link_to_id']);
+  var a = getRowById('Files', payload.id);
+  var b = getRowById('Files', payload.link_to_id);
+  if (!a || !b) throw new Error('One of these records was not found.');
+
+  var aLinks = fileLinkedIds(a).filter(function (id) { return id !== payload.link_to_id; });
+  var bLinks = fileLinkedIds(b).filter(function (id) { return id !== payload.id; });
+
+  updateRowById('Files', payload.id, { linked_file_ids: aLinks.join(',') });
+  return updateRowById('Files', payload.link_to_id, { linked_file_ids: bLinks.join(',') });
 }
 
 function filesUpload(payload) {
   requireFields(payload, ['title', 'type', 'base64', 'filename']);
   if (FILE_TYPES.indexOf(payload.type) === -1) throw new Error('Invalid file type: ' + payload.type);
+  if (payload.type_v2) validateEnum(payload.type_v2, FILE_TYPES_V2, 'type_v2');
 
   var bytes;
   try {
@@ -1406,17 +1448,24 @@ function filesUpload(payload) {
     throw new Error('File is too large (max 8 MB). Please choose a smaller file.');
   }
 
-  var folder = driveFolderForType(payload.type);
+  // type_v2 decides the actual Drive folder when present — `type` is only
+  // a fallback for a caller that doesn't send type_v2 at all. Every v3
+  // upload sends type: 'document' alongside its real type_v2 (kept only
+  // for back-compat with pre-v3 rows), so keying off `type` here used to
+  // put every file in the Documents folder regardless of its real category.
+  var folder = payload.type_v2 ? driveFolderForTypeV2(payload.type_v2) : driveFolderForType(payload.type);
   var blob = Utilities.newBlob(bytes, payload.mimeType || 'application/octet-stream', sanitizeText(payload.filename, 300));
   var file = folder.createFile(blob);
 
-  if (payload.type_v2) validateEnum(payload.type_v2, FILE_TYPES_V2, 'type_v2');
-
+  // date is deliberately optional — most reports/scans aren't dated until
+  // the result actually comes back, so forcing "today" here would record
+  // a wrong date more often than a right one. A blank date just means
+  // "not dated yet", not an error.
   return createRow('Files', {
     drive_file_id: file.getId(),
     title: sanitizeText(payload.title, 200),
     type: payload.type,
-    date: sanitizeDate(payload.date || formatISODate(new Date()), 'date'),
+    date: payload.date ? sanitizeDate(payload.date, 'date') : '',
     doctor: sanitizeText(payload.doctor, 200),
     notes: sanitizeText(payload.notes, 1000),
     type_v2: payload.type_v2 || '',
@@ -1465,6 +1514,47 @@ function driveFolderForType(type) {
   var folderId = PropertiesService.getScriptProperties().getProperty(propKeyByType[type]);
   if (!folderId) throw new Error('Drive folder not set up for type: ' + type + '. Run setup() first.');
   return DriveApp.getFolderById(folderId);
+}
+
+// type_v2 (the real six-category Records typing) is what actually decides
+// the Drive folder for every v3 upload — reuses the original four folders
+// where the category is the same thing under a new name (prescription,
+// scan_report -> the old Scans folder, other -> the old Documents folder)
+// and lazily creates the three genuinely new ones (lab_report/bill/
+// medicine_photo) on first use, no manual setup() re-run required. See
+// getOrCreateDriveFolder()'s comment for why this is lazy rather than
+// requiring that re-run.
+var DRIVE_FOLDER_V2_MAP = {
+  prescription: ['DRIVE_FOLDER_PRESCRIPTION', 'Prescriptions'],
+  lab_report: ['DRIVE_FOLDER_LAB_REPORT', 'Lab reports'],
+  scan_report: ['DRIVE_FOLDER_SCAN', 'Scans'],
+  bill: ['DRIVE_FOLDER_BILL', 'Bills and receipts'],
+  medicine_photo: ['DRIVE_FOLDER_MEDICINE_PHOTO', 'Medicine photos'],
+  other: ['DRIVE_FOLDER_DOCUMENT', 'Documents']
+};
+
+function driveFolderForTypeV2(typeV2) {
+  var pair = DRIVE_FOLDER_V2_MAP[typeV2] || DRIVE_FOLDER_V2_MAP.other;
+  return getOrCreateDriveFolder(pair[0], pair[1]);
+}
+
+// Same tab I use everywhere else for schema: additive, self-healing, never
+// requires a manual step. If the folder's Script Property is already set
+// (either from an original setup() run, or from a previous call to this
+// function), reuse it; otherwise find-or-create it under the existing
+// Drive root and remember its id for next time.
+function getOrCreateDriveFolder(propKey, folderName) {
+  var props = PropertiesService.getScriptProperties();
+  var folderId = props.getProperty(propKey);
+  if (folderId) return DriveApp.getFolderById(folderId);
+
+  var rootId = props.getProperty('DRIVE_FOLDER_ROOT');
+  if (!rootId) throw new Error('Not set up yet. Run setup() from the Apps Script editor first.');
+  var root = DriveApp.getFolderById(rootId);
+  var existing = root.getFoldersByName(folderName);
+  var folder = existing.hasNext() ? existing.next() : root.createFolder(folderName);
+  props.setProperty(propKey, folder.getId());
+  return folder;
 }
 
 // ---------------------------------------------------------------------------
@@ -2088,7 +2178,12 @@ var SHEET_SCHEMA = {
     // document) is never rewritten, so nothing already uploaded changes.
     // A blank type_v2 (every pre-Phase-3 file) means "needs sorting" —
     // the frontend buckets those separately, nothing is hidden or lost.
-    'type_v2', 'linked_booking_id'
+    'type_v2', 'linked_booking_id',
+    // linked_file_ids: other Files rows this one is connected to (a bill
+    // to its report, two reports from the same scan, etc.) — comma-joined
+    // ids, always kept symmetric by files.link/files.unlink (linking A to
+    // B adds B to A's list AND A to B's list in the same call).
+    'linked_file_ids'
   ],
   Countdowns: [
     'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',

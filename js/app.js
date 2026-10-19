@@ -2341,6 +2341,32 @@ const DEFAULT_TIME_CHIPS = [
   { time: "18:00", labelKey: "home.bucket.evening" }, { time: "21:00", labelKey: "home.bucket.night" }
 ];
 
+// "How many times a day?" is how a doctor's instruction actually gets
+// said/written (once/twice/thrice/four times daily) — most people don't
+// think in terms of which specific Morning/Afternoon/Evening/Night chips
+// to tap. Picking a number here just pre-fills that many of the time
+// chips below; "Customize exact times" (collapsed by default) still lets
+// her change the actual clock times afterward.
+const TIMES_PER_DAY_DEFAULTS = {
+  1: ["08:00"],
+  2: ["08:00", "18:00"],
+  3: ["08:00", "13:00", "18:00"],
+  4: ["08:00", "13:00", "18:00", "21:00"]
+};
+
+// The reverse lookup, for re-opening an existing medicine: only highlights
+// a times-per-day chip when the stored times exactly match one of the
+// presets above — anything customized (or no times at all yet) leaves all
+// four unselected rather than guessing which one was "close enough".
+function timesPerDaySelection(times) {
+  const sorted = [...times].sort();
+  const match = Object.keys(TIMES_PER_DAY_DEFAULTS).find((n) => {
+    const preset = [...TIMES_PER_DAY_DEFAULTS[n]].sort();
+    return preset.length === sorted.length && preset.every((t, i) => t === sorted[i]);
+  });
+  return match ? Number(match) : null;
+}
+
 function chipButtonHtml(group, value, label, selected) {
   return `<button type="button" class="chip ${selected ? "chip-selected" : ""}" data-chip-group="${escapeHtml(group)}" data-chip-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
 }
@@ -2420,14 +2446,21 @@ function medicineSheetMarkup(item, packs, settings) {
 
       <div data-how-often-fields="daily" ${type === "daily" ? "" : "hidden"}>
         <input type="hidden" name="times" value="${escapeHtml(times.join(","))}" />
-        <div class="chip-row" id="daily-time-chips">
-          ${DEFAULT_TIME_CHIPS.map((c) => chipButtonHtml("daily-time", c.time, `${t(c.labelKey)} ${c.time}`, times.includes(c.time))).join("")}
-          ${times.filter((tm) => !DEFAULT_TIME_CHIPS.some((c) => c.time === tm)).map((tm) => chipButtonHtml("daily-time", tm, tm, true)).join("")}
+        <p class="field-label">${t("meds.form.timesPerDay")}</p>
+        <div class="chip-row" id="times-per-day-chips">
+          ${[1, 2, 3, 4].map((n) => chipButtonHtml("times-per-day", String(n), String(n), timesPerDaySelection(times) === n)).join("")}
         </div>
-        <div class="custom-time-row">
-          <input class="field" type="time" id="custom-time-input" />
-          <button type="button" class="btn-link" id="add-custom-time-btn">${t("meds.form.addCustomTime")}</button>
-        </div>
+        <details class="more-details">
+          <summary>${t("meds.form.customizeExactTimes")}</summary>
+          <div class="chip-row" id="daily-time-chips">
+            ${DEFAULT_TIME_CHIPS.map((c) => chipButtonHtml("daily-time", c.time, `${t(c.labelKey)} ${c.time}`, times.includes(c.time))).join("")}
+            ${times.filter((tm) => !DEFAULT_TIME_CHIPS.some((c) => c.time === tm)).map((tm) => chipButtonHtml("daily-time", tm, tm, true)).join("")}
+          </div>
+          <div class="custom-time-row">
+            <input class="field" type="time" id="custom-time-input" />
+            <button type="button" class="btn-link" id="add-custom-time-btn">${t("meds.form.addCustomTime")}</button>
+          </div>
+        </details>
       </div>
 
       <div data-how-often-fields="interval" ${type === "interval" ? "" : "hidden"}>
@@ -2674,7 +2707,25 @@ function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
   const isNew = item === "new" || !item.id;
   const form = sheetEl.querySelector("#med-sheet-form");
 
-  sheetEl.querySelectorAll("[data-chip-group]").forEach((btn) => attachChipHandler(sheetEl, btn));
+  // "times-per-day" chips get their own handler below (they drive the
+  // daily-time-chips group rather than writing to a hidden input
+  // themselves) — everything else uses the generic chip cycle.
+  sheetEl.querySelectorAll('[data-chip-group]:not([data-chip-group="times-per-day"])').forEach((btn) => attachChipHandler(sheetEl, btn));
+
+  sheetEl.querySelectorAll('[data-chip-group="times-per-day"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const n = Number(btn.dataset.chipValue);
+      const defaults = TIMES_PER_DAY_DEFAULTS[n] || [];
+      sheetEl.querySelectorAll('[data-chip-group="times-per-day"]').forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+
+      const container = sheetEl.querySelector("#daily-time-chips");
+      container.innerHTML = DEFAULT_TIME_CHIPS.map((c) => chipButtonHtml("daily-time", c.time, `${t(c.labelKey)} ${c.time}`, defaults.includes(c.time))).join("");
+      container.querySelectorAll("[data-chip-group]").forEach((chip) => attachChipHandler(sheetEl, chip));
+      sheetEl.querySelector('input[name="times"]').value = defaults.join(",");
+      updateMedicineSheetSummary(sheetEl);
+    });
+  });
 
   sheetEl.querySelectorAll(".medicine-photo-input").forEach((input) => {
     input.addEventListener("change", async (event) => {
@@ -4008,16 +4059,18 @@ const recordsState = {
   search: "",
   filterFrom: "",
   filterTo: "",
+  doctorFilter: "",
+  sortBy: "date", // "date" | "doctor"
   viewMode: "list",
   uploadOpen: false,
-  pendingFile: null, // { base64, mimeType, filename, size }
+  pendingFiles: [], // [{ base64, mimeType, filename, size }] — bulk upload, several at once
   viewingFile: null // result of files.get, shown inline
 };
 
 async function renderRecordsView(outlet) {
   recordsState.loading = true;
   recordsState.uploadOpen = false;
-  recordsState.pendingFile = null;
+  recordsState.pendingFiles = [];
   recordsState.viewingFile = null;
   outlet.innerHTML = genericSkeleton(6);
 
@@ -4032,11 +4085,23 @@ async function renderRecordsView(outlet) {
   }
 }
 
+// Every distinct doctor name among files in the currently-open folder (not
+// the whole vault) — the filter chips only ever offer choices that are
+// actually relevant to what's showing.
+function recordsDoctorsInCurrentFolder() {
+  const inFolder = recordsState.files.filter((f) => {
+    if (recordsState.folderFilter === "needs_sorting") return !f.type_v2;
+    return f.type_v2 === recordsState.folderFilter;
+  });
+  return [...new Set(inFolder.map((f) => f.doctor).filter(Boolean))].sort();
+}
+
 function recordsFiltered() {
   const search = recordsState.search.trim().toLowerCase();
-  return recordsState.files.filter((f) => {
+  const rows = recordsState.files.filter((f) => {
     if (recordsState.folderFilter === "needs_sorting" && f.type_v2) return false;
     if (recordsState.folderFilter && recordsState.folderFilter !== "needs_sorting" && f.type_v2 !== recordsState.folderFilter) return false;
+    if (recordsState.doctorFilter && f.doctor !== recordsState.doctorFilter) return false;
     if (recordsState.filterFrom && f.date < recordsState.filterFrom) return false;
     if (recordsState.filterTo && f.date > recordsState.filterTo) return false;
     if (search) {
@@ -4044,7 +4109,15 @@ function recordsFiltered() {
       if (!haystack.includes(search)) return false;
     }
     return true;
-  }).sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)));
+  });
+  rows.sort((a, b) => {
+    if (recordsState.sortBy === "doctor") {
+      const byDoctor = (a.doctor || "").localeCompare(b.doctor || "");
+      if (byDoctor !== 0) return byDoctor;
+    }
+    return dateStrOf(b.date).localeCompare(dateStrOf(a.date));
+  });
+  return rows;
 }
 
 function renderRecordsBody(outlet) {
@@ -4090,9 +4163,17 @@ function recordsListMarkup() {
         ${formField(t("records.filter.from"), `<input class="field" type="date" id="filter-from" value="${escapeHtml(recordsState.filterFrom)}" />`)}
         ${formField(t("records.filter.to"), `<input class="field" type="date" id="filter-to" value="${escapeHtml(recordsState.filterTo)}" />`)}
       </div>
+      ${recordsDoctorsInCurrentFolder().length ? `
+        <p class="field-label">${t("records.filter.doctor")}</p>
+        <div class="chip-row" id="records-doctor-chips">
+          <button type="button" class="chip ${!recordsState.doctorFilter ? "chip-selected" : ""}" data-doctor-filter="">${t("records.filter.allDoctors")}</button>
+          ${recordsDoctorsInCurrentFolder().map((d) => `<button type="button" class="chip ${recordsState.doctorFilter === d ? "chip-selected" : ""}" data-doctor-filter="${escapeHtml(d)}">${escapeHtml(d)}</button>`).join("")}
+        </div>
+      ` : ""}
       <div class="view-toggle">
         <button class="btn-link ${recordsState.viewMode === "list" ? "view-toggle-active" : ""}" id="view-list-btn">${t("records.view.list")}</button>
         <button class="btn-link ${recordsState.viewMode === "grid" ? "view-toggle-active" : ""}" id="view-grid-btn">${t("records.view.grid")}</button>
+        <button class="btn-link ${recordsState.sortBy === "doctor" ? "view-toggle-active" : ""}" id="sort-by-doctor-btn">${t("records.filter.sortByDoctor")}</button>
       </div>
     </div>
 
@@ -4125,12 +4206,117 @@ function recordIcon(f) {
   return f.type_v2 ? RECORD_TYPE_V2_ICONS[f.type_v2] : (RECORD_TYPE_ICONS[f.type] || "🗂️");
 }
 
+function recordDateLabel(f) {
+  return f.date ? formatDisplayDate(f.date) : t("records.noDate");
+}
+
+// Every doctor name already used on a record, so the doctor field can
+// offer them back as a native <datalist> dropdown instead of making her
+// retype the same name every time — still a plain text input underneath,
+// so a new name is always just as easy to type as before.
+function recordDoctorOptions() {
+  return [...new Set(recordsState.files.map((f) => f.doctor).filter(Boolean))].sort();
+}
+
+function doctorDatalistMarkup() {
+  const options = recordDoctorOptions();
+  return options.length ? `<datalist id="record-doctor-options">${options.map((d) => `<option value="${escapeHtml(d)}"></option>`).join("")}</datalist>` : "";
+}
+
+// Generic record-to-record linking (a bill to its report, two reports from
+// the same scan, anything to anything) — shown in the metadata-edit sheet,
+// backed by files.link/files.unlink (always symmetric server-side).
+function linkedRecordsFieldMarkup(file) {
+  const linkedIds = String(file.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const linked = linkedIds.map((id) => recordsState.files.find((f) => f.id === id)).filter(Boolean);
+  return `
+    <p class="field-label">${t("records.linked.title")}</p>
+    ${linked.length
+      ? `<ul class="entity-list">${linked.map((f) => `
+          <li class="entity-row">
+            <div class="entity-main"><strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong></div>
+            <div class="entity-actions"><button type="button" class="btn-link btn-link--danger" data-unlink-file="${escapeHtml(f.id)}">${t("common.delete")}</button></div>
+          </li>
+        `).join("")}</ul>`
+      : `<p class="empty">${t("records.linked.none")}</p>`
+    }
+    <button type="button" class="btn btn-secondary btn-small" id="link-record-btn">${t("records.linked.add")}</button>
+  `;
+}
+
+function attachLinkedRecordsHandlers(sheetEl, file, onSaved) {
+  sheetEl.querySelectorAll("[data-unlink-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await store.call("files.unlink", { id: file.id, link_to_id: btn.dataset.unlinkFile });
+        closeSheet();
+        await onSaved();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  const linkBtn = sheetEl.querySelector("#link-record-btn");
+  if (linkBtn) linkBtn.addEventListener("click", () => openRecordLinkPickerSheet(file, onSaved));
+}
+
+function linkPickerResultsMarkup(rows) {
+  return rows.length
+    ? `<ul class="entity-list">${rows.map((f) => `
+        <li class="entity-row tap-row" data-pick-file="${escapeHtml(f.id)}">
+          <div class="entity-main"><strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong><span class="muted">${escapeHtml(recordDateLabel(f))}</span></div>
+        </li>
+      `).join("")}</ul>`
+    : `<p class="empty">${t("records.linked.noResults")}</p>`;
+}
+
+function openRecordLinkPickerSheet(file, onSaved) {
+  const linkedIds = String(file.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const candidates = recordsState.files.filter((f) => f.id !== file.id && !linkedIds.includes(f.id));
+
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("records.linked.pickerTitle")}</h2>
+    <input class="field" id="link-picker-search" placeholder="${t("records.linked.searchPlaceholder")}" />
+    <div id="link-picker-results">${linkPickerResultsMarkup(candidates)}</div>
+    <button type="button" class="btn-link" id="link-picker-cancel">${t("common.cancel")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#link-picker-cancel").addEventListener("click", closeSheet);
+
+    const attachPickHandlers = () => {
+      sheetEl.querySelectorAll("[data-pick-file]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await store.call("files.link", { id: file.id, link_to_id: btn.dataset.pickFile });
+            closeSheet();
+            await onSaved();
+          } catch (err) {
+            alert(err.message || t("common.error"));
+          }
+        });
+      });
+    };
+    attachPickHandlers();
+
+    // Re-renders only the results list on each keystroke, never the
+    // search input itself — same fix as Records/Food/Meds-history search.
+    sheetEl.querySelector("#link-picker-search").addEventListener("input", (event) => {
+      const search = event.target.value.trim().toLowerCase();
+      const filtered = search
+        ? candidates.filter((f) => f.title.toLowerCase().includes(search) || (f.doctor || "").toLowerCase().includes(search))
+        : candidates;
+      sheetEl.querySelector("#link-picker-results").innerHTML = linkPickerResultsMarkup(filtered);
+      attachPickHandlers();
+    });
+  });
+}
+
 function recordCardMarkup(f) {
   return `
     <button class="record-card" data-view-file="${escapeHtml(f.id)}">
       <span class="record-type-icon">${recordIcon(f)}</span>
       <span class="record-card-title">${escapeHtml(f.title)}</span>
-      <span class="muted">${escapeHtml(formatDisplayDate(f.date))}</span>
+      <span class="muted">${escapeHtml(recordDateLabel(f))}</span>
     </button>
   `;
 }
@@ -4140,7 +4326,7 @@ function recordRowMarkup(f) {
     <li class="entity-row">
       <button class="entity-main record-row-main" data-view-file="${escapeHtml(f.id)}">
         <strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong>
-        <span class="muted">${escapeHtml(formatDisplayDate(f.date))}${f.doctor ? " · " + escapeHtml(f.doctor) : ""}${!f.type_v2 ? " · " + escapeHtml(t("records.needsSorting")) : ""}</span>
+        <span class="muted">${escapeHtml(recordDateLabel(f))}${f.doctor ? " · " + escapeHtml(f.doctor) : ""}${!f.type_v2 ? " · " + escapeHtml(t("records.needsSorting")) : ""}</span>
       </button>
       <div class="entity-actions">
         <button class="btn-link" data-edit-file="${escapeHtml(f.id)}">${t("common.edit")}</button>
@@ -4177,6 +4363,21 @@ function attachRecordsListHandlers(outlet) {
   if (listBtn) listBtn.addEventListener("click", () => { recordsState.viewMode = "list"; renderRecordsBody(outlet); });
   const gridBtn = outlet.querySelector("#view-grid-btn");
   if (gridBtn) gridBtn.addEventListener("click", () => { recordsState.viewMode = "grid"; renderRecordsBody(outlet); });
+  const sortByDoctorBtn = outlet.querySelector("#sort-by-doctor-btn");
+  if (sortByDoctorBtn) {
+    sortByDoctorBtn.addEventListener("click", () => {
+      recordsState.sortBy = recordsState.sortBy === "doctor" ? "date" : "doctor";
+      renderRecordsBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-doctor-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      recordsState.doctorFilter = btn.dataset.doctorFilter;
+      outlet.querySelectorAll("[data-doctor-filter]").forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      renderRecordsResults(outlet);
+    });
+  });
 
   attachRecordsResultsHandlers(outlet);
 }
@@ -4239,10 +4440,12 @@ function openFileMetadataSheet(file, onSaved) {
           ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}" ${file.type_v2 === ty ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}
         </select>`
       )}
-      ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(dateStrOf(file.date))}" />`)}
-      ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" value="${escapeHtml(file.doctor)}" />`)}
+      ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(dateStrOf(file.date))}" />`, t("records.upload.dateHint"))}
+      ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" value="${escapeHtml(file.doctor)}" list="record-doctor-options" autocomplete="off" />`)}
+      ${doctorDatalistMarkup()}
       ${formField(t("records.upload.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(file.notes)}</textarea>`)}
       <p class="error-text" id="file-meta-error" hidden></p>
+      ${linkedRecordsFieldMarkup(file)}
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="file-meta-cancel">${t("common.cancel")}</button>
         <button type="submit" class="btn btn-primary" id="file-meta-save">${t("common.save")}</button>
@@ -4250,6 +4453,7 @@ function openFileMetadataSheet(file, onSaved) {
     </form>
   `, (sheetEl) => {
     sheetEl.querySelector("#file-meta-cancel").addEventListener("click", closeSheet);
+    attachLinkedRecordsHandlers(sheetEl, file, onSaved);
     sheetEl.querySelector("#file-meta-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const fd = new FormData(event.target);
@@ -4276,14 +4480,31 @@ function openFileMetadataSheet(file, onSaved) {
   });
 }
 
+function titleFromFilename(filename) {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
 function uploadFormMarkup() {
-  const pending = recordsState.pendingFile;
+  const pending = recordsState.pendingFiles;
   return `
     <div class="card">
       <h2>${t("records.upload.title")}</h2>
       ${
-        pending
-          ? `<div class="selected-file-chip">${escapeHtml(pending.filename)} (${formatFileSize(pending.size)})</div>`
+        pending.length
+          ? `
+        <ul class="entity-list">
+          ${pending.map((f, i) => `
+            <li class="entity-row">
+              <div class="entity-main">${escapeHtml(f.filename)} <span class="muted">(${formatFileSize(f.size)})</span></div>
+              <div class="entity-actions"><button type="button" class="btn-link btn-link--danger" data-remove-pending="${i}">${t("common.delete")}</button></div>
+            </li>
+          `).join("")}
+        </ul>
+        <label class="btn-link">
+          ${t("records.upload.addMoreFiles")}
+          <input type="file" accept="image/*,application/pdf,.doc,.docx" id="file-input-more" multiple hidden />
+        </label>
+      `
           : `
         <div class="upload-picker-buttons">
           <label class="btn btn-secondary">
@@ -4292,29 +4513,36 @@ function uploadFormMarkup() {
           </label>
           <label class="btn btn-secondary">
             ${t("records.upload.chooseFile")}
-            <input type="file" accept="image/*,application/pdf,.doc,.docx" id="file-input" hidden />
+            <input type="file" accept="image/*,application/pdf,.doc,.docx" id="file-input" multiple hidden />
           </label>
         </div>
+        <p class="muted">${t("records.upload.bulkHint")}</p>
       `
       }
       <p class="error-text" id="upload-error" hidden></p>
       ${
-        pending
+        pending.length
           ? `
         <form id="upload-form">
-          ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(pending.filename.replace(/\.[^.]+$/, ""))}" />`)}
+          ${pending.map((f, i) => formField(
+            pending.length > 1 ? t("records.upload.recordTitleN", { n: i + 1 }) : t("records.upload.recordTitle"),
+            `<input class="field" name="title-${i}" required value="${escapeHtml(titleFromFilename(f.filename))}" />`
+          )).join("")}
+          <p class="muted" id="upload-duplicate-warning" hidden></p>
           ${formField(
             t("records.upload.type"),
             `<select class="field" name="type_v2" required>
               ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
-            </select>`
+            </select>`,
+            pending.length > 1 ? t("records.upload.sharedFieldsHint") : ""
           )}
-          ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(formatDateInput(new Date()))}" />`)}
-          ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" />`)}
+          ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" />`, t("records.upload.dateHint"))}
+          ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" list="record-doctor-options" autocomplete="off" />`)}
+          ${doctorDatalistMarkup()}
           ${formField(t("records.upload.notes"), `<textarea class="field" name="notes" rows="2"></textarea>`)}
           <div class="form-actions">
             <button type="button" class="btn btn-secondary" id="upload-cancel">${t("common.cancel")}</button>
-            <button type="submit" class="btn btn-primary" id="upload-save">${t("common.save")}</button>
+            <button type="submit" class="btn btn-primary" id="upload-save">${pending.length > 1 ? t("records.upload.saveAll", { n: pending.length }) : t("common.save")}</button>
           </div>
         </form>
       `
@@ -4329,39 +4557,70 @@ function attachUploadHandlers(outlet) {
   if (cancelBtn) {
     cancelBtn.addEventListener("click", () => {
       recordsState.uploadOpen = false;
-      recordsState.pendingFile = null;
+      recordsState.pendingFiles = [];
       renderRecordsBody(outlet);
     });
   }
 
   const errEl = outlet.querySelector("#upload-error");
-  const handleFile = async (file) => {
-    if (!file) return;
-    if (file.size > MAX_UPLOAD_BYTES) {
-      errEl.textContent = t("records.upload.tooLarge");
-      errEl.hidden = false;
-      return;
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    for (const file of files) {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        errEl.textContent = t("records.upload.tooLarge");
+        errEl.hidden = false;
+        continue;
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+        recordsState.pendingFiles.push({
+          base64: match ? match[2] : "",
+          mimeType: (match && match[1]) || file.type || "application/octet-stream",
+          filename: file.name,
+          size: file.size
+        });
+      } catch {
+        errEl.textContent = t("records.upload.readError");
+        errEl.hidden = false;
+      }
     }
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
-      recordsState.pendingFile = {
-        base64: match ? match[2] : "",
-        mimeType: (match && match[1]) || file.type || "application/octet-stream",
-        filename: file.name,
-        size: file.size
-      };
-      renderRecordsBody(outlet);
-    } catch {
-      errEl.textContent = t("records.upload.readError");
-      errEl.hidden = false;
-    }
+    renderRecordsBody(outlet);
   };
 
   const cameraInput = outlet.querySelector("#camera-input");
-  if (cameraInput) cameraInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
+  if (cameraInput) cameraInput.addEventListener("change", (e) => handleFiles(e.target.files));
   const fileInput = outlet.querySelector("#file-input");
-  if (fileInput) fileInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
+  if (fileInput) fileInput.addEventListener("change", (e) => handleFiles(e.target.files));
+  const fileInputMore = outlet.querySelector("#file-input-more");
+  if (fileInputMore) fileInputMore.addEventListener("change", (e) => handleFiles(e.target.files));
+
+  outlet.querySelectorAll("[data-remove-pending]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      recordsState.pendingFiles.splice(Number(btn.dataset.removePending), 1);
+      renderRecordsBody(outlet);
+    });
+  });
+
+  // Duplicate flag: a title that matches an existing record exactly
+  // (case-insensitive) — a nudge, not a block, since the same report
+  // genuinely can be uploaded twice (front+back of the same page, etc.).
+  const warnEl = outlet.querySelector("#upload-duplicate-warning");
+  const checkDuplicateTitles = () => {
+    if (!warnEl) return;
+    const dupe = Array.from(outlet.querySelectorAll('[name^="title-"]'))
+      .map((input) => input.value.trim())
+      .find((title) => title && recordsState.files.some((f) => f.title.trim().toLowerCase() === title.toLowerCase()));
+    if (dupe) {
+      warnEl.textContent = t("records.upload.duplicateWarning", { title: dupe });
+      warnEl.hidden = false;
+    } else {
+      warnEl.hidden = true;
+    }
+  };
+  outlet.querySelectorAll('[name^="title-"]').forEach((input) => input.addEventListener("input", checkDuplicateTitles));
+  checkDuplicateTitles();
 
   const form = outlet.querySelector("#upload-form");
   if (form) {
@@ -4370,20 +4629,22 @@ function attachUploadHandlers(outlet) {
       const fd = new FormData(form);
       const saveBtn = outlet.querySelector("#upload-save");
       saveBtn.disabled = true;
+      const sharedType = fd.get("type_v2");
+      const sharedDate = fd.get("date");
+      const sharedDoctor = fd.get("doctor").trim();
+      const sharedNotes = fd.get("notes").trim();
       try {
-        await store.call("files.upload", {
-          title: fd.get("title").trim(),
-          type: "document", // legacy column, kept populated for back-compat; type_v2 is the real category now
-          type_v2: fd.get("type_v2"),
-          date: fd.get("date"),
-          doctor: fd.get("doctor").trim(),
-          notes: fd.get("notes").trim(),
-          filename: recordsState.pendingFile.filename,
-          mimeType: recordsState.pendingFile.mimeType,
-          base64: recordsState.pendingFile.base64
-        });
+        for (let i = 0; i < recordsState.pendingFiles.length; i++) {
+          const pf = recordsState.pendingFiles[i];
+          await store.call("files.upload", {
+            title: (fd.get(`title-${i}`) || "").trim(),
+            type: "document", // legacy column, kept populated for back-compat; type_v2 is the real category now
+            type_v2: sharedType, date: sharedDate, doctor: sharedDoctor, notes: sharedNotes,
+            filename: pf.filename, mimeType: pf.mimeType, base64: pf.base64
+          });
+        }
         recordsState.uploadOpen = false;
-        recordsState.pendingFile = null;
+        recordsState.pendingFiles = [];
         await renderRecordsView(outlet);
       } catch (err) {
         saveBtn.disabled = false;

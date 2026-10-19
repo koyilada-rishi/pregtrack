@@ -101,26 +101,44 @@ global.Utilities = {
   DigestAlgorithm: { SHA_256: "SHA_256" }
 };
 
+// Folders now have real identity (tracked by id, and findable-by-name
+// under their parent) so tests can actually verify which folder a file
+// landed in, and that looking up the same folder twice reuses it instead
+// of silently creating a duplicate — both real behaviors of
+// getOrCreateDriveFolder()/driveFolderForTypeV2() that the original
+// always-fresh-fake-folder version of this mock couldn't exercise at all.
 const fakeDriveFiles = {};
+const fakeFoldersById = {};
 let fakeFileCounter = 0;
 let fakeFolderCounter = 0;
 function makeFakeFolder() {
   const folderId = "folder-" + (++fakeFolderCounter);
-  return {
+  const childFoldersByName = {};
+  const folder = {
     getId: () => folderId,
     createFile(blob) {
       const id = "file-" + (++fakeFileCounter);
-      fakeDriveFiles[id] = { blob, name: blob.getName() };
+      fakeDriveFiles[id] = { blob, name: blob.getName(), folderId };
       return { getId: () => id };
     },
-    getFoldersByName() { return { hasNext: () => false, next: () => null }; },
-    createFolder() { return makeFakeFolder(); },
-    getUrl() { return "https://fake/folder"; }
+    getFoldersByName(name) {
+      const existing = childFoldersByName[name];
+      let handed = false;
+      return { hasNext: () => !handed && !!existing, next: () => { handed = true; return existing; } };
+    },
+    createFolder(name) {
+      const child = makeFakeFolder();
+      childFoldersByName[name] = child;
+      return child;
+    },
+    getUrl: () => "https://fake/folder"
   };
+  fakeFoldersById[folderId] = folder;
+  return folder;
 }
 global.DriveApp = {
   createFolder: () => makeFakeFolder(),
-  getFolderById: () => makeFakeFolder(),
+  getFolderById: (id) => fakeFoldersById[id] || makeFakeFolder(),
   getFileById: (id) => {
     const rec = fakeDriveFiles[id];
     if (!rec) throw new Error("No such file: " + id);
@@ -652,6 +670,24 @@ const scanBooking = bookingsCreate({ type: "scan", title: "Anomaly scan", dateti
 throws("bookingsClose a scan with no linked report fails", () => bookingsClose({ id: scanBooking.id }));
 const scanReportFile = filesUpload({ title: "Scan report", type: "scan", filename: "report.pdf", base64: smallBase64, date: "2026-11-05", type_v2: "scan_report", linked_booking_id: scanBooking.id });
 check("file uploaded with type_v2 + linked_booking_id", scanReportFile.type_v2 === "scan_report" && scanReportFile.linked_booking_id === scanBooking.id);
+
+// --- Drive folder routing: the real regression this session found+fixed ---
+// Every v3 upload sends type: 'document' (legacy, back-compat only)
+// alongside its real type_v2 — before the fix, the Drive folder was keyed
+// off `type` alone, so every single upload landed in the Documents
+// folder regardless of its real category. These assert the actual Drive
+// folder (via the fake Drive file's recorded folderId) is category-
+// specific and stable across repeated uploads of the same category.
+const labReportUpload = filesUpload({ title: "Lab report", type: "document", filename: "lab.pdf", base64: smallBase64, type_v2: "lab_report" });
+const billUpload = filesUpload({ title: "Bill", type: "document", filename: "bill.pdf", base64: smallBase64, type_v2: "bill" });
+const labReportUpload2 = filesUpload({ title: "Lab report 2", type: "document", filename: "lab2.pdf", base64: smallBase64, type_v2: "lab_report" });
+// No type_v2 at all -> falls back to the legacy `type`-keyed Documents folder.
+const legacyDocUpload = filesUpload({ title: "Old-style upload", type: "document", filename: "old2.pdf", base64: smallBase64 });
+
+check("a lab_report upload does NOT land in the legacy Documents folder", fakeDriveFiles[labReportUpload.drive_file_id].folderId !== fakeDriveFiles[legacyDocUpload.drive_file_id].folderId);
+check("a bill upload lands in a different Drive folder than a lab report", fakeDriveFiles[billUpload.drive_file_id].folderId !== fakeDriveFiles[labReportUpload.drive_file_id].folderId);
+check("two lab_report uploads reuse the exact same Drive folder (not a fresh one each time)", fakeDriveFiles[labReportUpload2.drive_file_id].folderId === fakeDriveFiles[labReportUpload.drive_file_id].folderId);
+check("an upload with no type_v2 at all still succeeds via the legacy type-keyed fallback", !!legacyDocUpload.drive_file_id);
 const scanClosed = bookingsClose({ id: scanBooking.id });
 check("bookingsClose succeeds once the report is linked", scanClosed.status === "closed");
 
@@ -674,6 +710,37 @@ check("filesList needs_sorting excludes files with a type_v2 set", !filesList({ 
 const needsSortingFile = filesUpload({ title: "Old upload", type: "document", filename: "old.pdf", base64: smallBase64, date: "2026-10-01" });
 check("a file uploaded without type_v2 shows up in needs_sorting", filesList({ needs_sorting: true }).some((f) => f.id === needsSortingFile.id));
 check("filesList filters by linked_booking_id", filesList({ linked_booking_id: scanBooking.id }).every((f) => f.linked_booking_id === scanBooking.id));
+
+// --- Records: date is genuinely optional (most reports/scans aren't dated until the result comes back) ---
+
+const undatedUpload = filesUpload({ title: "Undated report", type: "document", filename: "undated.pdf", base64: smallBase64, type_v2: "lab_report" }); // no date at all
+check("filesUpload with no date at all stores a blank date, not today's date", undatedUpload.date === "");
+const dateFilledIn = filesUpdate({ id: undatedUpload.id, date: "2026-11-20" });
+check("filesUpdate can fill in a date later", dateFilledIn.date === "2026-11-20");
+const dateClearedAgain = filesUpdate({ id: undatedUpload.id, date: "" });
+check("filesUpdate can clear a date back to blank", dateClearedAgain.date === "");
+
+// --- files.link / files.unlink: generic record-to-record linking ---
+
+const billForScan = filesUpload({ title: "Scan bill", type: "document", filename: "bill2.pdf", base64: smallBase64, type_v2: "bill" });
+throws("filesLink requires id+link_to_id", () => filesLink({ id: scanReportFile.id }));
+throws("filesLink rejects linking a record to itself", () => filesLink({ id: scanReportFile.id, link_to_id: scanReportFile.id }));
+throws("filesLink rejects an unknown record", () => filesLink({ id: scanReportFile.id, link_to_id: "no-such-file" }));
+filesLink({ id: scanReportFile.id, link_to_id: billForScan.id });
+check("filesLink is symmetric: the report sees the bill", getRowById("Files", scanReportFile.id).linked_file_ids.split(",").includes(billForScan.id));
+check("filesLink is symmetric: the bill sees the report", getRowById("Files", billForScan.id).linked_file_ids.split(",").includes(scanReportFile.id));
+
+const secondReportForSameScan = filesUpload({ title: "Scan report (2nd opinion)", type: "document", filename: "report2.pdf", base64: smallBase64, type_v2: "scan_report", linked_booking_id: scanBooking.id });
+// scanReportFile's own type_v2 was changed to 'lab_report' by the filesUpdate
+// test above — this checks the booking can have *multiple* linked files at
+// all (regardless of category), which is the actual thing being verified.
+check("a booking can have more than one linked file", filesList({ linked_booking_id: scanBooking.id }).length >= 2);
+filesLink({ id: scanReportFile.id, link_to_id: secondReportForSameScan.id });
+check("report-to-report linking (not just bill-to-report) works the same way", getRowById("Files", secondReportForSameScan.id).linked_file_ids.split(",").includes(scanReportFile.id));
+
+filesUnlink({ id: scanReportFile.id, link_to_id: billForScan.id });
+check("filesUnlink removes the link on both sides", !getRowById("Files", scanReportFile.id).linked_file_ids.split(",").includes(billForScan.id) && !getRowById("Files", billForScan.id).linked_file_ids.split(",").includes(scanReportFile.id));
+check("filesUnlink leaves the other link (to the second report) untouched", getRowById("Files", scanReportFile.id).linked_file_ids.split(",").includes(secondReportForSameScan.id));
 
 // --- Suggestions ---
 

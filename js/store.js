@@ -356,8 +356,9 @@ const db = {
     { id: "mock-cl-4", list: "baby_items", item: "Onesies", done: false }
   ],
   files: [
-    { id: "mock-file-1", drive_file_id: "mock-drive-1", title: "Anomaly scan report", type: "scan", date: todayStr(-20), doctor: "Dr. Rao", notes: "", mime: "", thumb_file_id: "", type_v2: "scan_report", linked_booking_id: "mock-booking-2" },
-    { id: "mock-file-2", drive_file_id: "mock-drive-2", title: "Old lab slip", type: "report", date: todayStr(-90), doctor: "", notes: "", mime: "", thumb_file_id: "", type_v2: "", linked_booking_id: "" }
+    { id: "mock-file-1", drive_file_id: "mock-drive-1", title: "Anomaly scan report", type: "scan", date: todayStr(-20), doctor: "Dr. Rao", notes: "", mime: "", thumb_file_id: "", type_v2: "scan_report", linked_booking_id: "mock-booking-2", linked_file_ids: "mock-file-3" },
+    { id: "mock-file-2", drive_file_id: "mock-drive-2", title: "Old lab slip", type: "report", date: todayStr(-90), doctor: "", notes: "", mime: "", thumb_file_id: "", type_v2: "", linked_booking_id: "", linked_file_ids: "" },
+    { id: "mock-file-3", drive_file_id: "mock-drive-3", title: "Scan bill", type: "document", date: "", doctor: "Dr. Rao", notes: "", mime: "", thumb_file_id: "", type_v2: "bill", linked_booking_id: "mock-booking-2", linked_file_ids: "mock-file-1" }
   ],
   bookings: [
     { id: "mock-booking-1", type: "doctor_visit", title: "Routine checkup", provider: "Dr. Rao", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), booked_via: "call", location: "City Women's Hospital", notes: "", approx_report_days: "", status: "booked", booked_at: new Date(Date.now() - 2 * 86400000).toISOString(), done_at: "", waiting_for_report_at: "", report_uploaded_at: "", closed_at: "", closed_without_prescription: false, no_prescription_note: "", questions: "[ ] Ask about iron levels\n[x] Ask about kicks per day", created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
@@ -840,11 +841,12 @@ export async function mockCall(action, payload) {
         drive_file_id: "mock-drive-" + uid(),
         title: payload.title,
         type: payload.type,
-        date: payload.date || todayStr(),
+        date: payload.date || "", // deliberately not defaulted to today — see filesUpload's backend comment
         doctor: payload.doctor || "",
         notes: payload.notes || "",
         type_v2: payload.type_v2 || "",
         linked_booking_id: payload.linked_booking_id || "",
+        linked_file_ids: "",
         _base64: payload.base64,
         _mimeType: payload.mimeType || "application/octet-stream",
         _filename: payload.filename
@@ -865,6 +867,28 @@ export async function mockCall(action, payload) {
     case "files.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.files, payload.id);
+    case "files.link": {
+      requireFields(payload, ["id", "link_to_id"]);
+      const a = db.files.find((f) => f.id === payload.id);
+      const b = db.files.find((f) => f.id === payload.link_to_id);
+      if (!a || !b) throw new Error("One of these records was not found.");
+      const aLinks = String(a.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (!aLinks.includes(payload.link_to_id)) aLinks.push(payload.link_to_id);
+      const bLinks = String(b.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (!bLinks.includes(payload.id)) bLinks.push(payload.id);
+      a.linked_file_ids = aLinks.join(",");
+      b.linked_file_ids = bLinks.join(",");
+      return clone(a);
+    }
+    case "files.unlink": {
+      requireFields(payload, ["id", "link_to_id"]);
+      const a = db.files.find((f) => f.id === payload.id);
+      const b = db.files.find((f) => f.id === payload.link_to_id);
+      if (!a || !b) throw new Error("One of these records was not found.");
+      a.linked_file_ids = String(a.linked_file_ids || "").split(",").map((s) => s.trim()).filter((id) => id && id !== payload.link_to_id).join(",");
+      b.linked_file_ids = String(b.linked_file_ids || "").split(",").map((s) => s.trim()).filter((id) => id && id !== payload.id).join(",");
+      return clone(a);
+    }
 
     case "bookings.list": {
       let rows = clone(db.bookings);
