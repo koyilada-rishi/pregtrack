@@ -275,11 +275,15 @@ const db = {
     hospital_address: "12 MG Road, Hyderabad",
     insurance_info: "",
     language: "en",
-    water_goal_glasses: "8"
+    water_goal_glasses: "8",
+    photos_enabled: "true",
+    ingredients_enabled: "true",
+    expiry_tracking_enabled: "true",
+    expiry_alert_days: "30"
   },
   medicines: [
-    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "before_food", status: "active" },
-    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Twice daily", times: "08:00,20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true, stock_count: 9, doses_per_day: 2, refill_alert_days: 5, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "after_food", status: "active" },
+    { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "before_food", status: "active", composition: "Folic Acid", brand: "Folvite", strength: "5mg", expiry_date: todayStr(20) },
+    { id: "mock-med-2", name: "Iron", dose: "1 tablet", frequency: "Twice daily", times: "08:00,20:00", start_date: todayStr(-30), end_date: "", prescribed_by: "Dr. Rao", notes: "Take after food", active: true, stock_count: 9, doses_per_day: 2, refill_alert_days: 5, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "after_food", status: "active", composition: "Ferrous Ascorbate", brand: "Fera-G", strength: "100mg", expiry_date: todayStr(-3) },
     // Every-8h, counted from the last dose actually taken (anchor_mode:
     // from_last) — a real taken dose below gives it something to anchor to.
     { id: "mock-med-3", name: "Amoxicillin", dose: "500mg", frequency: "Every 8 hours", times: "08:00", start_date: todayStr(-2), end_date: todayStr(5), prescribed_by: "Dr. Rao", notes: "Finish full course", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "interval", anchor_mode: "from_last", interval_hours: 8, grace_minutes: 60, instructions: "with_food", total_doses: 21, status: "active" },

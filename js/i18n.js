@@ -143,7 +143,7 @@ const STRINGS = {
     "meds.history.none": "Nothing here yet.",
     "meds.history.usedCount": "{n} finished or stopped",
     "meds.history.seeAll": "See medicines used →",
-    "meds.history.searchPlaceholder": "Search by name",
+    "meds.history.searchPlaceholder": "Search by name, brand, or ingredient",
     "meds.history.filter.all": "All",
     "meds.history.filter.active": "Active",
     "meds.history.filter.finished": "Finished",
@@ -657,7 +657,29 @@ const STRINGS = {
     "reimbursement.exportCsv": "Export CSV",
     "reimbursement.print": "Print",
     "reimbursement.flag.noReport": "report not uploaded",
-    "reimbursement.flag.noReceipt": "no receipt"
+    "reimbursement.flag.noReceipt": "no receipt",
+
+    "meds.expiry.expired": "Expired {n} day(s) ago",
+    "meds.expiry.expiresIn": "Expires in {n} day(s)",
+    "meds.form.brand": "Brand",
+    "meds.form.strength": "Strength",
+    "meds.form.composition": "Composition / ingredients",
+    "meds.form.compositionHint": "Helps you spot the same composition under a different brand name.",
+    "meds.form.expiryDate": "Expiry date",
+    "meds.form.photos": "Photos",
+    "meds.form.photoFront": "📷 Front",
+    "meds.form.photoBack": "📷 Back",
+    "meds.form.photoSaved": "Saved",
+    "meds.form.photoNone": "Not added",
+    "meds.form.photoUploading": "Uploading…",
+    "meds.form.photoError": "Couldn't upload that photo.",
+
+    "settings.medicineDetails.title": "Medicine details",
+    "settings.medicineDetails.hint": "Turn these optional fields on or off for every medicine form.",
+    "settings.medicineDetails.photos": "Front/back photos",
+    "settings.medicineDetails.ingredients": "Brand, strength & ingredients",
+    "settings.medicineDetails.expiry": "Expiry tracking",
+    "settings.medicineDetails.expiryAlertDays": "Warn before expiry (days)"
   }
 };
 

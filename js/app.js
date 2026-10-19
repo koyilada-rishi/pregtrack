@@ -1582,7 +1582,7 @@ function foodItemMarkup(item) {
 // Medicines
 // ---------------------------------------------------------------------------
 
-const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, refreshIntervalId: null };
+const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, refreshIntervalId: null, expiryAlertDays: 30 };
 
 async function renderMedicinesView(outlet) {
   medsState.loading = true;
@@ -1590,14 +1590,16 @@ async function renderMedicinesView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
   try {
-    const [medicines, history, countdowns] = await Promise.all([
+    const [medicines, history, countdowns, settings] = await Promise.all([
       store.call("medicines.list", {}),
       store.call("medicines.history", { days: 40 }),
-      store.call("countdowns.list", {}).catch(() => [])
+      store.call("countdowns.list", {}).catch(() => []),
+      store.call("settings.get", {}).catch(() => ({}))
     ]);
     medsState.medicines = medicines;
     medsState.logs = history.logs;
     medsState.countdowns = countdowns;
+    medsState.expiryAlertDays = Number(settings.expiry_alert_days) || 30;
     medsState.loading = false;
     renderMedsBody(outlet);
   } catch (err) {
@@ -1680,6 +1682,19 @@ function medsListMarkup() {
   `;
 }
 
+// "" when the medicine has no expiry_date set at all — "not tracked" is
+// not the same as "fine", so this never shows a false-calm state.
+function expiryBadgeMarkup(m) {
+  if (!m.expiry_date) return "";
+  const expiry = new Date(dateStrOf(m.expiry_date));
+  if (isNaN(expiry.getTime())) return "";
+  const daysLeft = Math.round((expiry.getTime() - new Date(formatDateInput(new Date())).getTime()) / 86400000);
+  if (daysLeft < 0) return `<span class="muted dose-state-rose">${t("meds.expiry.expired", { n: Math.abs(daysLeft) })}</span>`;
+  const alertDays = medsState.expiryAlertDays || 30;
+  if (daysLeft <= alertDays) return `<span class="muted dose-state-amber">${t("meds.expiry.expiresIn", { n: daysLeft })}</span>`;
+  return "";
+}
+
 function medicineRowMarkup(m, countdowns, logs) {
   const now = new Date();
   const extraLines = [];
@@ -1724,6 +1739,9 @@ function medicineRowMarkup(m, countdowns, logs) {
       extraLines.push(`<span class="muted ${stateClass}">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}</span>`);
     }
   }
+
+  const expiryLine = expiryBadgeMarkup(m);
+  if (expiryLine) extraLines.push(expiryLine);
 
   return `
     <li class="entity-row tap-row" data-edit-medicine="${escapeHtml(m.id)}">
@@ -1886,7 +1904,10 @@ function renderMedsHistoryBody(outlet) {
   const search = medsHistoryState.search.trim().toLowerCase();
   const rows = medsHistoryState.medicines.filter((m) => {
     if (medsHistoryState.statusFilter !== "all" && (m.status || "active") !== medsHistoryState.statusFilter) return false;
-    if (search && !String(m.name || "").toLowerCase().includes(search)) return false;
+    if (search) {
+      const haystack = [m.name, m.composition, m.brand].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
     return true;
   });
   rows.sort((a, b) => dateStrOf(b.start_date).localeCompare(dateStrOf(a.start_date)));
@@ -1938,8 +1959,10 @@ function medsHistoryRowMarkup(m) {
         <span class="badge">${escapeHtml(statusLabel)}</span>
         <span class="muted">${escapeHtml(period)}</span>
         <span class="muted">${t("meds.history.dosesTaken", { n: takenCount })}</span>
+        ${m.composition ? `<span class="muted">${escapeHtml([m.brand, m.composition].filter(Boolean).join(" · "))}</span>` : ""}
         ${m.reason ? `<span class="muted">${escapeHtml(m.reason)}</span>` : ""}
         ${m.stop_note ? `<span class="muted">${escapeHtml(m.stop_note)}</span>` : ""}
+        ${expiryBadgeMarkup(m)}
       </div>
     </li>
   `;
@@ -1994,13 +2017,59 @@ function chipButtonHtml(group, value, label, selected) {
   return `<button type="button" class="chip ${selected ? "chip-selected" : ""}" data-chip-group="${escapeHtml(group)}" data-chip-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
 }
 
-async function openMedicineSheet(item, onSaved) {
-  let packs = [];
-  try { packs = await store.call("packs.list", {}); } catch { /* packs are optional; sheet works without them */ }
-  openSheet(medicineSheetMarkup(item, packs), (sheetEl) => attachMedicineSheetHandlers(sheetEl, item, onSaved));
+function medicinePhotoPickerMarkup(side, fileId, label) {
+  return `
+    <div class="medicine-photo-picker" data-photo-side="${side}">
+      <input type="hidden" name="photo_${side}_file_id" value="${escapeHtml(fileId || "")}" />
+      <label class="btn btn-secondary btn-small">
+        ${escapeHtml(label)}
+        <input type="file" accept="image/*" capture="environment" class="medicine-photo-input" hidden />
+      </label>
+      <span class="muted medicine-photo-status">${fileId ? t("meds.form.photoSaved") : t("meds.form.photoNone")}</span>
+    </div>
+  `;
 }
 
-function medicineSheetMarkup(item, packs) {
+// Resizes to at most maxDim on the long edge and re-encodes as JPEG at the
+// given quality, client-side, before anything is uploaded — keeps medicine
+// photos well within the Apps Script upload limit without asking her to
+// pick a smaller file herself.
+function compressImageToBase64(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = maxDim / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Could not read that image."));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function openMedicineSheet(item, onSaved) {
+  let packs = [];
+  let settings = {};
+  try { packs = await store.call("packs.list", {}); } catch { /* packs are optional; sheet works without them */ }
+  try { settings = await store.call("settings.get", {}); } catch { /* detail-field toggles just default to off */ }
+  openSheet(medicineSheetMarkup(item, packs, settings), (sheetEl) => attachMedicineSheetHandlers(sheetEl, item, onSaved));
+}
+
+function medicineSheetMarkup(item, packs, settings) {
+  settings = settings || {};
   const isNew = item === "new" || !item.id;
   const m = item === "new" ? {} : item; // a prefilled object (e.g. from a doctor suggestion) keeps its fields even though it's still "new"
   const type = schedule.effectiveScheduleType(m);
@@ -2097,6 +2166,21 @@ function medicineSheetMarkup(item, packs) {
         ${formField(t("meds.form.graceMinutes"), `<input class="field" type="number" min="0" step="5" name="grace_minutes" value="${escapeHtml(isNew || m.grace_minutes === undefined || m.grace_minutes === "" ? 60 : m.grace_minutes)}" />`, t("meds.form.graceMinutesHint"))}
         ${formField(t("meds.form.prescribedBy"), `<input class="field" name="prescribed_by" value="${escapeHtml(m.prescribed_by)}" />`)}
         ${formField(t("meds.form.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(m.notes)}</textarea>`)}
+        ${isTruthy(settings.ingredients_enabled) ? `
+          ${formField(t("meds.form.brand"), `<input class="field" name="brand" value="${escapeHtml(m.brand)}" />`)}
+          ${formField(t("meds.form.strength"), `<input class="field" name="strength" value="${escapeHtml(m.strength)}" />`)}
+          ${formField(t("meds.form.composition"), `<input class="field" name="composition" value="${escapeHtml(m.composition)}" />`, t("meds.form.compositionHint"))}
+        ` : ""}
+        ${isTruthy(settings.expiry_tracking_enabled) ? `
+          ${formField(t("meds.form.expiryDate"), `<input class="field" type="date" name="expiry_date" value="${escapeHtml(dateStrOf(m.expiry_date))}" />`)}
+        ` : ""}
+        ${isTruthy(settings.photos_enabled) ? `
+          <p class="field-label">${t("meds.form.photos")}</p>
+          <div class="medicine-photo-row">
+            ${medicinePhotoPickerMarkup("front", m.photo_front_file_id, t("meds.form.photoFront"))}
+            ${medicinePhotoPickerMarkup("back", m.photo_back_file_id, t("meds.form.photoBack"))}
+          </div>
+        ` : ""}
       </details>
 
       <p class="safety-note">${t("meds.form.safetyNote")}</p>
@@ -2132,6 +2216,12 @@ function readMedicineSheetForm(form) {
     grace_minutes: fd.get("grace_minutes"),
     prescribed_by: String(fd.get("prescribed_by") || "").trim(),
     notes: String(fd.get("notes") || "").trim(),
+    brand: String(fd.get("brand") || "").trim(),
+    strength: String(fd.get("strength") || "").trim(),
+    composition: String(fd.get("composition") || "").trim(),
+    expiry_date: fd.get("expiry_date") || "",
+    photo_front_file_id: fd.get("photo_front_file_id") || "",
+    photo_back_file_id: fd.get("photo_back_file_id") || "",
     times: "", weekdays: "", interval_hours: "", interval_days: "", month_day: "",
     anchor_mode: "fixed", prn_min_gap_hours: "", prn_max_per_day: ""
   };
@@ -2258,6 +2348,30 @@ function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
 
   sheetEl.querySelectorAll("[data-chip-group]").forEach((btn) => attachChipHandler(sheetEl, btn));
 
+  sheetEl.querySelectorAll(".medicine-photo-input").forEach((input) => {
+    input.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const picker = input.closest(".medicine-photo-picker");
+      const statusEl = picker.querySelector(".medicine-photo-status");
+      const side = picker.dataset.photoSide;
+      statusEl.textContent = t("meds.form.photoUploading");
+      try {
+        const dataUrl = await compressImageToBase64(file, 1600, 0.8);
+        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+        const nameForTitle = (item && item.name) || sheetEl.querySelector('input[name="name"]').value || "Medicine";
+        const uploaded = await store.call("files.upload", {
+          title: nameForTitle + " — " + side, type: "document", type_v2: "medicine_photo",
+          date: formatDateInput(new Date()), filename: side + ".jpg", mimeType: "image/jpeg", base64: match[2]
+        });
+        picker.querySelector(`input[name="photo_${side}_file_id"]`).value = uploaded.id;
+        statusEl.textContent = t("meds.form.photoSaved");
+      } catch (err) {
+        statusEl.textContent = t("meds.form.photoError");
+      }
+    });
+  });
+
   const addCustomTimeBtn = sheetEl.querySelector("#add-custom-time-btn");
   if (addCustomTimeBtn) {
     addCustomTimeBtn.addEventListener("click", () => {
@@ -2328,6 +2442,8 @@ function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
       instructions: parsed.instructions, pack_id: parsed.pack_id,
       stock_count: parsed.stock_count, refill_alert_days: parsed.refill_alert_days, grace_minutes: parsed.grace_minutes,
       prescribed_by: parsed.prescribed_by, notes: parsed.notes,
+      brand: parsed.brand, strength: parsed.strength, composition: parsed.composition,
+      expiry_date: parsed.expiry_date, photo_front_file_id: parsed.photo_front_file_id, photo_back_file_id: parsed.photo_back_file_id,
       start_date: startDate
     };
     if (parsed.how_long === "until") payload.end_date = parsed.end_date || "";
@@ -4819,6 +4935,27 @@ function renderSettingsBody(outlet) {
     </div>
 
     <div class="card">
+      <h2>${t("settings.medicineDetails.title")}</h2>
+      <p class="muted">${t("settings.medicineDetails.hint")}</p>
+      <form id="medicine-details-settings-form">
+        <label class="checkbox-field">
+          <input type="checkbox" name="photos_enabled" ${isTruthy(s.photos_enabled) ? "checked" : ""} />
+          <span>${t("settings.medicineDetails.photos")}</span>
+        </label>
+        <label class="checkbox-field">
+          <input type="checkbox" name="ingredients_enabled" ${isTruthy(s.ingredients_enabled) ? "checked" : ""} />
+          <span>${t("settings.medicineDetails.ingredients")}</span>
+        </label>
+        <label class="checkbox-field">
+          <input type="checkbox" name="expiry_tracking_enabled" ${isTruthy(s.expiry_tracking_enabled) ? "checked" : ""} />
+          <span>${t("settings.medicineDetails.expiry")}</span>
+        </label>
+        ${formField(t("settings.medicineDetails.expiryAlertDays"), `<input class="field" type="number" min="1" name="expiry_alert_days" value="${escapeHtml(s.expiry_alert_days || 30)}" />`)}
+        <button type="submit" class="btn btn-secondary">${t("common.save")}</button>
+      </form>
+    </div>
+
+    <div class="card">
       <h2>${t("settings.account.title")}</h2>
       <p class="muted">${t("settings.account.pinInstructions")}</p>
       <button class="btn btn-secondary" id="settings-signout-btn">${t("settings.account.signOut")}</button>
@@ -4913,6 +5050,25 @@ function attachSettingsHandlers(outlet) {
       errEl.hidden = false;
     }
   });
+
+  const medicineDetailsForm = outlet.querySelector("#medicine-details-settings-form");
+  if (medicineDetailsForm) {
+    medicineDetailsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(medicineDetailsForm);
+      try {
+        settingsState.settings = await store.call("settings.set", {
+          photos_enabled: fd.get("photos_enabled") === "on",
+          ingredients_enabled: fd.get("ingredients_enabled") === "on",
+          expiry_tracking_enabled: fd.get("expiry_tracking_enabled") === "on",
+          expiry_alert_days: fd.get("expiry_alert_days") || 30
+        });
+        renderSettingsBody(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
 
   outlet.querySelector("#settings-signout-btn").addEventListener("click", () => {
     if (!confirm(t("settings.account.confirmSignOut"))) return;
