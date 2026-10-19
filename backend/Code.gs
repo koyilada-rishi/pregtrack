@@ -112,6 +112,38 @@ function routeAction(action, payload) {
     case 'packs.tickAll':
       return packsTickAll(payload);
 
+    case 'checkins.list':
+      return checkinsList(payload);
+    case 'checkins.create':
+      return checkinsCreate(payload);
+    case 'checkins.delete':
+      return checkinsDelete(payload);
+
+    case 'symptoms.list':
+      return symptomsList(payload);
+    case 'symptoms.create':
+      return symptomsCreate(payload);
+    case 'symptoms.update':
+      return symptomsUpdate(payload);
+    case 'symptoms.delete':
+      return symptomsDelete(payload);
+
+    case 'water.list':
+      return waterList(payload);
+    case 'water.add':
+      return waterAdd(payload);
+    case 'water.delete':
+      return waterDelete(payload);
+
+    case 'foodprefs.list':
+      return foodprefsList(payload);
+    case 'foodprefs.create':
+      return foodprefsCreate(payload);
+    case 'foodprefs.update':
+      return foodprefsUpdate(payload);
+    case 'foodprefs.delete':
+      return foodprefsDelete(payload);
+
     case 'appointments.list':
       return listRows('Appointments');
     case 'appointments.create':
@@ -242,7 +274,8 @@ function recordSuccessfulAuth() {
 
 var SETTINGS_KEYS = [
   'due_date', 'lmp_date', 'wife_name', 'blood_group', 'allergies',
-  'hospital_name', 'hospital_phone', 'hospital_address', 'insurance_info', 'language'
+  'hospital_name', 'hospital_phone', 'hospital_address', 'insurance_info', 'language',
+  'water_goal_glasses' // Phase 2 — defaults to 8 client-side when blank, see js/app.js
 ];
 
 function settingsGet() {
@@ -835,6 +868,171 @@ function packsTickAll(payload) {
     return medicinesLogTaken({ medicine_id: medicineId, date: payload.date, time: payload.time, status: status });
   });
   return { pack_id: payload.id, logs: logs };
+}
+
+// ---------------------------------------------------------------------------
+// Checkins — "how are you feeling" (mood + a quick note). Multiple per day
+// are expected; each is its own immutable timeline entry (no update
+// action — correcting one just means logging a fresh one).
+// ---------------------------------------------------------------------------
+
+function checkinsList(payload) {
+  var rows = sheetToObjects('Checkins');
+  if (payload && payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.date) >= payload.date_from; });
+  if (payload && payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.date) <= payload.date_to; });
+  rows.sort(function (a, b) { return (dateStrOf(b.date) + ' ' + b.time).localeCompare(dateStrOf(a.date) + ' ' + a.time); });
+  return rows;
+}
+
+function checkinsCreate(payload) {
+  requireFields(payload, ['date', 'mood']);
+  var mood = sanitizeNumber(payload.mood, 'mood');
+  if (mood < 1 || mood > 5) throw new Error('mood must be between 1 and 5');
+  return createRow('Checkins', {
+    date: sanitizeDate(payload.date, 'date'),
+    time: sanitizeText(payload.time || formatCurrentTime(), 10),
+    mood: mood,
+    note: sanitizeText(payload.note, 2000),
+    created_at: new Date().toISOString()
+  });
+}
+
+function checkinsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Checkins', payload.id);
+}
+
+// ---------------------------------------------------------------------------
+// Symptoms — fixed chips + custom, with severity and (for
+// spotting/bleeding) a size-vs-a-pad scale. Safety note: this app only
+// RECORDS what she selects; it never diagnoses or suggests a cause — see
+// SYMPTOMS_SEVERE_ADVICE below, the one calm, fixed piece of copy this
+// ever shows.
+// ---------------------------------------------------------------------------
+
+var SYMPTOM_KEYS = [
+  'nausea', 'vomiting', 'spotting', 'bleeding', 'headache', 'dizziness', 'tiredness',
+  'back_pain', 'cramps', 'heartburn', 'swelling', 'constipation', 'fever', 'other', 'custom'
+];
+var SYMPTOM_SEVERITIES = ['mild', 'moderate', 'severe'];
+var BLEEDING_SCALE_VALUES = ['spotting', 'light', 'one_pad', 'more_than_one_pad'];
+
+function symptomsList(payload) {
+  var rows = sheetToObjects('Symptoms');
+  if (payload && payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.date) >= payload.date_from; });
+  if (payload && payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.date) <= payload.date_to; });
+  if (payload && payload.symptom_key) rows = rows.filter(function (r) { return r.symptom_key === payload.symptom_key; });
+  rows.sort(function (a, b) { return (dateStrOf(b.date) + ' ' + b.time).localeCompare(dateStrOf(a.date) + ' ' + a.time); });
+  return rows;
+}
+
+function symptomsCreate(payload) {
+  requireFields(payload, ['date', 'symptom_key']);
+  validateEnum(payload.symptom_key, SYMPTOM_KEYS, 'symptom_key');
+  if (payload.symptom_key === 'custom' && !String(payload.custom_name || '').trim()) {
+    throw new Error('custom_name is required when symptom_key is "custom"');
+  }
+  if (payload.severity) validateEnum(payload.severity, SYMPTOM_SEVERITIES, 'severity');
+  if (payload.bleeding_scale) validateEnum(payload.bleeding_scale, BLEEDING_SCALE_VALUES, 'bleeding_scale');
+  return createRow('Symptoms', {
+    date: sanitizeDate(payload.date, 'date'),
+    time: sanitizeText(payload.time || formatCurrentTime(), 10),
+    symptom_key: payload.symptom_key,
+    custom_name: sanitizeText(payload.custom_name, 100),
+    severity: payload.severity || '',
+    bleeding_scale: payload.bleeding_scale || '',
+    note: sanitizeText(payload.note, 2000),
+    created_at: new Date().toISOString()
+  });
+}
+
+// The only update this supports is attaching/editing a "fix note" after
+// the fact (e.g. "Pantop helped, stopped after a week") — never the
+// symptom/severity itself, which stays a record of what was actually
+// selected at the time.
+function symptomsUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('note')) fields.note = sanitizeText(payload.note, 2000);
+  return updateRowById('Symptoms', payload.id, fields);
+}
+
+function symptomsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Symptoms', payload.id);
+}
+
+// ---------------------------------------------------------------------------
+// Water — one row per "add a glass" tap.
+// ---------------------------------------------------------------------------
+
+function waterList(payload) {
+  var rows = sheetToObjects('Water');
+  if (payload && payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.date) >= payload.date_from; });
+  if (payload && payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.date) <= payload.date_to; });
+  return rows;
+}
+
+function waterAdd(payload) {
+  requireFields(payload, ['date']);
+  return createRow('Water', {
+    date: sanitizeDate(payload.date, 'date'),
+    time: sanitizeText(payload.time || formatCurrentTime(), 10),
+    glasses: payload.glasses === undefined || payload.glasses === '' ? 1 : sanitizeNumber(payload.glasses, 'glasses'),
+    created_at: new Date().toISOString()
+  });
+}
+
+function waterDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Water', payload.id);
+}
+
+// Server clock's current time as "HH:MM" — used as a fallback only; the
+// frontend normally sends the device's own local time explicitly (same
+// reasoning as medicinesLogTaken's `time` field).
+function formatCurrentTime() {
+  return Utilities.formatDate(new Date(), 'Asia/Kolkata', 'HH:mm');
+}
+
+// ---------------------------------------------------------------------------
+// FoodPrefs — a liked / not-interested list, curated over time.
+// ---------------------------------------------------------------------------
+
+var FOOD_PREF_STATUSES = ['interested', 'not_interested'];
+
+function foodprefsList(payload) {
+  var rows = sheetToObjects('FoodPrefs');
+  if (payload && payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
+  return rows;
+}
+
+function foodprefsCreate(payload) {
+  requireFields(payload, ['name', 'status']);
+  validateEnum(payload.status, FOOD_PREF_STATUSES, 'status');
+  return createRow('FoodPrefs', {
+    name: sanitizeText(payload.name, 200),
+    status: payload.status,
+    date: formatISODate(new Date()),
+    notes: sanitizeText(payload.notes, 500)
+  });
+}
+
+function foodprefsUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('status')) {
+    validateEnum(payload.status, FOOD_PREF_STATUSES, 'status');
+    fields.status = payload.status;
+    fields.date = formatISODate(new Date()); // status changing is the thing worth re-dating
+  }
+  if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 500);
+  return updateRowById('FoodPrefs', payload.id, fields);
+}
+
+function foodprefsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('FoodPrefs', payload.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,7 +1731,22 @@ var SHEET_SCHEMA = {
   // at one time (e.g. "Evening pack" at 8pm). member_medicine_ids is a
   // comma-joined list of Medicines ids — kept as plain text (not a join
   // table) since packs are small and this sheet is hand-readable.
-  Packs: ['id', 'name', 'times', 'member_medicine_ids', 'created_at']
+  Packs: ['id', 'name', 'times', 'member_medicine_ids', 'created_at'],
+
+  // --- Phase 2 (v3): daily check-in, symptoms, water, food ---------------
+  // Checkins: "how are you feeling" — mood + a quick note. Multiple per day
+  // are expected and each is its own row/timeline entry, never overwritten.
+  Checkins: ['id', 'date', 'time', 'mood', 'note', 'created_at'],
+  // Symptoms: symptom_key is one of SYMPTOM_KEYS below, or 'custom' (with
+  // custom_name filled in) for anything she adds herself. bleeding_scale is
+  // only meaningful for the bleeding/spotting symptom keys.
+  Symptoms: ['id', 'date', 'time', 'symptom_key', 'custom_name', 'severity', 'bleeding_scale', 'note', 'created_at'],
+  // Water: each row is one "add a glass" tap (glasses is usually 1, but
+  // left numeric in case a future UI lets her log more than one at once).
+  Water: ['id', 'date', 'time', 'glasses', 'created_at'],
+  // FoodPrefs: a liked/not-interested list she curates over time — status
+  // can change, so `date` is "when this status was last set", not a log.
+  FoodPrefs: ['id', 'name', 'status', 'date', 'notes']
 };
 
 // ss is optional — pass it explicitly from setup() (where SHEET_ID may only

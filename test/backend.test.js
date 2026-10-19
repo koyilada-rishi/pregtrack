@@ -153,9 +153,9 @@ function throws(label, fn) {
 // --- setup() ---
 setup();
 fakeProps.APP_PIN = "246810";
-check("setup created all 11 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
-  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs".split(",").sort().join(","));
-check("Settings seeded with 10 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 12); // header + 10 keys + data_version
+check("setup created all 15 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
+  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs".split(",").sort().join(","));
+check("Settings seeded with 11 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 13); // header + 11 keys + data_version
 
 // --- PIN check ---
 check("checkPin correct", checkPin("246810") === true);
@@ -525,6 +525,80 @@ throws("packsTickAll rejects an unknown pack id", () => packsTickAll({ id: "no-s
 
 const bootWithPacks = routeAction("bootstrap", {});
 check("bootstrap includes a packs array", Array.isArray(bootWithPacks.packs));
+
+// --- Phase 2 (v3): Checkins ---
+
+throws("checkinsCreate requires date+mood", () => checkinsCreate({}));
+throws("checkinsCreate rejects mood out of range", () => checkinsCreate({ date: "2026-10-19", mood: 6 }));
+const checkin = checkinsCreate({ date: "2026-10-19", time: "09:00", mood: 4, note: "Feeling okay" });
+check("checkin created with mood+note", checkin.mood === 4 && checkin.note === "Feeling okay");
+checkinsCreate({ date: "2026-10-19", time: "20:00", mood: 2, note: "Tired" });
+check("checkinsList returns both entries for the day, newest first", checkinsList({}).length === 2 && checkinsList({})[0].time === "20:00");
+check("checkinsList respects date_from/date_to", checkinsList({ date_from: "2026-10-20" }).length === 0);
+checkinsDelete({ id: checkin.id });
+check("checkinsDelete removes the entry", checkinsList({}).length === 1);
+
+// --- Phase 2: Symptoms ---
+
+throws("symptomsCreate requires date+symptom_key", () => symptomsCreate({ date: "2026-10-19" }));
+throws("symptomsCreate rejects an invalid symptom_key", () => symptomsCreate({ date: "2026-10-19", symptom_key: "bogus" }));
+throws("symptomsCreate requires custom_name when symptom_key is custom", () => symptomsCreate({ date: "2026-10-19", symptom_key: "custom" }));
+throws("symptomsCreate rejects an invalid severity", () => symptomsCreate({ date: "2026-10-19", symptom_key: "nausea", severity: "bogus" }));
+throws("symptomsCreate rejects an invalid bleeding_scale", () => symptomsCreate({ date: "2026-10-19", symptom_key: "bleeding", bleeding_scale: "bogus" }));
+
+const symptom = symptomsCreate({ date: "2026-10-19", symptom_key: "headache", severity: "mild", note: "After lunch" });
+check("symptom created", symptom.symptom_key === "headache" && symptom.severity === "mild");
+const customSymptom = symptomsCreate({ date: "2026-10-19", symptom_key: "custom", custom_name: "Weird taste", severity: "mild" });
+check("custom symptom created with custom_name", customSymptom.custom_name === "Weird taste");
+const bleedingSymptom = symptomsCreate({ date: "2026-10-19", symptom_key: "bleeding", severity: "severe", bleeding_scale: "more_than_one_pad" });
+check("bleeding symptom created with a bleeding_scale", bleedingSymptom.bleeding_scale === "more_than_one_pad");
+
+const fixedNote = symptomsUpdate({ id: symptom.id, note: "Pantop helped, stopped after a week" });
+check("symptomsUpdate can attach a fix note", fixedNote.note === "Pantop helped, stopped after a week");
+check("symptomsUpdate never touches severity even if sent", (() => {
+  const updated = symptomsUpdate({ id: symptom.id, severity: "severe", note: "still mild really" });
+  return updated.severity === "mild"; // severity silently ignored by symptomsUpdate — it only ever writes `note`
+})());
+throws("symptomsUpdate requires an id", () => symptomsUpdate({ note: "x" }));
+
+check("symptomsList filters by symptom_key", symptomsList({ symptom_key: "headache" }).every((s) => s.symptom_key === "headache"));
+symptomsDelete({ id: customSymptom.id });
+check("symptomsDelete removes the entry", getRowById("Symptoms", customSymptom.id) === null);
+
+// --- Phase 2: Water ---
+
+throws("waterAdd requires a date", () => waterAdd({}));
+const glass1 = waterAdd({ date: "2026-10-19", time: "09:00" });
+check("waterAdd defaults glasses to 1", glass1.glasses === 1);
+waterAdd({ date: "2026-10-19", time: "11:00" });
+waterAdd({ date: "2026-10-20", time: "09:00" });
+check("waterList returns everything with no filter", waterList({}).length === 3);
+check("waterList filters by date_from", waterList({ date_from: "2026-10-20" }).length === 1);
+waterDelete({ id: glass1.id });
+check("waterDelete removes one glass (undo-a-tap)", waterList({ date_from: "2026-10-19", date_to: "2026-10-19" }).length === 1);
+throws("waterDelete requires an id", () => waterDelete({}));
+
+// --- Phase 2: FoodPrefs ---
+
+throws("foodprefsCreate requires name+status", () => foodprefsCreate({ name: "Eggs" }));
+throws("foodprefsCreate rejects an invalid status", () => foodprefsCreate({ name: "Eggs", status: "bogus" }));
+const eggsPref = foodprefsCreate({ name: "Eggs", status: "not_interested", notes: "Off them this trimester" });
+check("food pref created", eggsPref.name === "Eggs" && eggsPref.status === "not_interested");
+check("food pref got today's date stamped", !!eggsPref.date);
+const eggsChanged = foodprefsUpdate({ id: eggsPref.id, status: "interested" });
+check("foodprefsUpdate can flip status back", eggsChanged.status === "interested");
+check("foodprefsList filters by status", foodprefsList({ status: "interested" }).some((f) => f.id === eggsPref.id));
+foodprefsDelete({ id: eggsPref.id });
+check("foodprefsDelete removes the entry", getRowById("FoodPrefs", eggsPref.id) === null);
+throws("foodprefsUpdate requires an id", () => foodprefsUpdate({ status: "interested" }));
+
+// --- Phase 2: Settings gains water_goal_glasses ---
+
+check("settingsGet includes water_goal_glasses (blank by default)", settingsGet().water_goal_glasses === "");
+// Settings values are always stored as text (same as every other
+// Settings key, e.g. hospital_phone) — the frontend Numbers() it on read.
+settingsSet({ water_goal_glasses: 10 });
+check("water_goal_glasses round-trips through settings.set/get", settingsGet().water_goal_glasses === "10");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
