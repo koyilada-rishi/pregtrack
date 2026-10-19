@@ -78,7 +78,7 @@ function routeAction(action, payload) {
     case 'dashboard.get':
       return dashboardGet();
     case 'version.get':
-      return { data_version: getDataVersion() };
+      return { data_version: getDataVersion(), backend_version: BACKEND_VERSION };
     case 'bootstrap':
       return bootstrap();
 
@@ -411,6 +411,17 @@ function settingsSet(payload) {
 var DATA_VERSION_CACHE_KEY = 'data_version';
 var DATA_VERSION_CACHE_TTL_SECONDS = 21600; // 6 hours — CacheService's max
 
+// Backend code version — distinct from data_version above (that one tracks
+// content changes; this one tracks Code.gs itself). Bump this integer by 1
+// every time Code.gs changes in a way that needs a redeploy, and bump
+// REQUIRED_BACKEND_VERSION in js/defaults.js to match in the same commit.
+// version.get returns both; js/store.js compares this one against what the
+// frontend was built expecting and shows a "the backend needs updating"
+// banner instead of letting things fail in confusing, unrelated-looking
+// ways against a backend that predates whatever Code.gs change the banner
+// is there to catch.
+var BACKEND_VERSION = 1;
+
 function getDataVersion() {
   var cache = CacheService.getScriptCache();
   var cached = cache.get(DATA_VERSION_CACHE_KEY);
@@ -467,6 +478,7 @@ function bootstrap() {
 
   return {
     data_version: getDataVersion(),
+    backend_version: BACKEND_VERSION,
     settings: settingsGet(),
     dashboard: dashboardGet(),
     medicines: listRows('Medicines'),
@@ -2085,22 +2097,11 @@ function getSheetByName(name) {
 }
 
 // Reads a whole tab into an array of {header: value} objects, using row 1 as
-// headers and skipping fully-blank rows.
+// headers and skipping fully-blank rows. Delegates to
+// sheetToObjectsFromSheet() (the actual implementation) so every read goes
+// through the same normalization pass below.
 function sheetToObjects(sheetName) {
-  var values = getSheetByName(sheetName).getDataRange().getValues();
-  if (values.length < 1) return [];
-  var headers = values[0];
-  var rows = [];
-  for (var i = 1; i < values.length; i++) {
-    var row = values[i];
-    if (row.join('') === '') continue;
-    var obj = {};
-    for (var j = 0; j < headers.length; j++) {
-      obj[headers[j]] = row[j];
-    }
-    rows.push(obj);
-  }
-  return rows;
+  return sheetToObjectsFromSheet(getSheetByName(sheetName));
 }
 
 // ---------------------------------------------------------------------------
@@ -2288,6 +2289,21 @@ function ensureSettingsSeeded(ss) {
 
 // Same as sheetToObjects, but takes a Sheet object directly — needed inside
 // setup(), before SHEET_ID is necessarily readable via getSpreadsheet().
+//
+// This is the single choke point every read (list/get, and create/update's
+// "return the saved row" step via getRowById) passes through, which is also
+// where every cell gets normalized to a predictable JS type — see
+// "Output normalization" below. Google Sheets auto-detects a cell's type
+// from how it looks (a column that's ever held something date-shaped comes
+// back as a real Date object from getValues(), a lone "08:00" can come back
+// as a Date too, "TRUE"/"FALSE" can be a native boolean or literal text
+// depending on how the cell was set), independent of what was actually
+// written — so without this pass, the exact same data can come back shaped
+// differently sheet to sheet, or even cell to cell, purely because of
+// Sheets' own auto-formatting. The mock fixtures in js/store.js never have
+// this problem (they're plain JS objects to begin with), which is why a bug
+// here can be invisible in mock mode and only show up against the real
+// Sheet.
 function sheetToObjectsFromSheet(sheet) {
   var values = sheet.getDataRange().getValues();
   if (values.length < 1) return [];
@@ -2297,10 +2313,97 @@ function sheetToObjectsFromSheet(sheet) {
     var row = values[i];
     if (row.join('') === '') continue;
     var obj = {};
-    for (var j = 0; j < headers.length; j++) obj[headers[j]] = row[j];
+    for (var j = 0; j < headers.length; j++) {
+      obj[headers[j]] = normalizeFieldValue(headers[j], row[j]);
+    }
     rows.push(obj);
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Output normalization — every column name below means the same thing on
+// every tab it appears on, so this is one global map (by header name, not
+// per-tab) rather than one per sheet. Anything not listed here is passed
+// through as-is (free text, ids, enums, comma-joined id lists — none of
+// which Sheets can silently reshape the way it does dates/times/booleans/
+// numbers).
+// ---------------------------------------------------------------------------
+
+var FIELD_TYPES = {
+  // Dates (calendar day only, no time-of-day)
+  start_date: 'date', end_date: 'date', stopped_on: 'date', expiry_date: 'date',
+  date: 'date', paid_on: 'date', follow_up_date: 'date',
+  // Times (no date component — "08:00", every day)
+  time: 'time',
+  times: 'time_list', // comma-joined list of times, e.g. Medicines/Packs
+  // Full timestamps
+  datetime: 'datetime', target_datetime: 'datetime', taken_at: 'datetime',
+  created_at: 'datetime', booked_at: 'datetime', done_at: 'datetime',
+  waiting_for_report_at: 'datetime', report_uploaded_at: 'datetime', closed_at: 'datetime',
+  // Booleans
+  active: 'bool', taken: 'bool', done: 'bool', is_emergency: 'bool',
+  show_on_home: 'bool', closed_without_prescription: 'bool',
+  // Numbers (blank stays blank — a number field with nothing entered isn't 0)
+  stock_count: 'number', doses_per_day: 'number', refill_alert_days: 'number',
+  interval_hours: 'number', interval_days: 'number', month_day: 'number', every_n_weeks: 'number',
+  total_doses: 'number', grace_minutes: 'number', prn_min_gap_hours: 'number', prn_max_per_day: 'number',
+  pinned_order: 'number', weight_kg: 'number', bp_sys: 'number', bp_dia: 'number',
+  sugar_fasting: 'number', sugar_pp: 'number', kicks: 'number', mood: 'number',
+  glasses: 'number', approx_report_days: 'number', amount: 'number'
+  // Deliberately NOT typed as number/bool/date despite looking like they
+  // could be: phone (keeps leading zeros/+), severity/bleeding_scale
+  // (enum strings, not a 1-5 scale), weekdays/phases (their own comma/JSON
+  // text format, parsed by the frontend).
+};
+
+function normalizeFieldValue(key, value) {
+  var type = FIELD_TYPES[key];
+  // Booleans normalize even when blank (a legacy row predating the column
+  // means "not set", which reads the same as false everywhere it's used).
+  if (type === 'bool') return sanitizeBoolean(value);
+  if (value === '' || value === null || value === undefined) return '';
+  switch (type) {
+    case 'date': return dateStrOf(value);
+    case 'time': return timeStrOf(value);
+    case 'time_list':
+      // A lone time with no comma can itself come back as a Date (Sheets
+      // auto-detecting a single time-looking cell) — String()-ing it first
+      // would turn it into a full Date.toString() dump that the per-piece
+      // split below can't parse, so that exact shape must be handled here.
+      if (value instanceof Date) return timeStrOf(value);
+      return String(value).split(',').map(function (t) { return timeStrOf(t.trim()); }).filter(Boolean).join(',');
+    case 'datetime': return dateTimeStrOf(value);
+    case 'number': var n = Number(value); return isNaN(n) ? value : n;
+    default:
+      // No declared type: pass text through untouched, but a stray Date
+      // object (an unlisted column Sheets still auto-detected) must never
+      // survive to JSON.stringify as-is — it would silently serialize as a
+      // UTC instant with no frontend code expecting that shape.
+      return value instanceof Date ? dateTimeStrOf(value) : value;
+  }
+}
+
+// "08:00" from either a Date (Sheets auto-detected a lone time-looking cell)
+// or text already in/close to that shape.
+function timeStrOf(value) {
+  if (!value) return '';
+  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Kolkata', 'HH:mm');
+  var str = String(value);
+  var match = str.match(/^(\d{1,2}):(\d{2})/);
+  if (match) return match[1].length === 1 ? '0' + match[1] + ':' + match[2] : match[1] + ':' + match[2];
+  return str;
+}
+
+// "yyyy-MM-ddTHH:mm" — matches exactly what an <input type="datetime-local">
+// reads/writes, and sorts correctly as a plain string.
+function dateTimeStrOf(value) {
+  if (!value) return '';
+  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm");
+  var str = String(value);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)) return str.substring(0, 16);
+  var parsed = new Date(str);
+  return isNaN(parsed.getTime()) ? str : Utilities.formatDate(parsed, 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm");
 }
 
 function setupDriveFolders(props, ss) {

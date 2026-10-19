@@ -23,6 +23,7 @@
 //     client id through on creates (see mockCall below) in anticipation.
 
 import * as api from "./api.js";
+import { REQUIRED_BACKEND_VERSION } from "./defaults.js";
 
 export {
   ApiError, getPin, setPin, clearPin, hasPin,
@@ -179,10 +180,17 @@ const POLL_INTERVAL_MS = 30000;
 let lastKnownVersion = null;
 let pollIntervalId = null;
 let pollingOnChanged = null;
+let pollingOnBackendOutdated = null;
 
-export function startVersionPolling(onChanged) {
+// onBackendOutdated(isOutdated, backendVersion) fires every successful
+// version.get — not just on a change — so a caller that mounts after the
+// first check (or missed it) still finds out the current state, and a
+// banner it's driving can always be told to hide again once the mismatch
+// is gone (e.g. the backend gets redeployed while the tab stays open).
+export function startVersionPolling(onChanged, onBackendOutdated) {
   if (isMockMode()) return; // nothing to poll — there's no server
   pollingOnChanged = onChanged;
+  pollingOnBackendOutdated = onBackendOutdated || null;
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
   window.addEventListener("focus", checkVersionOnce);
@@ -195,6 +203,7 @@ export function stopVersionPolling() {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("focus", checkVersionOnce);
   pollingOnChanged = null;
+  pollingOnBackendOutdated = null;
 }
 
 function handleVisibilityChange() {
@@ -220,15 +229,20 @@ function stopInterval() {
 
 async function checkVersionOnce() {
   try {
-    const { data_version } = await api.call("version.get", {});
+    const { data_version, backend_version } = await api.call("version.get", {});
     if (lastKnownVersion !== null && data_version !== lastKnownVersion) {
       lastKnownVersion = data_version;
       if (pollingOnChanged) pollingOnChanged(data_version);
     } else {
       lastKnownVersion = data_version;
     }
+    if (pollingOnBackendOutdated) {
+      pollingOnBackendOutdated(backend_version !== REQUIRED_BACKEND_VERSION, backend_version);
+    }
   } catch {
-    // Offline or a slow network hiccup — just try again next cycle.
+    // Offline or a slow network hiccup — just try again next cycle. Not
+    // treated as "backend outdated": that's a specific, confirmed mismatch,
+    // not the absence of an answer.
   }
 }
 
@@ -542,10 +556,11 @@ export async function mockCall(action, payload) {
     case "dashboard.get":
       return mockDashboard();
     case "version.get":
-      return { data_version: mockDataVersion };
+      return { data_version: mockDataVersion, backend_version: REQUIRED_BACKEND_VERSION };
     case "bootstrap":
       return {
         data_version: mockDataVersion,
+        backend_version: REQUIRED_BACKEND_VERSION,
         settings: clone(db.settings),
         dashboard: mockDashboard(),
         medicines: clone(db.medicines),

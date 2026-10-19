@@ -18,7 +18,9 @@ const appRoot = document.getElementById("app");
 
 const state = {
   locked: true,
-  online: navigator.onLine
+  online: navigator.onLine,
+  backendOutdated: false,
+  swUpdateWorker: null // set once a new service worker is waiting to take over
 };
 
 // ---------------------------------------------------------------------------
@@ -137,10 +139,46 @@ const ROUTES = {
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((err) => {
+    navigator.serviceWorker.register("./sw.js").then((registration) => {
+      // A worker already waiting from a previous visit (e.g. the tab was
+      // never closed long enough for the old one to pick it up).
+      if (registration.waiting) showSwUpdateBanner(registration.waiting);
+
+      registration.addEventListener("updatefound", () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener("statechange", () => {
+          // "installed" with an existing controller means this is an
+          // update, not the very first install — the first install has no
+          // controller yet and nothing to prompt about.
+          if (installing.state === "installed" && navigator.serviceWorker.controller) {
+            showSwUpdateBanner(installing);
+          }
+        });
+      });
+    }).catch((err) => {
       console.warn("Service worker registration failed:", err);
     });
+
+    // Fires once the tapped banner's SKIP_WAITING message takes effect —
+    // reload to actually run the new app shell.
+    navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
   });
+}
+
+function showSwUpdateBanner(worker) {
+  state.swUpdateWorker = worker;
+  updateSwBanner();
+}
+
+// Re-attaches the click handler too, not just visibility — renderShell()
+// rebuilds the banner element from scratch on every route change, so a
+// handler bound once in showSwUpdateBanner() wouldn't survive navigation.
+function updateSwBanner() {
+  const banner = document.getElementById("sw-update-banner");
+  if (!banner) return;
+  banner.hidden = !state.swUpdateWorker;
+  banner.onclick = state.swUpdateWorker ? () => state.swUpdateWorker.postMessage({ type: "SKIP_WAITING" }) : null;
 }
 
 // Mock mode needs zero setup — that's the point. Auto-provisions a dummy
@@ -214,7 +252,7 @@ async function enterApp() {
   window.addEventListener("hashchange", renderRoute);
   window.addEventListener("online", updateOnlineStatus);
   window.addEventListener("offline", updateOnlineStatus);
-  store.startVersionPolling(handleVersionChanged);
+  store.startVersionPolling(handleVersionChanged, handleBackendVersionChecked);
   renderRoute();
 }
 
@@ -226,6 +264,15 @@ function handleVersionChanged() {
   store.loadBootstrap(null, true).catch(() => {});
   const path = currentPath();
   if (path === "/home" || path === "/emergency") renderRoute();
+}
+
+// Fires on every successful version.get, whether or not anything changed —
+// updates the persistent banner in place (same pattern as updateOnlineStatus
+// below) rather than re-rendering the whole route.
+function handleBackendVersionChecked(isOutdated) {
+  state.backendOutdated = isOutdated;
+  const banner = document.getElementById("backend-outdated-banner");
+  if (banner) banner.hidden = !isOutdated;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +364,8 @@ function renderShell(route) {
   stopMedsTimers(); // ditto for the Medicines view's 30s refresh
   appRoot.innerHTML = `
     <div id="offline-banner" class="offline-banner" ${state.online ? "hidden" : ""}>${t("offline.banner")}</div>
+    <div id="backend-outdated-banner" class="offline-banner" ${state.backendOutdated ? "" : "hidden"}>${t("backendOutdated.banner")}</div>
+    <button id="sw-update-banner" class="offline-banner sw-update-banner" ${state.swUpdateWorker ? "" : "hidden"}>${t("swUpdate.banner")}</button>
     <header class="topbar">
       <h1>${route.title()}</h1>
     </header>
@@ -324,6 +373,7 @@ function renderShell(route) {
     <nav class="bottom-nav" id="bottom-nav"></nav>
   `;
   renderBottomNav(route.navKey);
+  updateSwBanner(); // re-attach the click handler the fresh innerHTML above just discarded
   const outlet = document.getElementById("view-outlet");
   route.render(outlet);
 }

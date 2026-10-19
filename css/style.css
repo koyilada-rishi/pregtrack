@@ -210,6 +210,15 @@ a { color: var(--color-primary-dark); }
   padding: 8px 16px;
 }
 
+.sw-update-banner {
+  display: block;
+  width: 100%;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ---------- Cards & common components ---------- */
 
 .card {

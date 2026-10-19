@@ -27,7 +27,7 @@
 // after being deleted elsewhere) — double-check this list whenever a JS
 // file is added, renamed, or removed.
 
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
 const CACHE_NAME = "pct-shell-" + CACHE_VERSION;
 
 const APP_SHELL = [
@@ -53,10 +53,17 @@ const APP_SHELL = [
 ];
 
 self.addEventListener("install", (event) => {
+  // Deliberately no self.skipWaiting() here: on a fresh install (nothing
+  // controlling the page yet) a worker with no competing controller
+  // activates on its own regardless. On an update, this new worker instead
+  // sits "waiting" until the page explicitly asks it to take over (the
+  // message handler below) — see js/app.js's update-prompt banner, which is
+  // what sends that message once she taps it. Without this, an update would
+  // silently take over an open tab mid-use with no chance to save/finish
+  // whatever she's doing.
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting())
   );
 });
 
@@ -66,6 +73,10 @@ self.addEventListener("activate", (event) => {
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {

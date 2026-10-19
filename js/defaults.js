@@ -16,3 +16,9 @@
 // Advanced → override the URL per device without touching this file.
 
 export const DEFAULT_API_URL = "https://script.google.com/macros/s/AKfycbzGXFv4W_QFQCRCjx0k2i6NoMqN0b_wcXYrzpC3yFh8J1wY1Cvj3NSY89rPCzI4LwldqQ/exec";
+
+// Must match BACKEND_VERSION in backend/Code.gs exactly. js/store.js's
+// version polling compares this against what the deployed backend reports
+// (version.get's backend_version) and shows an "update needed" banner on a
+// mismatch — bump both together whenever a Code.gs change needs a redeploy.
+export const REQUIRED_BACKEND_VERSION = 1;

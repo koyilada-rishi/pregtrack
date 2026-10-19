@@ -190,6 +190,13 @@ whenever you change `backend/Code.gs`.
    deployment, change **Version** to **New version**, and click **Deploy**.
    The URL stays the same.
 
+   If this edit bumped `BACKEND_VERSION` in `Code.gs` (it should, for any
+   change that isn't purely cosmetic — see the comment above that constant),
+   bump `REQUIRED_BACKEND_VERSION` in `js/defaults.js` to the same number in
+   the same commit. Forgetting the Apps Script redeploy itself now shows a
+   clear "the backend needs updating" banner in the app instead of quietly
+   misbehaving — see `js/store.js`'s version polling.
+
 8. **Test it from a terminal.** Export the URL and your PIN in your own
    shell first — never paste them into a chat, a file, or a command for
    someone else to run:

@@ -94,9 +94,53 @@ global.Utilities = {
   },
   base64Decode: (b64) => Array.from(Buffer.from(b64, "base64")),
   base64Encode: (bytes) => Buffer.from(bytes).toString("base64"),
-  formatDate: (date) => {
-    const y = date.getFullYear(), m = String(date.getMonth() + 1).padStart(2, "0"), d = String(date.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
+  // A real (if small) token formatter, not a fixed "always yyyy-MM-dd"
+  // stub — Code.gs's output-normalization pass (sheetToObjectsFromSheet)
+  // calls formatDate with several different patterns ('HH:mm',
+  // "yyyy-MM-dd'T'HH:mm', 'MMM d', 'h:mm a', ...) and a stub that ignored
+  // the pattern argument couldn't tell those apart, so tests asserting on
+  // e.g. a normalized time string would have silently gotten a date string
+  // back instead. The tz argument is ignored (these fakes build Date
+  // objects in the test process's own local time, not real Asia/Kolkata
+  // instants) — fine for exercising the normalization logic itself, which
+  // is all these tests are checking.
+  formatDate: (date, _tz, pattern) => {
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const pad = (n, len) => String(n).padStart(len, "0");
+    const y = date.getFullYear(), mo = date.getMonth(), d = date.getDate();
+    const H = date.getHours(), mi = date.getMinutes();
+    const h12 = H % 12 === 0 ? 12 : H % 12;
+    const ampm = H < 12 ? "AM" : "PM";
+    let out = "", i = 0;
+    while (i < pattern.length) {
+      if (pattern[i] === "'") {
+        let j = i + 1;
+        while (j < pattern.length && pattern[j] !== "'") j++;
+        out += pattern.slice(i + 1, j);
+        i = j + 1;
+        continue;
+      }
+      const ch = pattern[i];
+      let j = i;
+      while (j < pattern.length && pattern[j] === ch) j++;
+      const token = pattern.slice(i, j);
+      switch (token) {
+        case "yyyy": out += String(y); break;
+        case "MMM": out += MONTHS[mo]; break;
+        case "MM": out += pad(mo + 1, 2); break;
+        case "M": out += String(mo + 1); break;
+        case "dd": out += pad(d, 2); break;
+        case "d": out += String(d); break;
+        case "HH": out += pad(H, 2); break;
+        case "H": out += String(H); break;
+        case "mm": out += pad(mi, 2); break;
+        case "h": out += String(h12); break;
+        case "a": out += ampm; break;
+        default: out += token;
+      }
+      i = j;
+    }
+    return out;
   },
   DigestAlgorithm: { SHA_256: "SHA_256" }
 };
@@ -831,6 +875,63 @@ check("notesList filters by category", notesList({ category: "question" }).every
 notesDelete({ id: plainNote.id });
 check("notesDelete removes the row", getRowById("Notes", plainNote.id) === null);
 throws("notesDelete requires an id", () => notesDelete({}));
+
+// --- Output normalization: Sheet auto-formatting shouldn't leak through ---
+//
+// Google Sheets reshapes a cell's value based on how it looks, independent
+// of what was actually written — a date-shaped cell comes back as a native
+// Date object from getValues(), a boolean-shaped one can come back as a
+// real boolean OR the literal text "TRUE"/"FALSE" depending on how it got
+// there, and a plain-text-formatted number column comes back as a string.
+// These tests write exactly those raw shapes directly into the fake
+// sheet's underlying rows (bypassing the normal *.create path, which
+// already writes clean values) to simulate that, then check that
+// sheetToObjects/listRows/getRowById hand back a predictable JS type
+// regardless — see FIELD_TYPES/normalizeFieldValue in Code.gs.
+
+function setRawCell(sheetName, rowId, header, rawValue) {
+  const sheet = fakeSS.sheets[sheetName];
+  const headers = sheet.rows[0];
+  const col = headers.indexOf(header);
+  const idCol = headers.indexOf("id");
+  const rowIdx = sheet.rows.findIndex((r, i) => i > 0 && String(r[idCol]) === String(rowId));
+  sheet.rows[rowIdx][col] = rawValue;
+}
+
+const rawMed = medicinesCreate({ name: "Raw cell test med", stock_count: 5 });
+setRawCell("Medicines", rawMed.id, "start_date", new Date(2026, 2, 15)); // Sheets auto-detected a Date cell
+setRawCell("Medicines", rawMed.id, "active", "TRUE"); // literal text, not a real boolean
+setRawCell("Medicines", rawMed.id, "stock_count", "7"); // plain-text-formatted number column
+const rawMedRead = getRowById("Medicines", rawMed.id);
+check("a raw Date cell normalizes to a plain yyyy-MM-dd string", rawMedRead.start_date === "2026-03-15");
+check("a raw \"TRUE\" text cell normalizes to the real boolean true", rawMedRead.active === true);
+check("a raw numeric-text cell normalizes to a real number", rawMedRead.stock_count === 7 && typeof rawMedRead.stock_count === "number");
+
+setRawCell("Medicines", rawMed.id, "active", "FALSE");
+check("a raw \"FALSE\" text cell normalizes to the real boolean false, not a truthy string", getRowById("Medicines", rawMed.id).active === false);
+
+setRawCell("Medicines", rawMed.id, "times", new Date(2026, 0, 1, 8, 0)); // a lone time, no comma — Sheets can auto-detect this as a Date/time
+check("a raw Date cell in a time-list column normalizes to HH:mm", getRowById("Medicines", rawMed.id).times === "08:00");
+
+const rawBooking = bookingsCreate({ type: "doctor_visit", title: "Raw cell booking", datetime: "2026-03-15T09:30" });
+setRawCell("Bookings", rawBooking.id, "datetime", new Date(2026, 2, 15, 9, 30));
+check("a raw Date cell in a datetime column normalizes to yyyy-MM-dd'T'HH:mm", getRowById("Bookings", rawBooking.id).datetime === "2026-03-15T09:30");
+
+const rawVitals = healthlogCreate({ date: "2026-03-15", weight_kg: 60 });
+setRawCell("HealthLog", rawVitals.id, "weight_kg", "62.5"); // numeric-text, not a real number
+setRawCell("HealthLog", rawVitals.id, "bp_sys", "118");
+const rawVitalsRead = getRowById("HealthLog", rawVitals.id);
+check("a numeric-text weight_kg cell normalizes to a real number", rawVitalsRead.weight_kg === 62.5 && typeof rawVitalsRead.weight_kg === "number");
+check("a numeric-text bp_sys cell normalizes to a real number", rawVitalsRead.bp_sys === 118 && typeof rawVitalsRead.bp_sys === "number");
+
+const rawContact = contactsCreate({ name: "Raw cell contact", role: "other", phone: "0091234567" });
+check("a phone number keeps its leading zero (never coerced to a number)", getRowById("Contacts", rawContact.id).phone === "0091234567");
+
+const rawSymptom = symptomsCreate({ date: "2026-03-15", symptom_key: "nausea", severity: "mild" });
+check("severity stays its enum text, not coerced to a number", getRowById("Symptoms", rawSymptom.id).severity === "mild");
+
+check("version.get reports the backend code version", routeAction("version.get", {}).backend_version === BACKEND_VERSION);
+check("bootstrap() includes the backend code version", bootstrap().backend_version === BACKEND_VERSION);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

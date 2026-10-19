@@ -46,6 +46,8 @@ const STRINGS = {
     "common.more": "More",
 
     "offline.banner": "You're offline. Showing the last saved data.",
+    "backendOutdated.banner": "The backend needs updating: paste Code.gs into Apps Script and deploy a New version.",
+    "swUpdate.banner": "New version available, tap to refresh.",
 
     "home.title": "Home",
     "home.dueDate": "Due date",
