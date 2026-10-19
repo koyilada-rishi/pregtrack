@@ -153,8 +153,8 @@ function throws(label, fn) {
 // --- setup() ---
 setup();
 fakeProps.APP_PIN = "246810";
-check("setup created all 18 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
-  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills".split(",").sort().join(","));
+check("setup created all 19 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
+  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills,Notes".split(",").sort().join(","));
 check("Settings seeded with 19 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 21); // header + 19 keys + data_version
 
 // --- PIN check ---
@@ -750,6 +750,20 @@ check("getTodaysBookingsForReminder includes a booking scheduled today", getToda
 
 const reminderMessage = buildDailyReminderMessage();
 check("buildDailyReminderMessage runs end-to-end without throwing", typeof reminderMessage === "string" && reminderMessage.length > 0);
+
+// --- Notes (Quick Add fallback: plain note + question for the doctor) ---
+
+throws("notesCreate requires date+text", () => notesCreate({ date: "2026-10-19" }));
+throws("notesCreate rejects an invalid category", () => notesCreate({ date: "2026-10-19", text: "x", category: "bogus" }));
+const plainNote = notesCreate({ date: "2026-10-19", text: "Remember to buy baby clothes" });
+check("note created defaults to category 'note'", plainNote.category === "note");
+const questionNote = notesCreate({ date: "2026-10-19", time: "09:00", text: "Ask about delivery date", category: "question" });
+check("question note created with its own category", questionNote.category === "question");
+check("notesList returns both, newest first", notesList({}).length === 2);
+check("notesList filters by category", notesList({ category: "question" }).every((n) => n.category === "question"));
+notesDelete({ id: plainNote.id });
+check("notesDelete removes the row", getRowById("Notes", plainNote.id) === null);
+throws("notesDelete requires an id", () => notesDelete({}));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

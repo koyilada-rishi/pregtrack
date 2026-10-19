@@ -144,6 +144,13 @@ function routeAction(action, payload) {
     case 'foodprefs.delete':
       return foodprefsDelete(payload);
 
+    case 'notes.list':
+      return notesList(payload);
+    case 'notes.create':
+      return notesCreate(payload);
+    case 'notes.delete':
+      return notesDelete(payload);
+
     case 'appointments.list':
       return listRows('Appointments');
     case 'appointments.create':
@@ -1121,6 +1128,39 @@ function foodprefsDelete(payload) {
 }
 
 // ---------------------------------------------------------------------------
+// Notes — Quick Add's "question for the doctor" and plain-note fallback.
+// ---------------------------------------------------------------------------
+
+var NOTE_CATEGORIES = ['note', 'question'];
+
+function notesList(payload) {
+  var rows = sheetToObjects('Notes');
+  if (payload && payload.category) rows = rows.filter(function (r) { return r.category === payload.category; });
+  if (payload && payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.date) >= payload.date_from; });
+  if (payload && payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.date) <= payload.date_to; });
+  rows.sort(function (a, b) { return (dateStrOf(b.date) + ' ' + b.time).localeCompare(dateStrOf(a.date) + ' ' + a.time); });
+  return rows;
+}
+
+function notesCreate(payload) {
+  requireFields(payload, ['date', 'text']);
+  var category = payload.category || 'note';
+  validateEnum(category, NOTE_CATEGORIES, 'category');
+  return createRow('Notes', {
+    date: sanitizeDate(payload.date, 'date'),
+    time: sanitizeText(payload.time || formatCurrentTime(), 10),
+    category: category,
+    text: sanitizeText(payload.text, 2000),
+    created_at: new Date().toISOString()
+  });
+}
+
+function notesDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Notes', payload.id);
+}
+
+// ---------------------------------------------------------------------------
 // Appointments
 // ---------------------------------------------------------------------------
 
@@ -2075,6 +2115,12 @@ var SHEET_SCHEMA = {
   // FoodPrefs: a liked/not-interested list she curates over time — status
   // can change, so `date` is "when this status was last set", not a log.
   FoodPrefs: ['id', 'name', 'status', 'date', 'notes'],
+
+  // Notes: the Quick Add box's fallback for anything that isn't a
+  // recognized intent (category 'note') plus "question for the doctor"
+  // (category 'question') — both just free text, shown in the Timeline so
+  // nothing typed is ever silently lost.
+  Notes: ['id', 'date', 'time', 'category', 'text', 'created_at'],
 
   // --- Phase 3 (v3): bookings, suggestions, bills -----------------------
   // Bookings replaces the plain Appointments flow for anything booked

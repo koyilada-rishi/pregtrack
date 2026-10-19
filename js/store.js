@@ -333,6 +333,9 @@ const db = {
     { id: "mock-fp-1", name: "Eggs", status: "not_interested", date: todayStr(-10), notes: "Off them this trimester" },
     { id: "mock-fp-2", name: "Mango", status: "interested", date: todayStr(-5), notes: "" }
   ],
+  notes: [
+    { id: "mock-note-1", date: todayStr(-1), time: "19:00", category: "question", text: "Ask about iron levels", created_at: new Date().toISOString() }
+  ],
   checkins: [
     { id: "mock-ci-1", date: todayStr(), time: "09:15", mood: 4, note: "Slept well", created_at: new Date().toISOString() }
   ],
@@ -725,6 +728,23 @@ export async function mockCall(action, payload) {
     case "foodprefs.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.foodPrefs, payload.id);
+
+    case "notes.list": {
+      let rows = clone(db.notes);
+      if (payload.category) rows = rows.filter((n) => n.category === payload.category);
+      if (payload.date_from) rows = rows.filter((n) => n.date >= payload.date_from);
+      if (payload.date_to) rows = rows.filter((n) => n.date <= payload.date_to);
+      return rows.sort((a, b) => (b.date + " " + b.time).localeCompare(a.date + " " + a.time));
+    }
+    case "notes.create": {
+      requireFields(payload, ["date", "text"]);
+      const row = { id: payload.id || uid(), time: todayTime(), category: "note", ...payload, created_at: new Date().toISOString() };
+      db.notes.push(row);
+      return clone(row);
+    }
+    case "notes.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.notes, payload.id);
 
     case "appointments.list":
       return clone(db.appointments);

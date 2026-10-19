@@ -1317,6 +1317,38 @@ a { color: var(--color-primary-dark); }
   font-size: 0.9rem;
 }
 
+/* ---------- Quick Add ---------- */
+
+.quickadd-input-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.quickadd-input-row .field { flex: 1; }
+
+.quickadd-mic-btn {
+  width: 48px;
+  min-width: 48px;
+}
+
+.quickadd-mic-listening {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+}
+
+.quickadd-ambiguous-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.field-needs-input {
+  border-color: var(--color-state-amber);
+  background: var(--color-state-amber-bg);
+}
+
 /* ---------- Medicine photos (v3 Phase 4) ---------- */
 
 .medicine-photo-row {

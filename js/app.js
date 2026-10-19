@@ -12,6 +12,7 @@ import {
   computeCustomCountdown, computeStockCountdown, classifyCountdownState
 } from "./countdown.js";
 import * as schedule from "./schedule.js";
+import { parseQuickAdd } from "./quickadd.js";
 
 const appRoot = document.getElementById("app");
 
@@ -511,6 +512,8 @@ function homeMarkup(boot, logs, weekEntry, now) {
   const hasAnyDose = Object.values(buckets).some((b) => b.length);
 
   return `
+    ${quickAddCardMarkup()}
+
     ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
 
     ${checkinCardMarkup()}
@@ -1095,7 +1098,285 @@ function attachSymptomDetailHandlers(sheetEl, symptomKey, customName) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Quick Add — a single natural-language text box on Home. Parsed by the
+// pure rule engine in js/quickadd.js (no network, fully unit-tested — see
+// test/quickadd.test.mjs); this file only ever renders an editable
+// confirmation card from the parsed draft and saves through the exact
+// same store actions every other form on Home already uses. Nothing is
+// ever auto-saved — every path here ends at openSheet() first.
+// ---------------------------------------------------------------------------
+
+function quickAddCardMarkup() {
+  return `
+    <div class="card quickadd-card">
+      <h2>${t("quickadd.title")}</h2>
+      <div class="quickadd-input-row">
+        <input class="field" id="quickadd-input" placeholder="${t("quickadd.placeholder")}" />
+        <button type="button" class="btn-add quickadd-mic-btn" id="quickadd-mic-btn" aria-label="${t("quickadd.mic")}" hidden>🎤</button>
+      </div>
+      <button type="button" class="btn btn-primary" id="quickadd-submit-btn">${t("quickadd.add")}</button>
+    </div>
+  `;
+}
+
+function openQuickAddConfirmSheet(outlet, rawText) {
+  const draft = parseQuickAdd(rawText, new Date());
+  if (draft.intent === "ambiguous") {
+    openSheet(quickAddAmbiguousMarkup(draft), (sheetEl) => attachQuickAddAmbiguousHandlers(sheetEl, draft, outlet));
+  } else {
+    openSheet(quickAddConfirmMarkup(draft), (sheetEl) => attachQuickAddConfirmHandlers(sheetEl, draft, outlet));
+  }
+}
+
+const QUICKADD_AMBIGUOUS_BUTTONS = [
+  { intent: "booking", labelKey: "quickadd.intent.booking" },
+  { intent: "medicine", labelKey: "quickadd.intent.medicine" },
+  { intent: "question", labelKey: "quickadd.intent.question" },
+  { intent: "symptom", labelKey: "quickadd.intent.symptom" },
+  { intent: "note", labelKey: "quickadd.intent.note" }
+];
+
+function quickAddAmbiguousMarkup(draft) {
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("quickadd.ambiguous.title")}</h2>
+    <p class="muted">"${escapeHtml(draft.rawText)}"</p>
+    <p>${t("quickadd.ambiguous.hint")}</p>
+    <div class="quickadd-ambiguous-buttons">
+      ${QUICKADD_AMBIGUOUS_BUTTONS.map((b) => `<button type="button" class="btn btn-secondary" data-force-intent="${b.intent}">${t(b.labelKey)}</button>`).join("")}
+    </div>
+    <button type="button" class="btn-link" id="quickadd-ambiguous-cancel">${t("common.cancel")}</button>
+  `;
+}
+
+function attachQuickAddAmbiguousHandlers(sheetEl, draft, outlet) {
+  sheetEl.querySelector("#quickadd-ambiguous-cancel").addEventListener("click", closeSheet);
+  sheetEl.querySelectorAll("[data-force-intent]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const forced = parseQuickAdd(draft.rawText, new Date(), btn.dataset.forceIntent);
+      openSheet(quickAddConfirmMarkup(forced), (sheetEl2) => attachQuickAddConfirmHandlers(sheetEl2, forced, outlet));
+    });
+  });
+}
+
+function needsInputClass(value) {
+  return value ? "field" : "field field-needs-input";
+}
+
+function quickAddBookingFieldsMarkup(draft) {
+  const f = draft.fields;
+  return `
+    ${formField(t("bookings.form.type"), `<select class="field" name="type">${BOOKING_TYPES_LIST.map((ty) => `<option value="${ty}" ${f.type === ty ? "selected" : ""}>${t("bookings.type." + ty)}</option>`).join("")}</select>`)}
+    ${formField(t("bookings.form.title"), `<input class="${needsInputClass(f.title)}" name="title" value="${escapeHtml(f.title || "")}" required />`)}
+    ${formField(t("quickadd.form.date"), `<input class="${needsInputClass(draft.date)}" type="date" name="date" value="${escapeHtml(draft.date || "")}" required />`)}
+    ${formField(t("quickadd.form.time"), `<input class="${needsInputClass(draft.time)}" type="time" name="time" value="${escapeHtml(draft.time || "")}" required />`, draft.timeIsVague ? t("quickadd.form.timeVagueHint") : "")}
+  `;
+}
+
+function quickAddMedicineFieldsMarkup(draft) {
+  const f = draft.fields;
+  return `
+    ${formField(t("meds.form.name"), `<input class="${needsInputClass(f.name)}" name="name" value="${escapeHtml(f.name || "")}" required />`)}
+    ${formField(t("quickadd.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(f.startDate || "")}" />`)}
+    ${formField(t("quickadd.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(f.endDate || "")}" />`, t("quickadd.form.endDateHint"))}
+    ${formField(t("quickadd.form.times"), `<input class="field" name="times" value="${escapeHtml(f.times || "")}" placeholder="08:00, 20:00" />`, draft.timeIsVague ? t("quickadd.form.timeVagueHint") : t("quickadd.form.timesHint"))}
+    <p class="safety-note">${t("meds.form.safetyNote")}</p>
+  `;
+}
+
+function quickAddQuestionFieldsMarkup(draft) {
+  return formField(t("quickadd.form.questionText"), `<textarea class="${needsInputClass(draft.fields.text)}" name="text" rows="2" required>${escapeHtml(draft.fields.text || "")}</textarea>`);
+}
+
+function quickAddSymptomFieldsMarkup(draft) {
+  const f = draft.fields;
+  return `
+    ${formField(t("checkin.symptomsLabel"), `<select class="field" name="symptom_key">${SYMPTOM_FIXED_KEYS.map((k) => `<option value="${k}" ${f.symptomKey === k ? "selected" : ""}>${t("symptom." + k)}</option>`).join("")}</select>`)}
+    ${formField(t("checkin.severity"), `<select class="field" name="severity"><option value="">—</option>${SYMPTOM_SEVERITY_CHIPS.map((s) => `<option value="${s}">${t("severity." + s)}</option>`).join("")}</select>`)}
+    ${formField(t("checkin.notePlaceholder"), `<textarea class="field" name="note" rows="2">${escapeHtml(f.note || "")}</textarea>`)}
+  `;
+}
+
+function quickAddCheckinFieldsMarkup(draft) {
+  const f = draft.fields;
+  return `
+    <p class="field-label">${t("checkin.title")}</p>
+    <div class="mood-face-row">
+      ${MOOD_FACES.map((face, i) => `<button type="button" class="mood-face ${f.mood === i + 1 ? "mood-face-selected" : ""}" data-quickadd-mood="${i + 1}">${face}</button>`).join("")}
+    </div>
+    <input type="hidden" name="mood" value="${f.mood || ""}" />
+    ${formField(t("checkin.notePlaceholder"), `<textarea class="field" name="note" rows="2">${escapeHtml(f.note || "")}</textarea>`)}
+  `;
+}
+
+function quickAddFoodFieldsMarkup(draft) {
+  const f = draft.fields;
+  return `
+    ${formField(t("food.title"), `<select class="field" name="meal"><option value="">—</option>${MEAL_CHIPS.map((m) => `<option value="${m}" ${f.meal === m ? "selected" : ""}>${t("food.meal." + m.toLowerCase())}</option>`).join("")}</select>`)}
+    ${formField(t("food.whatDidYouEat"), `<input class="${needsInputClass(f.items)}" name="items" value="${escapeHtml(f.items || "")}" required />`)}
+  `;
+}
+
+function quickAddWaterFieldsMarkup() {
+  return `<p class="muted">${t("quickadd.confirm.waterHint")}</p>`;
+}
+
+function quickAddNoteFieldsMarkup(draft) {
+  return formField(t("quickadd.form.noteText"), `<textarea class="field" name="text" rows="3" required>${escapeHtml(draft.fields.text || "")}</textarea>`);
+}
+
+const QUICKADD_FIELD_MARKUP_BY_INTENT = {
+  booking: quickAddBookingFieldsMarkup, medicine: quickAddMedicineFieldsMarkup, question: quickAddQuestionFieldsMarkup,
+  symptom: quickAddSymptomFieldsMarkup, checkin: quickAddCheckinFieldsMarkup, food: quickAddFoodFieldsMarkup,
+  water: quickAddWaterFieldsMarkup, note: quickAddNoteFieldsMarkup
+};
+
+function quickAddConfirmMarkup(draft) {
+  const bodyFn = QUICKADD_FIELD_MARKUP_BY_INTENT[draft.intent] || quickAddNoteFieldsMarkup;
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("quickadd.confirm.title." + draft.intent)}</h2>
+    <p class="muted">${t("quickadd.confirm.youTyped", { text: escapeHtml(draft.rawText) })}</p>
+    <form id="quickadd-confirm-form">
+      ${bodyFn(draft)}
+      <p class="error-text" id="quickadd-confirm-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="quickadd-confirm-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
+function attachQuickAddConfirmHandlers(sheetEl, draft, outlet) {
+  sheetEl.querySelector("#quickadd-confirm-cancel").addEventListener("click", closeSheet);
+
+  sheetEl.querySelectorAll("[data-quickadd-mood]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sheetEl.querySelectorAll("[data-quickadd-mood]").forEach((b) => b.classList.remove("mood-face-selected"));
+      btn.classList.add("mood-face-selected");
+      sheetEl.querySelector('input[name="mood"]').value = btn.dataset.quickaddMood;
+    });
+  });
+
+  sheetEl.querySelector("#quickadd-confirm-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.target);
+    const errEl = sheetEl.querySelector("#quickadd-confirm-error");
+    errEl.hidden = true;
+
+    const todayStr = schedule.formatLocalDate(new Date());
+    const nowTime = formatTimeHHMM(new Date());
+    const fail = (key) => { errEl.textContent = t(key); errEl.hidden = false; };
+
+    let action, payload, undoMessage;
+
+    if (draft.intent === "booking") {
+      const dateVal = fd.get("date"), timeVal = fd.get("time");
+      const title = fd.get("title").trim();
+      if (!dateVal || !timeVal) return fail("quickadd.error.needDateTime");
+      if (!title) return fail("quickadd.error.needTitle");
+      action = "bookings.create";
+      payload = { type: fd.get("type"), title, datetime: new Date(`${dateVal}T${timeVal}`).toISOString() };
+      undoMessage = t("quickadd.savedToast.booking", { title });
+    } else if (draft.intent === "medicine") {
+      const name = fd.get("name").trim();
+      if (!name) return fail("quickadd.error.needName");
+      action = "medicines.create";
+      payload = {
+        name, schedule_type: "daily", anchor_mode: "fixed", status: "active",
+        start_date: fd.get("start_date") || todayStr, end_date: fd.get("end_date") || "",
+        times: fd.get("times").trim(), source: "quickadd"
+      };
+      undoMessage = t("quickadd.savedToast.medicine", { name });
+    } else if (draft.intent === "question") {
+      const text = fd.get("text").trim();
+      if (!text) return fail("quickadd.error.needText");
+      action = "notes.create";
+      payload = { date: draft.date || todayStr, time: draft.time || nowTime, category: "question", text };
+      undoMessage = t("quickadd.savedToast.question");
+    } else if (draft.intent === "symptom") {
+      action = "symptoms.create";
+      payload = { date: draft.date || todayStr, time: draft.time || nowTime, symptom_key: fd.get("symptom_key"), severity: fd.get("severity") || "", note: fd.get("note").trim() };
+      undoMessage = t("quickadd.savedToast.symptom");
+    } else if (draft.intent === "checkin") {
+      const mood = Number(fd.get("mood"));
+      if (!mood) return fail("quickadd.error.needMood");
+      action = "checkins.create";
+      payload = { date: draft.date || todayStr, time: draft.time || nowTime, mood, note: fd.get("note").trim() };
+      undoMessage = t("quickadd.savedToast.checkin");
+    } else if (draft.intent === "food") {
+      const items = fd.get("items").trim();
+      if (!items) return fail("quickadd.error.needItems");
+      action = "foodlog.create";
+      payload = { date: draft.date || todayStr, meal: fd.get("meal") || "", items, craving_or_aversion: "", notes: "" };
+      undoMessage = t("quickadd.savedToast.food");
+    } else if (draft.intent === "water") {
+      action = "water.add";
+      payload = { date: draft.date || todayStr, time: draft.time || nowTime, glasses: 1 };
+      undoMessage = t("quickadd.savedToast.water");
+    } else {
+      const text = fd.get("text").trim();
+      if (!text) return fail("quickadd.error.needText");
+      action = "notes.create";
+      payload = { date: draft.date || todayStr, time: draft.time || nowTime, category: "note", text };
+      undoMessage = t("quickadd.savedToast.note");
+    }
+
+    closeSheet();
+    const quickAddInput = outlet.querySelector("#quickadd-input");
+    if (quickAddInput) quickAddInput.value = "";
+    showUndoToast(undoMessage, {
+      onUndo: () => { /* nothing was ever sent — closing the toast is enough */ },
+      onCommit: async () => {
+        try {
+          await store.call(action, payload);
+          await refreshHome();
+        } catch (err) {
+          alert(err.message || t("common.error"));
+        }
+      }
+    });
+  });
+}
+
 function attachHomeHandlers(outlet) {
+  const quickAddInput = outlet.querySelector("#quickadd-input");
+  const quickAddSubmitBtn = outlet.querySelector("#quickadd-submit-btn");
+  const quickAddMicBtn = outlet.querySelector("#quickadd-mic-btn");
+
+  const submitQuickAdd = () => {
+    const text = quickAddInput.value.trim();
+    if (!text) return;
+    openQuickAddConfirmSheet(outlet, text);
+  };
+  if (quickAddSubmitBtn) quickAddSubmitBtn.addEventListener("click", submitQuickAdd);
+  if (quickAddInput) {
+    quickAddInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); submitQuickAdd(); }
+    });
+  }
+
+  // Mic is entirely optional — only shown where the browser actually
+  // supports speech recognition, feature-detected here rather than assumed.
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (quickAddMicBtn && SpeechRecognitionCtor) {
+    quickAddMicBtn.hidden = false;
+    quickAddMicBtn.addEventListener("click", () => {
+      const recognition = new SpeechRecognitionCtor();
+      recognition.lang = "en-IN";
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      quickAddMicBtn.classList.add("quickadd-mic-listening");
+      recognition.onresult = (event) => { quickAddInput.value = event.results[0][0].transcript; };
+      recognition.onerror = () => { quickAddMicBtn.classList.remove("quickadd-mic-listening"); };
+      recognition.onend = () => { quickAddMicBtn.classList.remove("quickadd-mic-listening"); };
+      recognition.start();
+    });
+  }
+
+
   const heroCard = outlet.querySelector("#hero-countdown-card");
   if (heroCard) {
     heroCard.addEventListener("click", () => {
@@ -2995,7 +3276,7 @@ async function addFoodPref(outlet, status) {
 // side by side in time order.
 // ---------------------------------------------------------------------------
 
-const TIMELINE_TYPES = ["checkin", "symptom", "water", "medicine", "appointment", "vitals", "food"];
+const TIMELINE_TYPES = ["checkin", "symptom", "water", "medicine", "appointment", "vitals", "food", "note"];
 const timelineState = { entries: [], loading: true, dateFrom: "", dateTo: "", activeTypes: new Set(TIMELINE_TYPES), doctorSummary: false };
 
 async function renderTimelineView(outlet) {
@@ -3007,7 +3288,7 @@ async function renderTimelineView(outlet) {
 
   try {
     const days = Math.max(1, Math.round((new Date(timelineState.dateTo) - new Date(timelineState.dateFrom)) / 86400000) + 1);
-    const [checkins, symptoms, water, medHistory, medicines, appointments, healthlog, foodlog] = await Promise.all([
+    const [checkins, symptoms, water, medHistory, medicines, appointments, healthlog, foodlog, notes] = await Promise.all([
       store.call("checkins.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
       store.call("symptoms.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
       store.call("water.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
@@ -3015,9 +3296,10 @@ async function renderTimelineView(outlet) {
       store.call("medicines.list", {}).catch(() => []),
       store.call("appointments.list", {}).catch(() => []),
       store.call("healthlog.list", {}).catch(() => []),
-      store.call("foodlog.list", {}).catch(() => [])
+      store.call("foodlog.list", {}).catch(() => []),
+      store.call("notes.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => [])
     ]);
-    timelineState.entries = buildTimelineEntries({ checkins, symptoms, water, medLogs: medHistory.logs || [], medicines, appointments, healthlog, foodlog });
+    timelineState.entries = buildTimelineEntries({ checkins, symptoms, water, medLogs: medHistory.logs || [], medicines, appointments, healthlog, foodlog, notes });
     timelineState.loading = false;
     renderTimelineBody(outlet);
   } catch (err) {
@@ -3042,6 +3324,11 @@ function buildTimelineEntries(data) {
   const waterByDate = {};
   data.water.forEach((w) => { const d = dateStrOf(w.date); waterByDate[d] = (waterByDate[d] || 0) + Number(w.glasses || 1); });
   Object.keys(waterByDate).forEach((d) => { if (inRange(d)) entries.push({ date: d, time: "23:59", type: "water", summary: t("timeline.waterSummary", { n: waterByDate[d] }) }); });
+
+  (data.notes || []).forEach((n) => entries.push({
+    date: dateStrOf(n.date), time: n.time, type: "note",
+    summary: (n.category === "question" ? t("timeline.noteQuestion") + " " : "") + n.text
+  }));
 
   data.foodlog.forEach((f) => { if (inRange(dateStrOf(f.date))) entries.push({ date: dateStrOf(f.date), time: "12:00", type: "food", summary: `${f.meal}: ${f.items || ""}`.trim() }); });
 
@@ -3085,7 +3372,7 @@ function buildTimelineEntries(data) {
   return entries;
 }
 
-const TIMELINE_TYPE_ICON = { checkin: "🙂", symptom: "⚠️", water: "💧", medicine: "💊", appointment: "🩺", vitals: "📈", food: "🍽️" };
+const TIMELINE_TYPE_ICON = { checkin: "🙂", symptom: "⚠️", water: "💧", medicine: "💊", appointment: "🩺", vitals: "📈", food: "🍽️", note: "📝" };
 
 function renderTimelineBody(outlet) {
   const filtered = timelineState.entries.filter((e) => timelineState.activeTypes.has(e.type));
