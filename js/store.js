@@ -248,15 +248,21 @@ function uid() {
 function todayStr(offsetDays) {
   const d = new Date();
   d.setDate(d.getDate() + (offsetDays || 0));
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return formatLocalDateStr(d);
 }
 
 function todayTime() {
   const d = new Date();
   return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
+// Local calendar date for an arbitrary Date (not just "today") — same
+// local-not-UTC reasoning as todayStr() above.
+function formatLocalDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function clone(obj) {
@@ -509,9 +515,25 @@ export async function mockCall(action, payload) {
 
     case "settings.get":
       return clone(db.settings);
-    case "settings.set":
+    case "settings.set": {
       Object.assign(db.settings, payload);
+      // Mirrors the backend's USG back-calculation: a scan's reported
+      // gestational age on a given date overwrites due_date/lmp_date,
+      // recomputed on every settings.set call so it never goes stale.
+      if (db.settings.dating_method === "usg" && db.settings.usg_date) {
+        const usgDate = new Date(db.settings.usg_date);
+        const gaDays = (Number(db.settings.usg_weeks) || 0) * 7 + (Number(db.settings.usg_days) || 0);
+        if (!isNaN(usgDate.getTime()) && gaDays > 0) {
+          const lmp = new Date(usgDate.getTime());
+          lmp.setDate(lmp.getDate() - gaDays);
+          const due = new Date(lmp.getTime());
+          due.setDate(due.getDate() + 280);
+          db.settings.lmp_date = formatLocalDateStr(lmp);
+          db.settings.due_date = formatLocalDateStr(due);
+        }
+      }
       return clone(db.settings);
+    }
 
     case "dashboard.get":
       return mockDashboard();

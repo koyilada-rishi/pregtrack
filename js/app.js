@@ -4937,8 +4937,23 @@ function renderSettingsBody(outlet) {
     <div class="card">
       <h2>${t("settings.pregnancy.title")}</h2>
       <form id="settings-form">
-        ${formField(t("settings.dueDate"), `<input class="field" type="date" name="due_date" value="${escapeHtml(s.due_date)}" />`)}
-        ${formField(t("settings.lmpDate"), `<input class="field" type="date" name="lmp_date" value="${escapeHtml(s.lmp_date)}" />`, t("settings.lmpHint"))}
+        <p class="field-label">${t("settings.dating.title")}</p>
+        <input type="hidden" name="dating_method" value="${escapeHtml(s.dating_method || "lmp")}" />
+        <div class="chip-row">
+          <button type="button" class="chip ${s.dating_method !== "usg" ? "chip-selected" : ""}" data-dating-method="lmp">${t("settings.dating.lmp")}</button>
+          <button type="button" class="chip ${s.dating_method === "usg" ? "chip-selected" : ""}" data-dating-method="usg">${t("settings.dating.usg")}</button>
+        </div>
+
+        <div data-dating-fields="lmp" ${s.dating_method === "usg" ? "hidden" : ""}>
+          ${formField(t("settings.dueDate"), `<input class="field" type="date" name="due_date" value="${escapeHtml(s.due_date)}" />`)}
+          ${formField(t("settings.lmpDate"), `<input class="field" type="date" name="lmp_date" value="${escapeHtml(s.lmp_date)}" />`, t("settings.lmpHint"))}
+        </div>
+        <div data-dating-fields="usg" ${s.dating_method === "usg" ? "" : "hidden"}>
+          ${formField(t("settings.dating.usgDate"), `<input class="field" type="date" name="usg_date" value="${escapeHtml(s.usg_date)}" />`, t("settings.dating.usgDateHint"))}
+          ${formField(t("settings.dating.usgWeeks"), `<input class="field" type="number" min="0" max="45" name="usg_weeks" value="${escapeHtml(s.usg_weeks)}" />`)}
+          ${formField(t("settings.dating.usgDays"), `<input class="field" type="number" min="0" max="6" name="usg_days" value="${escapeHtml(s.usg_days)}" />`)}
+          ${s.dating_method === "usg" && s.due_date ? `<p class="muted">${t("settings.dating.computedDueDate", { date: formatDisplayDate(s.due_date) })}</p>` : ""}
+        </div>
         ${formField(t("settings.wifeName"), `<input class="field" name="wife_name" value="${escapeHtml(s.wife_name)}" />`)}
         ${formField(t("settings.bloodGroup"), `<input class="field" name="blood_group" value="${escapeHtml(s.blood_group)}" />`)}
         ${formField(t("settings.allergies"), `<textarea class="field" name="allergies" rows="2">${escapeHtml(s.allergies)}</textarea>`)}
@@ -5058,22 +5073,40 @@ function contactFormMarkup(item) {
   `;
 }
 
+function applyDatingMethodVisibility(outlet, method) {
+  outlet.querySelectorAll("[data-dating-fields]").forEach((el) => { el.hidden = el.dataset.datingFields !== method; });
+}
+
 function attachSettingsHandlers(outlet) {
   const form = outlet.querySelector("#settings-form");
+
+  outlet.querySelectorAll("[data-dating-method]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const method = btn.dataset.datingMethod;
+      outlet.querySelectorAll("[data-dating-method]").forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      form.querySelector('input[name="dating_method"]').value = method;
+      applyDatingMethodVisibility(outlet, method);
+    });
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fd = new FormData(form);
     const payload = {};
-    ["due_date", "lmp_date", "wife_name", "blood_group", "allergies", "hospital_name", "hospital_phone", "hospital_address", "insurance_info", "language"].forEach((key) => {
+    ["due_date", "lmp_date", "wife_name", "blood_group", "allergies", "hospital_name", "hospital_phone", "hospital_address", "insurance_info", "language", "dating_method", "usg_date", "usg_weeks", "usg_days"].forEach((key) => {
       payload[key] = (fd.get(key) || "").toString().trim();
     });
     const errEl = outlet.querySelector("#settings-form-error");
-    const okEl = outlet.querySelector("#settings-form-success");
     errEl.hidden = true;
-    okEl.hidden = true;
     try {
       settingsState.settings = await store.call("settings.set", payload);
-      okEl.hidden = false;
+      // Full re-render, not just toggling the "Saved" text in place — the
+      // USG due-date preview (and the dating-method fields it's nested
+      // under) only reflect what's actually stored once this redraws with
+      // the fresh settingsState.settings values.
+      renderSettingsBody(outlet);
+      outlet.querySelector("#settings-form-success").hidden = false;
     } catch (err) {
       errEl.textContent = err.message || t("common.error");
       errEl.hidden = false;

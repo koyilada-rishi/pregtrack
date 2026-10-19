@@ -306,6 +306,11 @@ function recordSuccessfulAuth() {
 var SETTINGS_KEYS = [
   'due_date', 'lmp_date', 'wife_name', 'blood_group', 'allergies',
   'hospital_name', 'hospital_phone', 'hospital_address', 'insurance_info', 'language',
+  // Dating method: 'lmp' (default — due_date/lmp_date entered directly, as
+  // before) or 'usg' (a scan's reported gestational age on a given date;
+  // due_date/lmp_date are then back-computed and overwritten by
+  // settingsSet() below, never entered by hand). usg_days is 0-6.
+  'dating_method', 'usg_date', 'usg_weeks', 'usg_days',
   'water_goal_glasses', // Phase 2 — defaults to 8 client-side when blank, see js/app.js
   // Phase 4 — global on/off switches for the optional medicine-detail
   // fields (photos/ingredients/expiry), and the expiry alert window
@@ -324,7 +329,11 @@ function settingsGet() {
   return result;
 }
 
+var DATING_METHODS = ['lmp', 'usg'];
+
 function settingsSet(payload) {
+  if (payload.hasOwnProperty('dating_method')) validateEnum(payload.dating_method, DATING_METHODS, 'dating_method');
+
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -334,6 +343,35 @@ function settingsSet(payload) {
     for (var i = 1; i < values.length; i++) {
       rowOfKey[values[i][0]] = i + 1; // 1-based sheet row number
     }
+
+    // Effective settings after this write (existing stored values,
+    // overridden by whatever this payload actually sends) — used only to
+    // decide the USG back-calculation below, not written directly.
+    var effective = {};
+    SETTINGS_KEYS.forEach(function (key) {
+      var row = rowOfKey[key];
+      effective[key] = payload.hasOwnProperty(key) ? payload[key] : (row ? values[row - 1][1] : '');
+    });
+
+    // USG dating: back-compute due_date/lmp_date from the scan's reported
+    // gestational age instead of taking them directly — this overwrites
+    // whatever due_date/lmp_date already held, the same way choosing
+    // dating_method: 'lmp' instead just leaves them as entered by hand.
+    // Recomputed on every settingsSet() call (not just when the USG fields
+    // themselves change) so an unrelated save never leaves them stale.
+    if (effective.dating_method === 'usg' && effective.usg_date) {
+      var usgDate = parseISODate(dateStrOf(effective.usg_date));
+      var gaDays = (Number(effective.usg_weeks) || 0) * 7 + (Number(effective.usg_days) || 0);
+      if (usgDate && gaDays > 0) {
+        var effectiveLmp = new Date(usgDate.getTime());
+        effectiveLmp.setDate(effectiveLmp.getDate() - gaDays);
+        var dueDate = new Date(effectiveLmp.getTime());
+        dueDate.setDate(dueDate.getDate() + 280);
+        payload.lmp_date = formatISODate(effectiveLmp);
+        payload.due_date = formatISODate(dueDate);
+      }
+    }
+
     SETTINGS_KEYS.forEach(function (key) {
       if (!payload.hasOwnProperty(key)) return;
       var value = sanitizeText(payload[key], 2000);

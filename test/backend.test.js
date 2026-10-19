@@ -155,7 +155,7 @@ setup();
 fakeProps.APP_PIN = "246810";
 check("setup created all 18 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
   "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills".split(",").sort().join(","));
-check("Settings seeded with 15 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 17); // header + 15 keys + data_version
+check("Settings seeded with 19 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 21); // header + 19 keys + data_version
 
 // --- PIN check ---
 check("checkPin correct", checkPin("246810") === true);
@@ -167,6 +167,31 @@ settingsSet({ due_date: "2027-03-01", wife_name: "Priya" });
 const s = settingsGet();
 check("settings round-trip", s.due_date === "2027-03-01" && s.wife_name === "Priya");
 check("settings unknown keys ignored", (() => { settingsSet({ not_a_real_key: "x" }); return settingsGet().not_a_real_key === undefined; })());
+
+// --- USG-based dating ---
+
+throws("settingsSet rejects an invalid dating_method", () => settingsSet({ dating_method: "bogus" }));
+
+// Scan on 2026-10-19 reports 12 weeks 3 days -> LMP = scan - 87 days, due = LMP + 280 days.
+settingsSet({ dating_method: "usg", usg_date: "2026-10-19", usg_weeks: 12, usg_days: 3 });
+const usgSettings = settingsGet();
+const expectedLmp = formatISODate((() => { const d = new Date(2026, 9, 19); d.setDate(d.getDate() - 87); return d; })());
+const expectedDue = formatISODate((() => { const d = parseISODate(expectedLmp); d.setDate(d.getDate() + 280); return d; })());
+check("USG dating back-computes lmp_date", usgSettings.lmp_date === expectedLmp);
+check("USG dating back-computes due_date", usgSettings.due_date === expectedDue);
+check("USG dating stores the raw scan fields too", usgSettings.usg_date === "2026-10-19" && usgSettings.usg_weeks === "12" && usgSettings.usg_days === "3");
+
+const gaFromUsg = computeGestationalAge(usgSettings, new Date(2026, 9, 19));
+check("computeGestationalAge agrees with the scan on the scan date itself", gaFromUsg.weeks === 12 && gaFromUsg.days === 3);
+
+// An unrelated save (no usg_* fields sent) keeps due_date/lmp_date derived from the stored scan, not stale.
+settingsSet({ wife_name: "Priya K" });
+check("due_date stays USG-derived across an unrelated settings.set call", settingsGet().due_date === expectedDue);
+
+// Switching back to LMP mode leaves whatever due_date/lmp_date is sent directly, untouched by any USG math.
+settingsSet({ dating_method: "lmp", due_date: "2027-05-01", lmp_date: "2026-07-25" });
+const lmpSettings = settingsGet();
+check("switching back to lmp mode takes due_date/lmp_date as entered", lmpSettings.due_date === "2027-05-01" && lmpSettings.lmp_date === "2026-07-25");
 
 // --- medicines CRUD ---
 const med = medicinesCreate({ name: "Folic acid", dose: "5mg", times: "08:00,20:00", start_date: "2026-10-01" });
