@@ -153,8 +153,8 @@ function throws(label, fn) {
 // --- setup() ---
 setup();
 fakeProps.APP_PIN = "246810";
-check("setup created all 15 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
-  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs".split(",").sort().join(","));
+check("setup created all 18 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
+  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills".split(",").sort().join(","));
 check("Settings seeded with 11 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 13); // header + 11 keys + data_version
 
 // --- PIN check ---
@@ -599,6 +599,76 @@ check("settingsGet includes water_goal_glasses (blank by default)", settingsGet(
 // Settings key, e.g. hospital_phone) — the frontend Numbers() it on read.
 settingsSet({ water_goal_glasses: 10 });
 check("water_goal_glasses round-trips through settings.set/get", settingsGet().water_goal_glasses === "10");
+
+// --- Phase 3 (v3): Bookings ---
+
+throws("bookingsCreate requires type+title+datetime", () => bookingsCreate({ type: "scan" }));
+throws("bookingsCreate rejects an invalid type", () => bookingsCreate({ type: "bogus", title: "x", datetime: "2026-11-01T10:00:00+05:30" }));
+throws("bookingsCreate rejects an invalid booked_via", () => bookingsCreate({ type: "scan", title: "x", datetime: "2026-11-01T10:00:00+05:30", booked_via: "bogus" }));
+
+const visit = bookingsCreate({ type: "doctor_visit", title: "Routine checkup", provider: "Dr. Rao", datetime: "2026-11-01T10:00:00+05:30", booked_via: "call" });
+check("booking created with status booked + booked_at stamped", visit.status === "booked" && !!visit.booked_at);
+
+const visitDone = bookingsUpdate({ id: visit.id, status: "done" });
+check("bookingsUpdate stamps done_at on status -> done", visitDone.status === "done" && !!visitDone.done_at);
+
+throws("bookingsClose a doctor_visit with no prescription and no note fails", () => bookingsClose({ id: visit.id }));
+const visitClosedNoRx = bookingsClose({ id: visit.id, no_prescription_note: "Nothing needed this time" });
+check("bookingsClose succeeds with a no-prescription note", visitClosedNoRx.status === "closed" && visitClosedNoRx.closed_without_prescription === true);
+check("bookingsClose stamps closed_at", !!visitClosedNoRx.closed_at);
+
+const scanBooking = bookingsCreate({ type: "scan", title: "Anomaly scan", datetime: "2026-11-05T09:00:00+05:30" });
+throws("bookingsClose a scan with no linked report fails", () => bookingsClose({ id: scanBooking.id }));
+const scanReportFile = filesUpload({ title: "Scan report", type: "scan", filename: "report.pdf", base64: smallBase64, date: "2026-11-05", type_v2: "scan_report", linked_booking_id: scanBooking.id });
+check("file uploaded with type_v2 + linked_booking_id", scanReportFile.type_v2 === "scan_report" && scanReportFile.linked_booking_id === scanBooking.id);
+const scanClosed = bookingsClose({ id: scanBooking.id });
+check("bookingsClose succeeds once the report is linked", scanClosed.status === "closed");
+
+const vaccineBooking = bookingsCreate({ type: "vaccine", title: "Tetanus shot", datetime: "2026-11-10T09:00:00+05:30" });
+check("bookingsClose: vaccine/other close freely, no report/prescription needed", bookingsClose({ id: vaccineBooking.id }).status === "closed");
+
+check("bookingsList filters by type", bookingsList({ type: "scan" }).every((b) => b.type === "scan"));
+check("bookingsList filters by date range", bookingsList({ date_from: "2026-11-06" }).every((b) => dateStrOf(b.datetime) >= "2026-11-06"));
+bookingsDelete({ id: vaccineBooking.id });
+check("bookingsDelete removes the row", getRowById("Bookings", vaccineBooking.id) === null);
+throws("bookingsDelete requires an id", () => bookingsDelete({}));
+
+// --- files.update (metadata-only, Drive file untouched) ---
+
+throws("filesUpdate rejects an invalid type_v2", () => filesUpdate({ id: scanReportFile.id, type_v2: "bogus" }));
+const fileRenamed = filesUpdate({ id: scanReportFile.id, title: "Anomaly scan report", type_v2: "lab_report" });
+check("filesUpdate changes title+type_v2", fileRenamed.title === "Anomaly scan report" && fileRenamed.type_v2 === "lab_report");
+check("filesUpdate never touches drive_file_id", getRowById("Files", scanReportFile.id).drive_file_id === scanReportFile.drive_file_id);
+check("filesList needs_sorting excludes files with a type_v2 set", !filesList({ needs_sorting: true }).some((f) => f.id === scanReportFile.id));
+const needsSortingFile = filesUpload({ title: "Old upload", type: "document", filename: "old.pdf", base64: smallBase64, date: "2026-10-01" });
+check("a file uploaded without type_v2 shows up in needs_sorting", filesList({ needs_sorting: true }).some((f) => f.id === needsSortingFile.id));
+check("filesList filters by linked_booking_id", filesList({ linked_booking_id: scanBooking.id }).every((f) => f.linked_booking_id === scanBooking.id));
+
+// --- Suggestions ---
+
+throws("suggestionsCreate requires booking_id+type+text", () => suggestionsCreate({ booking_id: visit.id }));
+throws("suggestionsCreate rejects an invalid type", () => suggestionsCreate({ booking_id: visit.id, type: "bogus", text: "x" }));
+const suggestion = suggestionsCreate({ booking_id: visit.id, type: "medicine", text: "Start folic acid" });
+check("suggestion created pending", suggestion.status === "pending");
+const suggestionDone = suggestionsUpdate({ id: suggestion.id, status: "done" });
+check("suggestionsUpdate flips status to done", suggestionDone.status === "done");
+check("suggestionsList filters by booking_id", suggestionsList({ booking_id: visit.id }).every((s) => s.booking_id === visit.id));
+suggestionsDelete({ id: suggestion.id });
+check("suggestionsDelete removes the row", getRowById("Suggestions", suggestion.id) === null);
+throws("suggestionsUpdate requires an id", () => suggestionsUpdate({ status: "done" }));
+
+// --- Bills ---
+
+throws("billsCreate requires booking_id+status", () => billsCreate({ booking_id: visit.id }));
+throws("billsCreate rejects an invalid status", () => billsCreate({ booking_id: visit.id, status: "bogus" }));
+const bill = billsCreate({ booking_id: visit.id, status: "unpaid", amount: 800 });
+check("bill created", bill.status === "unpaid" && bill.amount === 800);
+const billPaid = billsUpdate({ id: bill.id, status: "paid", paid_on: "2026-11-02" });
+check("billsUpdate marks paid with a paid_on date", billPaid.status === "paid" && billPaid.paid_on === "2026-11-02");
+check("billsList filters by booking_id", billsList({ booking_id: visit.id }).every((b) => b.booking_id === visit.id));
+billsDelete({ id: bill.id });
+check("billsDelete removes the row", getRowById("Bills", bill.id) === null);
+throws("billsUpdate requires an id", () => billsUpdate({ status: "paid" }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

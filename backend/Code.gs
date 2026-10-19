@@ -195,8 +195,39 @@ function routeAction(action, payload) {
       return filesUpload(payload);
     case 'files.get':
       return filesGet(payload);
+    case 'files.update':
+      return filesUpdate(payload);
     case 'files.delete':
       return filesDelete(payload);
+
+    case 'bookings.list':
+      return bookingsList(payload);
+    case 'bookings.create':
+      return bookingsCreate(payload);
+    case 'bookings.update':
+      return bookingsUpdate(payload);
+    case 'bookings.delete':
+      return bookingsDelete(payload);
+    case 'bookings.close':
+      return bookingsClose(payload);
+
+    case 'suggestions.list':
+      return suggestionsList(payload);
+    case 'suggestions.create':
+      return suggestionsCreate(payload);
+    case 'suggestions.update':
+      return suggestionsUpdate(payload);
+    case 'suggestions.delete':
+      return suggestionsDelete(payload);
+
+    case 'bills.list':
+      return billsList(payload);
+    case 'bills.create':
+      return billsCreate(payload);
+    case 'bills.update':
+      return billsUpdate(payload);
+    case 'bills.delete':
+      return billsDelete(payload);
 
     case 'countdowns.list':
       return countdownsList(payload);
@@ -1230,17 +1261,42 @@ function checklistDelete(payload) {
 var FILE_TYPES = ['report', 'scan', 'prescription', 'document'];
 var MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // ~8 MB
 
+var FILE_TYPES_V2 = ['prescription', 'lab_report', 'scan_report', 'bill', 'medicine_photo', 'other'];
+
 function filesList(payload) {
   var rows = listRows('Files').map(function (r) {
-    return { id: r.id, title: r.title, type: r.type, date: dateStrOf(r.date), doctor: r.doctor, notes: r.notes };
+    return {
+      id: r.id, title: r.title, type: r.type, date: dateStrOf(r.date), doctor: r.doctor, notes: r.notes,
+      type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || ''
+    };
   });
   if (payload) {
     if (payload.type) rows = rows.filter(function (r) { return r.type === payload.type; });
+    if (payload.type_v2) rows = rows.filter(function (r) { return r.type_v2 === payload.type_v2; });
+    if (payload.needs_sorting) rows = rows.filter(function (r) { return !r.type_v2; });
+    if (payload.linked_booking_id) rows = rows.filter(function (r) { return r.linked_booking_id === payload.linked_booking_id; });
     if (payload.date_from) rows = rows.filter(function (r) { return r.date >= payload.date_from; });
     if (payload.date_to) rows = rows.filter(function (r) { return r.date <= payload.date_to; });
   }
   rows.sort(function (a, b) { return b.date.localeCompare(a.date); });
   return rows;
+}
+
+// Metadata-only edit (title/type_v2/linked_booking_id/doctor/notes/date) —
+// never touches the underlying Drive file or drive_file_id.
+function filesUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('title')) fields.title = sanitizeText(payload.title, 200);
+  if (payload.hasOwnProperty('type_v2')) {
+    validateEnum(payload.type_v2, FILE_TYPES_V2, 'type_v2');
+    fields.type_v2 = payload.type_v2;
+  }
+  if (payload.hasOwnProperty('linked_booking_id')) fields.linked_booking_id = sanitizeText(payload.linked_booking_id, 100);
+  if (payload.hasOwnProperty('doctor')) fields.doctor = sanitizeText(payload.doctor, 200);
+  if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
+  if (payload.hasOwnProperty('date')) fields.date = sanitizeDate(payload.date, 'date');
+  return updateRowById('Files', payload.id, fields);
 }
 
 function filesUpload(payload) {
@@ -1261,13 +1317,17 @@ function filesUpload(payload) {
   var blob = Utilities.newBlob(bytes, payload.mimeType || 'application/octet-stream', sanitizeText(payload.filename, 300));
   var file = folder.createFile(blob);
 
+  if (payload.type_v2) validateEnum(payload.type_v2, FILE_TYPES_V2, 'type_v2');
+
   return createRow('Files', {
     drive_file_id: file.getId(),
     title: sanitizeText(payload.title, 200),
     type: payload.type,
     date: sanitizeDate(payload.date || formatISODate(new Date()), 'date'),
     doctor: sanitizeText(payload.doctor, 200),
-    notes: sanitizeText(payload.notes, 1000)
+    notes: sanitizeText(payload.notes, 1000),
+    type_v2: payload.type_v2 || '',
+    linked_booking_id: sanitizeText(payload.linked_booking_id, 100)
   });
 }
 
@@ -1312,6 +1372,205 @@ function driveFolderForType(type) {
   var folderId = PropertiesService.getScriptProperties().getProperty(propKeyByType[type]);
   if (!folderId) throw new Error('Drive folder not set up for type: ' + type + '. Run setup() first.');
   return DriveApp.getFolderById(folderId);
+}
+
+// ---------------------------------------------------------------------------
+// Bookings — doctor visits, scans, blood tests, vaccines, anything booked.
+// Replaces plain Appointments for anything that needs real status
+// tracking (Booked -> Done -> Waiting for report -> Report uploaded ->
+// Closed). Each stage change stamps its own timestamp.
+// ---------------------------------------------------------------------------
+
+var BOOKING_TYPES = ['doctor_visit', 'scan', 'blood_test', 'vaccine', 'other'];
+var BOOKING_VIA = ['call', 'online', 'in_person', 'walk_in'];
+var BOOKING_STATUSES = ['booked', 'done', 'waiting_for_report', 'report_uploaded', 'closed'];
+// A stage change stamps this timestamp field, same spelling as the status
+// value it corresponds to.
+var BOOKING_STAGE_TIMESTAMP_FIELD = {
+  done: 'done_at', waiting_for_report: 'waiting_for_report_at', report_uploaded: 'report_uploaded_at', closed: 'closed_at'
+};
+
+function bookingsList(payload) {
+  var rows = sheetToObjects('Bookings');
+  if (payload) {
+    if (payload.type) rows = rows.filter(function (r) { return r.type === payload.type; });
+    if (payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
+    if (payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.datetime) >= payload.date_from; });
+    if (payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.datetime) <= payload.date_to; });
+  }
+  rows.sort(function (a, b) { return String(b.datetime).localeCompare(String(a.datetime)); });
+  return rows;
+}
+
+function bookingsCreate(payload) {
+  requireFields(payload, ['type', 'title', 'datetime']);
+  validateEnum(payload.type, BOOKING_TYPES, 'type');
+  if (payload.booked_via) validateEnum(payload.booked_via, BOOKING_VIA, 'booked_via');
+  var dt = toDateTime(payload.datetime);
+  if (!dt) throw new Error('Invalid datetime: ' + payload.datetime);
+  var now = new Date().toISOString();
+  return createRow('Bookings', {
+    type: payload.type,
+    title: sanitizeText(payload.title, 200),
+    provider: sanitizeText(payload.provider, 200),
+    datetime: dt.toISOString(),
+    booked_via: payload.booked_via || '',
+    location: sanitizeText(payload.location, 300),
+    notes: sanitizeText(payload.notes, 2000),
+    approx_report_days: payload.approx_report_days === undefined ? '' : sanitizeNumber(payload.approx_report_days, 'approx_report_days'),
+    status: 'booked',
+    booked_at: now,
+    done_at: '', waiting_for_report_at: '', report_uploaded_at: '', closed_at: '',
+    closed_without_prescription: false, no_prescription_note: '',
+    created_at: now
+  });
+}
+
+function bookingsUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('type')) { validateEnum(payload.type, BOOKING_TYPES, 'type'); fields.type = payload.type; }
+  if (payload.hasOwnProperty('title')) fields.title = sanitizeText(payload.title, 200);
+  if (payload.hasOwnProperty('provider')) fields.provider = sanitizeText(payload.provider, 200);
+  if (payload.hasOwnProperty('datetime')) {
+    var dt = toDateTime(payload.datetime);
+    if (!dt) throw new Error('Invalid datetime: ' + payload.datetime);
+    fields.datetime = dt.toISOString();
+  }
+  if (payload.hasOwnProperty('booked_via')) { validateEnum(payload.booked_via, BOOKING_VIA, 'booked_via'); fields.booked_via = payload.booked_via; }
+  if (payload.hasOwnProperty('location')) fields.location = sanitizeText(payload.location, 300);
+  if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 2000);
+  if (payload.hasOwnProperty('approx_report_days')) fields.approx_report_days = sanitizeNumber(payload.approx_report_days, 'approx_report_days');
+  if (payload.hasOwnProperty('status')) {
+    validateEnum(payload.status, BOOKING_STATUSES, 'status');
+    fields.status = payload.status;
+    var stampField = BOOKING_STAGE_TIMESTAMP_FIELD[payload.status];
+    if (stampField) fields[stampField] = new Date().toISOString();
+  }
+  return updateRowById('Bookings', payload.id, fields);
+}
+
+function bookingsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Bookings', payload.id);
+}
+
+// Closing requires either an uploaded prescription (doctor_visit) or a
+// report (scan/blood_test) already linked via Files.linked_booking_id —
+// or, for a doctor_visit, an explicit "no prescription this time" note.
+// vaccine/other close freely.
+function bookingsClose(payload) {
+  requireId(payload);
+  var booking = getRowById('Bookings', payload.id);
+  if (!booking) throw new Error('Not found: ' + payload.id);
+
+  var linkedFiles = sheetToObjects('Files').filter(function (f) { return f.linked_booking_id === payload.id; });
+
+  if (booking.type === 'doctor_visit') {
+    var hasPrescription = linkedFiles.some(function (f) { return f.type_v2 === 'prescription'; });
+    var noPrescriptionNote = payload.no_prescription_note !== undefined ? String(payload.no_prescription_note).trim() : String(booking.no_prescription_note || '').trim();
+    if (!hasPrescription && !noPrescriptionNote) {
+      throw new Error('Closing a doctor visit needs either an uploaded prescription or a "No prescription this time" note.');
+    }
+    return updateRowById('Bookings', payload.id, {
+      status: 'closed', closed_at: new Date().toISOString(),
+      closed_without_prescription: !hasPrescription,
+      no_prescription_note: hasPrescription ? '' : sanitizeText(noPrescriptionNote, 500)
+    });
+  }
+
+  if (booking.type === 'scan' || booking.type === 'blood_test') {
+    var hasReport = linkedFiles.some(function (f) { return f.type_v2 === 'lab_report' || f.type_v2 === 'scan_report'; });
+    if (!hasReport) throw new Error('Closing a scan/blood test needs the report uploaded and linked first.');
+  }
+
+  return updateRowById('Bookings', payload.id, { status: 'closed', closed_at: new Date().toISOString() });
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions — doctor suggestions recorded after a visit, each with a
+// one-tap follow-through action owned by the frontend (add as medicine /
+// book a test / set a countdown) and a pending/done/skipped status.
+// ---------------------------------------------------------------------------
+
+var SUGGESTION_TYPES = ['medicine', 'scan', 'blood_test', 'diet_lifestyle', 'follow_up'];
+var SUGGESTION_STATUSES = ['pending', 'done', 'skipped'];
+
+function suggestionsList(payload) {
+  var rows = sheetToObjects('Suggestions');
+  if (payload && payload.booking_id) rows = rows.filter(function (r) { return r.booking_id === payload.booking_id; });
+  if (payload && payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
+  return rows;
+}
+
+function suggestionsCreate(payload) {
+  requireFields(payload, ['booking_id', 'type', 'text']);
+  validateEnum(payload.type, SUGGESTION_TYPES, 'type');
+  return createRow('Suggestions', {
+    booking_id: payload.booking_id,
+    type: payload.type,
+    text: sanitizeText(payload.text, 1000),
+    follow_up_date: payload.follow_up_date ? sanitizeDate(payload.follow_up_date, 'follow_up_date') : '',
+    status: 'pending',
+    created_at: new Date().toISOString()
+  });
+}
+
+function suggestionsUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('status')) { validateEnum(payload.status, SUGGESTION_STATUSES, 'status'); fields.status = payload.status; }
+  if (payload.hasOwnProperty('text')) fields.text = sanitizeText(payload.text, 1000);
+  if (payload.hasOwnProperty('follow_up_date')) fields.follow_up_date = payload.follow_up_date ? sanitizeDate(payload.follow_up_date, 'follow_up_date') : '';
+  return updateRowById('Suggestions', payload.id, fields);
+}
+
+function suggestionsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Suggestions', payload.id);
+}
+
+// ---------------------------------------------------------------------------
+// Bills — at most one per booking in practice; separate from Bookings so
+// pay-on-visit/to-collect/paid tracking doesn't clutter the stage fields.
+// ---------------------------------------------------------------------------
+
+var BILL_STATUSES = ['not_applicable', 'pay_on_visit', 'to_collect', 'paid', 'unpaid'];
+
+function billsList(payload) {
+  var rows = sheetToObjects('Bills');
+  if (payload && payload.booking_id) rows = rows.filter(function (r) { return r.booking_id === payload.booking_id; });
+  if (payload && payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
+  return rows;
+}
+
+function billsCreate(payload) {
+  requireFields(payload, ['booking_id', 'status']);
+  validateEnum(payload.status, BILL_STATUSES, 'status');
+  return createRow('Bills', {
+    booking_id: payload.booking_id,
+    amount: payload.amount === undefined || payload.amount === '' ? '' : sanitizeNumber(payload.amount, 'amount'),
+    status: payload.status,
+    paid_on: payload.paid_on ? sanitizeDate(payload.paid_on, 'paid_on') : '',
+    receipt_file_id: sanitizeText(payload.receipt_file_id, 100),
+    notes: sanitizeText(payload.notes, 1000)
+  });
+}
+
+function billsUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('amount')) fields.amount = payload.amount === '' ? '' : sanitizeNumber(payload.amount, 'amount');
+  if (payload.hasOwnProperty('status')) { validateEnum(payload.status, BILL_STATUSES, 'status'); fields.status = payload.status; }
+  if (payload.hasOwnProperty('paid_on')) fields.paid_on = payload.paid_on ? sanitizeDate(payload.paid_on, 'paid_on') : '';
+  if (payload.hasOwnProperty('receipt_file_id')) fields.receipt_file_id = sanitizeText(payload.receipt_file_id, 100);
+  if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
+  return updateRowById('Bills', payload.id, fields);
+}
+
+function billsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Bills', payload.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,7 +1981,15 @@ var SHEET_SCHEMA = {
   Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
   FoodLog: ['id', 'date', 'meal', 'items', 'craving_or_aversion', 'notes'],
   Checklist: ['id', 'list', 'item', 'done'],
-  Files: ['id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes', 'mime', 'thumb_file_id'],
+  Files: [
+    'id', 'drive_file_id', 'title', 'type', 'date', 'doctor', 'notes', 'mime', 'thumb_file_id',
+    // Phase 3 (v3): the new six-category Records view. type_v2 is additive
+    // on purpose — the old `type` column (report/scan/prescription/
+    // document) is never rewritten, so nothing already uploaded changes.
+    // A blank type_v2 (every pre-Phase-3 file) means "needs sorting" —
+    // the frontend buckets those separately, nothing is hidden or lost.
+    'type_v2', 'linked_booking_id'
+  ],
   Countdowns: [
     'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',
     'linked_medicine_id', 'show_on_home', 'pinned_order', 'notes', 'done', 'created_at'
@@ -1746,7 +2013,29 @@ var SHEET_SCHEMA = {
   Water: ['id', 'date', 'time', 'glasses', 'created_at'],
   // FoodPrefs: a liked/not-interested list she curates over time — status
   // can change, so `date` is "when this status was last set", not a log.
-  FoodPrefs: ['id', 'name', 'status', 'date', 'notes']
+  FoodPrefs: ['id', 'name', 'status', 'date', 'notes'],
+
+  // --- Phase 3 (v3): bookings, suggestions, bills -----------------------
+  // Bookings replaces the plain Appointments flow for anything booked
+  // (doctor visit, scan, blood test, vaccine, other) that needs real
+  // status tracking. Each stage change stamps its own timestamp so the
+  // frontend can show "report took 2 days 4h" etc. without recomputing
+  // from scratch. Appointments itself is untouched — simple quick-add
+  // appointments (Phase 1) still use it.
+  Bookings: [
+    'id', 'type', 'title', 'provider', 'datetime', 'booked_via', 'location', 'notes',
+    'approx_report_days', 'status', 'booked_at', 'done_at', 'waiting_for_report_at',
+    'report_uploaded_at', 'closed_at', 'closed_without_prescription', 'no_prescription_note', 'created_at'
+  ],
+  // Suggestions: doctor suggestions recorded after a visit (medicine, scan,
+  // blood test, diet/lifestyle advice, follow-up date), each actionable
+  // from the Visits view (add as medicine / book a test / set a countdown)
+  // and tracked to pending/done/skipped.
+  Suggestions: ['id', 'booking_id', 'type', 'text', 'follow_up_date', 'status', 'created_at'],
+  // Bills: at most one per booking in practice, kept separate (not columns
+  // on Bookings) so "pay on visit" / "collect later" / paid-on tracking
+  // doesn't clutter the booking's own stage-tracking fields.
+  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes']
 };
 
 // ss is optional — pass it explicitly from setup() (where SHEET_ID may only
