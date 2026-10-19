@@ -65,6 +65,9 @@ has shipped so far.
 | v3-1 | `Backend: v3 medicine scheduling…` | `Medicines` gains the full scheduling model (`schedule_type, anchor_mode, weekdays, interval_hours/days, month_day, every_n_weeks, total_doses, grace_minutes, instructions, prn_min_gap_hours/max_per_day, phases, reason, pack_id, status, stopped_on, stop_note, source`) — additive via `ensureTabs`, a blank `schedule_type` on an old row still means "daily". `medicines.stop` moves a medicine to history instead of deleting it, keeping the old `active` boolean in sync for the still-unmodified dashboard code. `medicinesLogTaken` now accepts `{status: taken\|skipped\|missed, note, taken_at}` alongside the original `{taken: true/false}` (unchanged, still works) — `taken_at` is the *real* instant a dose was logged, which `anchor_mode: from_last` medicines key their next dose off. New `medicinelog.list` (unbounded, lazy) and a `Packs` entity (`packs.list/create/update/delete/tickAll`). New `test/backend.test.js` (the mock-Apps-Script Node harness, finally committed instead of living only in a scratch file) — 140 assertions, `node test/backend.test.js`. |
 | v3-2 | `js/schedule.js: pure medicine-scheduling engine` | New dependency-free module: `slotsForDay`, `nextDose` (interval, fixed vs. from_last), `courseProgress`, `stockDaysLeft` (daily/weekly/monthly/interval/PRN-average), `weeklyMonthlyDueState` (overdue/due_today/due_soon/upcoming, calendar-based), `canTakeNow` (PRN gap+cap — advisory only, never blocks), `packStatus`, `timeOfDayBucket`. New `test/schedule.test.mjs` — 60 assertions covering every must-pass case from the work order (from_last recompute after a late dose, Mon/Thu course, weekly/monthly due-state incl. Feb/Apr clamping, PRN gap+cap, a course ending mid-week, a rolled-back device clock, pack tick-all/untick), `node test/schedule.test.mjs`. |
 | v3-3 | `Frontend: Home redesign, progressive Add Medicine, Packs, Medicines used` | Home rebuilt: static day-count hero (tap to expand hours/minutes, no more ticking seconds), "Today's medicines" grouped Morning/Afternoon/Evening/Night via `schedule.js`, Packs card (tick-all), "Coming up" (weekly/monthly shots due within 2 days or overdue), pinned countdowns/next appointment/quick actions now open as bottom sheets. New shared bottom-sheet + 6-second-undo-toast infrastructure (`openSheet`/`closeSheet`/`showUndoToast` near the top of `app.js`) — every delete/stop applies locally first and only calls the network if the toast's undo isn't pressed. One shared progressive-disclosure "Add Medicine" sheet (`openMedicineSheet`) used from both Home and the Meds page: chips reveal only their own sub-fields (same show/hide pattern the Countdowns form already used), a live plain-language summary, and the required "Enter exactly what your doctor or the label says" line. New "Medicines used" view (`#/meds/history`). Found and fixed a real pre-existing bug while wiring this up: `store.js`'s mock `todayStr()` formatted via `toISOString()` (UTC) after computing the date in local time — off by a day for part of the day in any timezone ahead of UTC, invisible until `schedule.js`'s real date arithmetic started depending on it. Verified via Playwright against mock mode (every Home section tappable, zero console/page errors, all four sheet types open/close cleanly). `sw.js` bumped to v4 (added `js/schedule.js`). |
+| v3-4 | `Checkins, Symptoms, Water, FoodPrefs` (backend) + `daily check-in, symptoms, water, food, timeline` (frontend) | **Backend**: four new tabs — `Checkins` (mood 1-5 + note, multiple per day), `Symptoms` (14 fixed chips + `custom`, severity, a bleeding/spotting pad-comparison scale, `symptoms.update` only ever writes `note` — a "fix note" added later never rewrites what was actually selected), `Water` (one row per glass tap), `FoodPrefs` (liked/not-interested, re-dated on each status change). None are in `bootstrap` — all lazy/date-ranged. **Frontend**: three new Home cards (check-in with mood faces + symptom chips opening a severity/bleeding-scale sheet, a calm fixed "contact your doctor now" box + Emergency button on a severe selection; water glasses row with the optimistic-add-then-6s-undo pattern; a food quick-add with recent-foods one-tap re-add). Three new views: `#/water` (totals, a 14-day Chart.js bar chart, a goal streak), `#/food` (quick-add, liked/not-interested management, searchable history), `#/timeline` (one chronological feed merging check-ins/symptoms/water/food/medicine-started-stopped/skipped-or-missed-dose-counts/appointments/vitals — entries are always laid side by side, never implying one caused another; a "Show my doctor" toggle re-groups the same filtered entries by type for a cleaner visit summary). `sw.js` -> v5. |
+| v3-5 | `Bookings, Suggestions, Bills, Records type_v2` (backend) + `Bookings, rebuilt Records, Reimbursement` (frontend) | **Backend**: `Bookings` (replaces plain quick-add Appointments for anything needing real status tracking — Booked -> Done -> Waiting for report -> Report uploaded -> Closed, each stage stamping its own timestamp; `bookings.close` enforces a doctor_visit needs an uploaded+linked prescription or an explicit no-prescription note, a scan/blood_test needs its report linked first, vaccine/other close freely), `Suggestions` (doctor suggestions, pending/done/skipped), `Bills` (amount/status/paid_on per booking). `Files` gains `type_v2` (the new six-category typing) and `linked_booking_id` — fully additive; the original `type` column and every existing upload are untouched, anything with no `type_v2` just shows up in a "needs sorting" bucket. New `files.update` for metadata-only edits. **Frontend**: Records rebuilt into folder tiles by `type_v2` + "Needs sorting", with search/date-range/edit-metadata/delete-with-undo. New `#/bookings`: filters, a status-progression button, a Close button that surfaces the backend's real validation error inline, a "prepare" section (questions checklist stored as plain `[x]`-prefixed text on the booking, "what the doctor said last time" auto-pulled from the previous closed booking of the same type, a "since last visit" symptom/medicine summary), after-visit notes + suggestions with one-tap follow-through (add as medicine / book a test / set a countdown — reusing the medicine/countdown sheets with a generalized "is this new" check so a prefilled object without an `id` still creates instead of trying to update), a bill section, upload-and-link-in-one-step for records. New `#/reimbursement`: date-range totals (monthly + grand), missing-report/receipt flags, CSV export, print. `sw.js` -> v6. |
+| v3-6 | `medicine photos/details/expiry, reminder extension` (backend) + `composition search` (frontend) | **Backend**: `Medicines` gains `photo_front_file_id`/`photo_back_file_id` (pointers to `Files` rows, same pattern as `thumb_file_id`), `composition`/`brand`/`strength`/`expiry_date`; `Settings` gains four global on/off switches plus `expiry_alert_days`. Extended the Telegram daily reminder with today's bookings, outstanding report/prescription follow-ups, a leaner GAS-side reimplementation of `schedule.js`'s due-today logic (not a full port — just enough for a once-a-day text summary), weekly/monthly shots due within 2 days, a water-behind-goal nudge, and expiry alerts — finished/stopped medicines excluded everywhere. **Frontend**: the Add Medicine sheet's More section gains brand/strength/composition/expiry (each gated behind its own Settings toggle) and front/back photo capture (client-side canvas resize to <=1600px + JPEG 0.8 before upload, via the existing `files.upload` path as `type_v2: medicine_photo`). Expiry badges on the Meds list and Medicines-used view. Composition search: the Medicines-used search box also matches brand/composition. New Settings "Medicine details" card. `sw.js` -> v7. Polish: confirmed via Playwright that the app still fully loads and is usable completely offline (service worker `activated`, a fresh page navigated while offline renders Home from cache with the "You're offline" banner and zero errors) — this was re-verified after all four phases, not assumed. |
 
 ## Architecture
 
@@ -269,7 +272,12 @@ it (or, in mock mode, self-heals straight past it — see `renderRoute()`).
 | `#/health/new` | Health log, form opened immediately | — (Home "Log vitals") |
 | `#/checklist` | Checklists | — (via More) |
 | `#/countdowns` | Custom countdowns (event/course/interval/recurring/countup) | — (via More) |
-| `#/settings` | Settings (+ Contacts, + sign-out) | — (via More) |
+| `#/water` | Water totals, 14-day chart, goal streak | — (via More) |
+| `#/food` | Food quick-add, liked/not-interested, history | — (via More) |
+| `#/timeline` | Combined chronological feed + "Show my doctor" grouping | — (via More) |
+| `#/bookings` | Booking tracker (status/reports/bills/suggestions) | — (via More) |
+| `#/reimbursement` | Bookings + bills totals, CSV/print | — (via More) |
+| `#/settings` | Settings (+ Contacts, medicine-detail toggles, + sign-out) | — (via More) |
 
 Home and Emergency share one `store.loadBootstrap()` cache — visiting
 Emergency right after Home is instant, no second network round-trip.
@@ -293,21 +301,35 @@ healthlog.list / .create / .update / .delete
 contacts.list / .create / .update / .delete
 foodlog.list / .create / .update / .delete
 checklist.list / .create / .update / .delete
-files.list / .upload / .get / .delete
+files.list / .upload / .get / .update / .delete
 countdowns.list / .add / .update / .delete / .markDone
 packs.list / .create / .update / .delete / .tickAll
+checkins.list / .create / .delete
+symptoms.list / .create / .update / .delete        -- .update only ever writes `note`
+water.list / .add / .delete
+foodprefs.list / .create / .update / .delete
+bookings.list / .create / .update / .delete / .close
+suggestions.list / .create / .update / .delete
+bills.list / .create / .update / .delete
 ```
 
 `medicines.create`/`.update` now also accept the full v3 scheduling fields
 (`schedule_type`, `anchor_mode`, `weekdays`, `interval_hours`,
 `interval_days`, `month_day`, `every_n_weeks`, `total_doses`,
 `grace_minutes`, `instructions`, `prn_min_gap_hours`, `prn_max_per_day`,
-`phases`, `reason`, `pack_id`, `status`, `source`) — all optional, a blank
+`phases`, `reason`, `pack_id`, `status`, `source`) plus the Phase 4 detail
+fields (`photo_front_file_id`, `photo_back_file_id`, `composition`,
+`brand`, `strength`, `expiry_date`) — all optional, a blank
 `schedule_type` still means "daily" (interpreted in `js/schedule.js`, never
 rewritten server-side). `medicines.logTaken` accepts either the original
 `{taken: true/false}` or the richer `{status: taken|skipped|missed, note,
 taken_at}` — both still work, the richer shape is what the v3 frontend
-actually sends.
+actually sends. `files.upload`/`.update` accept `type_v2` (the six-category
+Records typing) and `linked_booking_id`, both optional/additive — a blank
+`type_v2` is how a file ends up in the Records "needs sorting" bucket.
+`bookings.close` enforces the closing rules described in the build-history
+table above rather than letting the frontend decide; its error message is
+meant to be shown to her as-is.
 
 `medicines.logTaken` is an upsert keyed on `(medicine_id, date, time)` —
 calling it twice for the same dose on the same day updates the existing
@@ -463,10 +485,14 @@ plain Node scripts, no framework, no `package.json`/dependencies:
   `backend/Code.gs` and run assertions against it: CRUD round-trips,
   validation rejections, the `medicines.logTaken` upsert path (both the
   old boolean shape and the v3 `status`/`note`/`taken_at` shape), Packs
-  CRUD + `tickAll`, `medicines.stop`, the 8MB file-size limit,
-  `dashboard.get` integration, `data_version` bumping on every write path,
-  schema migration safety (`ensureTabs()` on a simulated pre-v3 sheet), and
-  `bootstrap`'s shape. 140 assertions. Run it after any `Code.gs` change —
+  CRUD + `tickAll`, `medicines.stop`, Bookings' full lifecycle including
+  every `bookings.close` validation branch, Suggestions, Bills,
+  `files.update`/the Records needs-sorting filter, every Phase 2 entity
+  (Checkins/Symptoms/Water/FoodPrefs), the Phase 4 medicine detail fields
+  and every reminder helper, the 8MB file-size limit, `dashboard.get`
+  integration, `data_version` bumping on every write path, schema
+  migration safety (`ensureTabs()` on a simulated pre-v3 sheet), and
+  `bootstrap`'s shape. 223 assertions. Run it after any `Code.gs` change —
   it won't catch everything (it's a fake Apps Script runtime, not the real
   one), but it catches off-by-one row/column bugs and validation gaps
   before you touch Script Properties for real.
@@ -506,24 +532,50 @@ browser.
 
 - **No Telugu strings yet** — `js/i18n.js` is structured for it (just add a
   `"te"` object with the same keys as `"en"`), but no translations exist.
-- **No dedicated Contacts or FoodLog screens** — Contacts live in Settings
-  (feeding the Emergency card); FoodLog is a quick-add section at the
-  bottom of the Guide view. Neither was in the original 10-view list.
-- **Records vault "grid" view doesn't show real thumbnails yet** — v1 shows
-  a type icon, not the actual image. Real per-file thumbnails (client-side
-  generated, uploaded alongside the original, `Files.thumb_file_id`) are
-  v2 step 7 work, not done yet.
-- **No offline write queue yet** — v1/early-v2 writes (medicines, etc.)
-  just fail with an error message if offline; they don't queue and retry
-  on reconnect. That's v2 step 9. The schema is already ready for it
-  (creates accept an optional client-supplied `id` in both the mock and
-  real `createRow`, so a retried/de-duped write won't be a problem once
-  the queue exists), but the actual queue/backoff/de-dupe logic doesn't
-  exist yet.
-- **No `syncFolder` yet** — scanning Drive for files dropped in by hand and
-  adding `Files` rows for them is v2 step 7 work.
+- **No dedicated Contacts screen** — Contacts live in Settings (feeding the
+  Emergency card). Food now has its own dedicated screen (`#/food`, v3
+  Phase 2), so that part of this old trade-off no longer applies.
+- **Records vault "grid" view doesn't show real thumbnails yet** — shows a
+  type icon, not the actual image. Real per-file thumbnails (client-side
+  generated, uploaded alongside the original, `Files.thumb_file_id`) were
+  never built; the column exists but nothing writes to it.
+- **No offline write queue** — writes (medicines, bookings, etc.) just fail
+  with an error message if offline; they don't queue and retry on
+  reconnect. The schema is already ready for it (creates accept an
+  optional client-supplied `id` in both the mock and real `createRow`, so
+  a retried/de-duped write won't be a problem once the queue exists), but
+  the actual queue/backoff/de-dupe logic doesn't exist. What v3 *does* have
+  instead, everywhere a delete/stop/add happens, is the optimistic-local-
+  update-then-6-second-undo-toast pattern — that makes the UI feel instant
+  and reversible, but it is not the same thing as working fully offline:
+  the real network call still has to succeed once the toast expires.
+- **No `syncFolder`** — scanning Drive for files dropped in by hand and
+  adding `Files` rows for them was never built.
+- **Timeline/Reimbursement aren't paginated** — both are bounded by their
+  own default date range (Timeline: last 30 days; Reimbursement: the
+  current month) rather than true pagination, which keeps a typical
+  month's data fetch small without needing more UI chrome. A Sheet with
+  years of history would make the *unfiltered* lazy-loaded lists (e.g.
+  `medicinelog.list` with no `medicine_id`, `files.list` with no filters)
+  slower to fetch — nothing was added to bound those specifically, since
+  every current caller of them already filters.
+- **The Telegram reminder's due-today logic (`getTodaysDueMedicinesV3`) is
+  a leaner reimplementation of `js/schedule.js`, not a full port** — fine
+  for a once-a-day text summary (no late/missed grading, no grace
+  windows, fixed-grid interval medicines are skipped), but the two will
+  occasionally disagree with each other at the edges. The interactive
+  app's own due-status display (`js/schedule.js`) is always the source of
+  truth; the reminder is a convenience nudge.
+- **A "Book this" suggestion action doesn't prefill the booking type** —
+  tapping it from a scan/blood_test suggestion opens a blank booking-create
+  sheet rather than one pre-set to that type. Minor; she just picks the
+  type herself in the two-second form that follows.
 - **Health log reference thresholds are deliberately generic** (BP ≥140/90,
   sugar ≥95 fasting / ≥140 post-meal) — framed as "worth mentioning at the
   next visit," never a diagnosis. These are the kind of numbers that
   legitimately vary by guideline/doctor.
-- **No CI/automated test suite committed** — see "Testing approach" above.
+- **Frontend Playwright tests still aren't committed** — `test/
+  backend.test.js` and `test/schedule.test.mjs` are; the Playwright flows
+  used to verify every phase (see each phase's commit message/build-history
+  row above) remain scratch-only. Turning them into a committed suite would
+  be new work, not a gap introduced by any of this.

@@ -4,18 +4,44 @@ A private, mobile-first PWA for tracking my wife's pregnancy care. Static
 frontend on GitHub Pages, Google Apps Script as the API, Google Sheets +
 Drive as the database. No other backend, no paid services. 2-5 users.
 
-> **v1 and v2 are both complete.** v3 ("friendly Home, real medicine
-> scheduling, daily check-in, bookings and reimbursement, timeline") is the
-> current work order, built in 4 phases, in place on top of v2 rather than
-> starting over. `DEVELOPMENT.md`'s "Build history" table has the full
-> history of all three.
+> **v1, v2 and v3 are all complete.** v3 ("friendly Home, real medicine
+> scheduling, daily check-in, bookings and reimbursement, timeline") was
+> built in 4 phases, in place on top of v2 rather than starting over.
+> `DEVELOPMENT.md`'s "Build history" table has the full history of all
+> three. **Nothing in this repo has been deployed to the real backend by
+> this assistant or pushed to GitHub as part of v3 yet — see "Deploying
+> this update" below for exactly what to do before testing on your phone.**
 
 ## Status (v3 work order)
 
 - [x] Phase 1 — Home redesign, simple medicine entry, schedule engine, packs, history
-- [ ] Phase 2 — daily check-in, symptoms, water, food, timeline
-- [ ] Phase 3 — bookings, doctor visits, records, bills, reimbursement
-- [ ] Phase 4 — medicine photos and details, expiry, polish
+- [x] Phase 2 — daily check-in, symptoms, water, food, timeline
+- [x] Phase 3 — bookings, doctor visits, records, bills, reimbursement
+- [x] Phase 4 — medicine photos and details, expiry, polish
+
+## Deploying this update
+
+All four v3 phases changed `backend/Code.gs` (new tabs, new columns, new
+actions — see `DEVELOPMENT.md`'s build-history table for the full list).
+To get this onto your real backend:
+
+1. Open your Apps Script project's `Code.gs` in the editor.
+2. Select all the existing content and delete it.
+3. Copy the entire contents of `backend/Code.gs` from this repo and paste
+   it in.
+4. Save.
+5. **Deploy → Manage deployments → pencil icon → New version → Deploy.**
+   Never "New deployment" — that would change your `/exec` URL and break
+   `js/defaults.js`.
+
+Nothing in Script Properties needs to change. The migration is automatic:
+the next `bootstrap` call adds every new tab/column to your real Sheet
+without touching anything already there. If you use the Telegram daily
+reminder, no extra setup is needed for its new lines (bookings, water,
+expiry) — they just start appearing once there's matching data.
+
+These commits are local only until you've tested — nothing has been
+pushed to GitHub or deployed by the assistant.
 
 ## Repo layout (target)
 
@@ -255,10 +281,15 @@ above), its URL changes. Two ways to point the app at the new URL:
 
 ## Telegram reminders (optional)
 
-Once this is set up, the app sends a daily morning message (gestational
-week/days-to-go, any appointment in the next 24 hours, and today's medicine
-list) to a Telegram chat, via an Apps Script time-driven trigger. Nothing in
-the frontend depends on this — skip it if you don't want reminders.
+Once this is set up, the app sends a daily morning message to a Telegram
+chat, via an Apps Script time-driven trigger. Nothing in the frontend
+depends on this — skip it if you don't want reminders. As of v3, the
+message includes: gestational week/days-to-go, any appointment or booking
+in the next 24 hours, today's bookings, outstanding report/prescription
+follow-ups, today's due medicines (schedule-aware — daily/weekdays/
+every-few-days/from-last-dose interval medicines), weekly/monthly shots
+due within 2 days (including overdue), a water-behind-goal nudge, and
+expiry alerts — finished/stopped medicines never appear.
 
 1. **Create a bot.** In Telegram, message **[@BotFather](https://t.me/BotFather)**,
    send `/newbot`, and follow the prompts. BotFather replies with a token
