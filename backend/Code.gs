@@ -306,7 +306,11 @@ function recordSuccessfulAuth() {
 var SETTINGS_KEYS = [
   'due_date', 'lmp_date', 'wife_name', 'blood_group', 'allergies',
   'hospital_name', 'hospital_phone', 'hospital_address', 'insurance_info', 'language',
-  'water_goal_glasses' // Phase 2 — defaults to 8 client-side when blank, see js/app.js
+  'water_goal_glasses', // Phase 2 — defaults to 8 client-side when blank, see js/app.js
+  // Phase 4 — global on/off switches for the optional medicine-detail
+  // fields (photos/ingredients/expiry), and the expiry alert window
+  // (defaults to 30 days client-side when blank).
+  'photos_enabled', 'ingredients_enabled', 'expiry_tracking_enabled', 'expiry_alert_days'
 ];
 
 function settingsGet() {
@@ -677,6 +681,14 @@ function medicineFields(payload, isCreate) {
   if (isCreate || payload.hasOwnProperty('reason')) fields.reason = sanitizeText(payload.reason, 500);
   if (isCreate || payload.hasOwnProperty('pack_id')) fields.pack_id = sanitizeText(payload.pack_id, 100);
   if (isCreate || payload.hasOwnProperty('source')) fields.source = sanitizeText(payload.source, 200);
+
+  // --- Phase 4 (v3): optional detail fields, all switchable off globally ---
+  if (isCreate || payload.hasOwnProperty('photo_front_file_id')) fields.photo_front_file_id = sanitizeText(payload.photo_front_file_id, 100);
+  if (isCreate || payload.hasOwnProperty('photo_back_file_id')) fields.photo_back_file_id = sanitizeText(payload.photo_back_file_id, 100);
+  if (isCreate || payload.hasOwnProperty('composition')) fields.composition = sanitizeText(payload.composition, 500);
+  if (isCreate || payload.hasOwnProperty('brand')) fields.brand = sanitizeText(payload.brand, 200);
+  if (isCreate || payload.hasOwnProperty('strength')) fields.strength = sanitizeText(payload.strength, 100);
+  if (isCreate || payload.hasOwnProperty('expiry_date')) fields.expiry_date = payload.expiry_date ? sanitizeDate(payload.expiry_date, 'expiry_date') : '';
 
   if (isCreate) {
     var initialStatus = payload.status || 'active';
@@ -1975,7 +1987,12 @@ var SHEET_SCHEMA = {
     // so nothing here needs a backfill.
     'schedule_type', 'anchor_mode', 'weekdays', 'interval_hours', 'interval_days', 'month_day', 'every_n_weeks',
     'total_doses', 'grace_minutes', 'instructions', 'prn_min_gap_hours', 'prn_max_per_day', 'phases',
-    'reason', 'pack_id', 'status', 'stopped_on', 'stop_note', 'source'
+    'reason', 'pack_id', 'status', 'stopped_on', 'stop_note', 'source',
+    // Phase 4 (v3) — all optional, all switchable off globally via
+    // Settings. Purpose: identify the same composition when the brand
+    // differs. Photos are Files rows (type_v2: medicine_photo); these two
+    // columns just point at their ids, same pattern as thumb_file_id.
+    'photo_front_file_id', 'photo_back_file_id', 'composition', 'brand', 'strength', 'expiry_date'
   ],
   MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken', 'status', 'taken_at', 'note'],
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
@@ -2194,7 +2211,30 @@ function buildDailyReminderMessage() {
     lines.push('⏰ Appointment coming up: ' + soonAppointment.purpose + ' at ' + soonAppointment.when);
   }
 
-  if (dashboard.today_medicines && dashboard.today_medicines.length) {
+  var todaysBookings = getTodaysBookingsForReminder();
+  if (todaysBookings.length) {
+    lines.push('');
+    lines.push("Today's bookings:");
+    todaysBookings.forEach(function (b) { lines.push('• ' + b.when + ' — ' + b.title); });
+  }
+
+  var reportFollowUps = getBookingReportFollowUps();
+  if (reportFollowUps.length) {
+    lines.push('');
+    lines.push('📋 Waiting on:');
+    reportFollowUps.forEach(function (line) { lines.push('• ' + line); });
+  }
+
+  var dueToday = getTodaysDueMedicinesV3();
+  if (dueToday.length) {
+    lines.push('');
+    lines.push("Today's medicines:");
+    dueToday.forEach(function (m) {
+      lines.push('• ' + m.time + ' — ' + m.name + (m.dose ? ' (' + m.dose + ')' : '') + (m.note ? ' ' + m.note : ''));
+    });
+  } else if (dashboard.today_medicines && dashboard.today_medicines.length) {
+    // Fallback for medicines that still have no schedule_type at all
+    // (never migrated through the v3 Add Medicine sheet).
     lines.push('');
     lines.push("Today's medicines:");
     dashboard.today_medicines.forEach(function (m) {
@@ -2202,7 +2242,182 @@ function buildDailyReminderMessage() {
     });
   }
 
+  var upcomingShots = getUpcomingShotsWithinDays(2);
+  if (upcomingShots.length) {
+    lines.push('');
+    lines.push('💉 Due within 2 days:');
+    upcomingShots.forEach(function (line) { lines.push('• ' + line); });
+  }
+
+  var waterLine = getWaterBehindNudge();
+  if (waterLine) {
+    lines.push('');
+    lines.push(waterLine);
+  }
+
+  var expiring = getExpiringMedicines();
+  if (expiring.length) {
+    lines.push('');
+    lines.push('⚠️ Expiry:');
+    expiring.forEach(function (line) { lines.push('• ' + line); });
+  }
+
   return lines.join('\n');
+}
+
+// A lean, message-only reimplementation of js/schedule.js's due-today
+// logic — not the full interactive engine (no late/missed grading, no
+// grace windows), just "is a dose due on the calendar today, and what
+// time". Finished/stopped medicines are always excluded. PRN medicines
+// have no fixed slot, so they're never included here by design.
+function getTodaysDueMedicinesV3() {
+  var today = new Date();
+  var todayStr = formatISODate(today);
+  var weekday = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][today.getDay()];
+  var results = [];
+
+  sheetToObjects('Medicines').forEach(function (m) {
+    if (!m.schedule_type) return; // no v3 schedule — covered by the dashboard fallback instead
+    if (m.status && m.status !== 'active') return;
+    if (m.start_date && dateStrOf(m.start_date) > todayStr) return;
+    if (m.end_date && dateStrOf(m.end_date) < todayStr) return;
+
+    var packNote = m.pack_id ? packNoteFor(m.pack_id) : '';
+    var type = m.schedule_type;
+
+    if (type === 'daily') {
+      splitCommaList(m.times).forEach(function (time) { results.push({ name: m.name, dose: m.dose, time: time, note: packNote }); });
+    } else if (type === 'weekdays') {
+      if (splitCommaList(m.weekdays).indexOf(weekday) === -1) return;
+      splitCommaList(m.times).forEach(function (time) { results.push({ name: m.name, dose: m.dose, time: time, note: packNote }); });
+    } else if (type === 'every_n_days') {
+      var start = parseISODate(m.start_date);
+      if (!start) return;
+      var n = Number(m.interval_days) || 1;
+      var diff = daysBetween(start, today);
+      if (diff < 0 || diff % n !== 0) return;
+      splitCommaList(m.times).forEach(function (time) { results.push({ name: m.name, dose: m.dose, time: time, note: packNote }); });
+    } else if (type === 'interval') {
+      var next = nextIntervalDoseV3(m);
+      if (next && formatISODate(next) === todayStr) {
+        results.push({ name: m.name, dose: m.dose, time: Utilities.formatDate(next, 'Asia/Kolkata', 'HH:mm'), note: packNote });
+      }
+    }
+    // weekly/monthly show up in getUpcomingShotsWithinDays instead, not here.
+  });
+
+  results.sort(function (a, b) { return String(a.time).localeCompare(String(b.time)); });
+  return results;
+}
+
+function packNoteFor(packId) {
+  var pack = getRowById('Packs', packId);
+  return pack ? '(' + pack.name + ')' : '';
+}
+
+function splitCommaList(value) {
+  return String(value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// Mirrors js/schedule.js's nextDose() for an 'interval' medicine, from_last
+// anchor only (fixed-grid interval medicines are rare enough in practice
+// that the daily summary just skips them rather than re-deriving the grid
+// here) — last taken dose + interval_hours.
+function nextIntervalDoseV3(m) {
+  var intervalHours = Number(m.interval_hours);
+  if (!intervalHours) return null;
+  if (m.anchor_mode !== 'from_last') return null;
+  var lastTakenAt = null;
+  sheetToObjects('MedicineLog').forEach(function (log) {
+    if (String(log.medicine_id) !== String(m.id)) return;
+    var taken = log.status === 'taken' || (log.status === undefined && isTruthy(log.taken));
+    if (!taken || !log.taken_at) return;
+    var at = new Date(log.taken_at);
+    if (!lastTakenAt || at > lastTakenAt) lastTakenAt = at;
+  });
+  if (!lastTakenAt) return null;
+  return new Date(lastTakenAt.getTime() + intervalHours * 60 * 60 * 1000);
+}
+
+// Weekly/monthly shots due within N days (including overdue — a missed
+// weekly shot doesn't stop mattering just because the day passed).
+function getUpcomingShotsWithinDays(withinDays) {
+  var today = new Date();
+  var lines = [];
+  sheetToObjects('Medicines').forEach(function (m) {
+    if (m.status && m.status !== 'active') return;
+    if (m.schedule_type !== 'weekly' && m.schedule_type !== 'monthly') return;
+    for (var i = -30; i <= withinDays; i++) {
+      var d = new Date(today.getTime() + i * 24 * 60 * 60 * 1000);
+      var isScheduled = m.schedule_type === 'weekly'
+        ? splitCommaList(m.weekdays).indexOf(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][d.getDay()]) !== -1
+        : d.getDate() === Math.min(Number(m.month_day) || 1, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
+      if (!isScheduled) continue;
+      var wasGiven = sheetToObjects('MedicineLog').some(function (log) {
+        return String(log.medicine_id) === String(m.id) && dateStrOf(log.date) === formatISODate(d) && (log.status === 'taken' || isTruthy(log.taken));
+      });
+      if (wasGiven) continue;
+      var daysAway = i;
+      lines.push(m.name + (daysAway < 0 ? ' (overdue since ' + Utilities.formatDate(d, 'Asia/Kolkata', 'MMM d') + ')' : daysAway === 0 ? ' (today)' : ' (in ' + daysAway + 'd)'));
+      break; // one line per medicine is enough for a daily summary
+    }
+  });
+  return lines;
+}
+
+function getTodaysBookingsForReminder() {
+  var todayStr = formatISODate(new Date());
+  return sheetToObjects('Bookings').filter(function (b) {
+    return dateStrOf(b.datetime) === todayStr && b.status !== 'closed';
+  }).map(function (b) {
+    return { title: b.title, when: Utilities.formatDate(toDateTime(b.datetime), 'Asia/Kolkata', 'h:mm a') };
+  });
+}
+
+// Bookings waiting on a report that's about due, or a doctor visit that's
+// 'done' but still needs its prescription uploaded.
+function getBookingReportFollowUps() {
+  var now = new Date();
+  var lines = [];
+  sheetToObjects('Bookings').forEach(function (b) {
+    if (b.status === 'waiting_for_report' && b.approx_report_days && b.waiting_for_report_at) {
+      var expected = new Date(new Date(b.waiting_for_report_at).getTime() + Number(b.approx_report_days) * 86400000);
+      if (expected <= now) lines.push(b.title + ': report should be ready — check/collect it');
+    }
+    if (b.type === 'doctor_visit' && b.status === 'done') {
+      lines.push(b.title + ': upload the prescription (or close with "no prescription")');
+    }
+  });
+  return lines;
+}
+
+function getWaterBehindNudge() {
+  var settings = settingsGet();
+  var goalGlasses = Number(settings.water_goal_glasses) || 8;
+  var todayStr = formatISODate(new Date());
+  var todayGlasses = sheetToObjects('Water').filter(function (w) { return dateStrOf(w.date) === todayStr; })
+    .reduce(function (sum, w) { return sum + (Number(w.glasses) || 1); }, 0);
+  if (todayGlasses >= goalGlasses) return null;
+  return '💧 ' + todayGlasses + ' of ' + goalGlasses + ' glasses of water so far today.';
+}
+
+// Active medicines with an expiry_date within Settings.expiry_alert_days
+// (default 30) of expiring, or already expired.
+function getExpiringMedicines() {
+  var settings = settingsGet();
+  var alertDays = Number(settings.expiry_alert_days) || 30;
+  var today = new Date();
+  var lines = [];
+  sheetToObjects('Medicines').forEach(function (m) {
+    if (!m.expiry_date) return;
+    if (m.status && m.status !== 'active') return;
+    var expiry = parseISODate(dateStrOf(m.expiry_date));
+    if (!expiry) return;
+    var daysLeft = daysBetween(today, expiry);
+    if (daysLeft < 0) lines.push(m.name + ': expired ' + Math.abs(daysLeft) + ' day(s) ago');
+    else if (daysLeft <= alertDays) lines.push(m.name + ': expires in ' + daysLeft + ' day(s)');
+  });
+  return lines;
 }
 
 function getAppointmentWithin24Hours() {

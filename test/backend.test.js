@@ -155,7 +155,7 @@ setup();
 fakeProps.APP_PIN = "246810";
 check("setup created all 18 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
   "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills".split(",").sort().join(","));
-check("Settings seeded with 11 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 13); // header + 11 keys + data_version
+check("Settings seeded with 15 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 17); // header + 15 keys + data_version
 
 // --- PIN check ---
 check("checkPin correct", checkPin("246810") === true);
@@ -672,6 +672,56 @@ check("billsList filters by booking_id", billsList({ booking_id: visit.id }).eve
 billsDelete({ id: bill.id });
 check("billsDelete removes the row", getRowById("Bills", bill.id) === null);
 throws("billsUpdate requires an id", () => billsUpdate({ status: "paid" }));
+
+// --- Phase 4 (v3): medicine photos/details/expiry ---
+
+const detailedMed = medicinesCreate({
+  name: "Thyronorm", composition: "Levothyroxine Sodium", brand: "Thyronorm", strength: "50mcg",
+  expiry_date: "2027-06-30", photo_front_file_id: "file-abc", photo_back_file_id: "file-def"
+});
+check("medicine created with Phase 4 detail fields", detailedMed.composition === "Levothyroxine Sodium" &&
+  detailedMed.brand === "Thyronorm" && detailedMed.strength === "50mcg" && detailedMed.expiry_date === "2027-06-30" &&
+  detailedMed.photo_front_file_id === "file-abc" && detailedMed.photo_back_file_id === "file-def");
+
+const detailedMedUpdated = medicinesUpdate({ id: detailedMed.id, expiry_date: "" });
+check("medicines.update can clear expiry_date", detailedMedUpdated.expiry_date === "");
+
+check("ensureTabs() adds the Phase 4 Medicines columns", (() => {
+  const headers = fakeSS.sheets.Medicines.rows[0];
+  return ["photo_front_file_id", "photo_back_file_id", "composition", "brand", "strength", "expiry_date"].every((h) => headers.includes(h));
+})());
+
+settingsSet({ photos_enabled: false, ingredients_enabled: true, expiry_tracking_enabled: true, expiry_alert_days: 45 });
+const settingsAfterPhase4 = settingsGet();
+check("Phase 4 settings toggles round-trip", settingsAfterPhase4.photos_enabled === "false" &&
+  settingsAfterPhase4.ingredients_enabled === "true" && settingsAfterPhase4.expiry_alert_days === "45");
+
+// --- Phase 4 reminder helpers ---
+
+// From-last interval medicine due today, via the reminder's own GAS-side
+// nextIntervalDoseV3 (a leaner twin of js/schedule.js's nextDose).
+const reminderMed = medicinesCreate({ name: "Amoxicillin (reminder test)", schedule_type: "interval", anchor_mode: "from_last", interval_hours: 8, times: "08:00", start_date: formatISODate(new Date()) });
+medicinesLogTaken({ medicine_id: reminderMed.id, date: formatISODate(new Date()), time: "08:00", status: "taken", taken_at: new Date().toISOString() });
+const dueTodayV3 = getTodaysDueMedicinesV3();
+check("getTodaysDueMedicinesV3 includes an interval medicine due later today", dueTodayV3.some((m) => m.name === "Amoxicillin (reminder test)"));
+
+const dailyReminderMed = medicinesCreate({ name: "Reminder daily med", schedule_type: "daily", times: "09:00", start_date: formatISODate(new Date()) });
+check("getTodaysDueMedicinesV3 includes a daily medicine", getTodaysDueMedicinesV3().some((m) => m.name === "Reminder daily med"));
+
+const stoppedReminderMed = medicinesCreate({ name: "Stopped reminder med", schedule_type: "daily", times: "09:00", start_date: formatISODate(new Date()), status: "stopped" });
+check("getTodaysDueMedicinesV3 excludes a stopped medicine", !getTodaysDueMedicinesV3().some((m) => m.name === "Stopped reminder med"));
+
+const expiringMed = medicinesCreate({ name: "Expiring soon med", expiry_date: formatISODate(new Date(Date.now() + 5 * 86400000)) });
+settingsSet({ expiry_alert_days: 30 });
+check("getExpiringMedicines flags a medicine expiring within the alert window", getExpiringMedicines().some((line) => line.indexOf("Expiring soon med") === 0));
+const expiredMed = medicinesCreate({ name: "Already expired med", expiry_date: formatISODate(new Date(Date.now() - 5 * 86400000)) });
+check("getExpiringMedicines flags an already-expired medicine", getExpiringMedicines().some((line) => line.indexOf("Already expired med") === 0 && line.indexOf("expired") !== -1));
+
+const todaysBookingsForReminder = bookingsCreate({ type: "doctor_visit", title: "Reminder test visit", datetime: new Date().toISOString() });
+check("getTodaysBookingsForReminder includes a booking scheduled today", getTodaysBookingsForReminder().some((b) => b.title === "Reminder test visit"));
+
+const reminderMessage = buildDailyReminderMessage();
+check("buildDailyReminderMessage runs end-to-end without throwing", typeof reminderMessage === "string" && reminderMessage.length > 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
