@@ -1422,6 +1422,7 @@ function bookingsCreate(payload) {
     booked_at: now,
     done_at: '', waiting_for_report_at: '', report_uploaded_at: '', closed_at: '',
     closed_without_prescription: false, no_prescription_note: '',
+    questions: '',
     created_at: now
   });
 }
@@ -1441,6 +1442,7 @@ function bookingsUpdate(payload) {
   if (payload.hasOwnProperty('location')) fields.location = sanitizeText(payload.location, 300);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 2000);
   if (payload.hasOwnProperty('approx_report_days')) fields.approx_report_days = sanitizeNumber(payload.approx_report_days, 'approx_report_days');
+  if (payload.hasOwnProperty('questions')) fields.questions = sanitizeText(payload.questions, 4000);
   if (payload.hasOwnProperty('status')) {
     validateEnum(payload.status, BOOKING_STATUSES, 'status');
     fields.status = payload.status;
@@ -2025,7 +2027,11 @@ var SHEET_SCHEMA = {
   Bookings: [
     'id', 'type', 'title', 'provider', 'datetime', 'booked_via', 'location', 'notes',
     'approx_report_days', 'status', 'booked_at', 'done_at', 'waiting_for_report_at',
-    'report_uploaded_at', 'closed_at', 'closed_without_prescription', 'no_prescription_note', 'created_at'
+    'report_uploaded_at', 'closed_at', 'closed_without_prescription', 'no_prescription_note', 'created_at',
+    // questions: her own "questions to ask" checklist for this visit, kept
+    // as plain text (one question per line, a leading "[x] " marking it
+    // ticked) rather than a separate tab — simple enough not to need one.
+    'questions'
   ],
   // Suggestions: doctor suggestions recorded after a visit (medicine, scan,
   // blood test, diet/lifestyle advice, follow-up date), each actionable

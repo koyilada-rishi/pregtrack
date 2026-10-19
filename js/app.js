@@ -115,6 +115,8 @@ const ROUTES = {
   "/water": { render: renderWaterView, navKey: null, title: () => t("water.title") },
   "/food": { render: renderFoodView, navKey: null, title: () => t("food.title") },
   "/timeline": { render: renderTimelineView, navKey: null, title: () => t("timeline.title") },
+  "/bookings": { render: renderBookingsView, navKey: null, title: () => t("bookings.title") },
+  "/reimbursement": { render: renderReimbursementView, navKey: null, title: () => t("reimbursement.title") },
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
 
@@ -1999,8 +2001,8 @@ async function openMedicineSheet(item, onSaved) {
 }
 
 function medicineSheetMarkup(item, packs) {
-  const isNew = item === "new";
-  const m = isNew ? {} : item;
+  const isNew = item === "new" || !item.id;
+  const m = item === "new" ? {} : item; // a prefilled object (e.g. from a doctor suggestion) keeps its fields even though it's still "new"
   const type = schedule.effectiveScheduleType(m);
   const times = schedule.parseTimesList(m);
   const weekdaysList = schedule.parseWeekdaysList(m);
@@ -2251,7 +2253,7 @@ function attachChipHandler(sheetEl, btn) {
 }
 
 function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
-  const isNew = item === "new";
+  const isNew = item === "new" || !item.id;
   const form = sheetEl.querySelector("#med-sheet-form");
 
   sheetEl.querySelectorAll("[data-chip-group]").forEach((btn) => attachChipHandler(sheetEl, btn));
@@ -2447,7 +2449,7 @@ function openCountdownSheet(item, medicines, onSaved) {
 }
 
 function attachCountdownSheetHandlers(sheetEl, item, onSaved) {
-  const isNew = item === "new";
+  const isNew = item === "new" || !item.id;
   const form = sheetEl.querySelector("#countdown-form");
   if (!form) return; // defensive — countdownFormMarkup always renders one, but don't crash if that ever changes
 
@@ -3516,16 +3518,26 @@ function numOrNull(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Records vault
+// Records vault (rebuilt for Phase 3) — organised by type_v2 into folder
+// tiles (Prescriptions/Lab reports/Scan reports/Bills & receipts/Medicine
+// photos/Other), plus a "Needs sorting" bucket for anything uploaded before
+// this categorization existed. List/grid, search, date range, linked-
+// booking filter, sort by date, edit metadata, delete-with-undo. Upload/
+// thumbnails/viewer all carried over unchanged from before.
 // ---------------------------------------------------------------------------
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const RECORD_TYPE_V2_ORDER = ["prescription", "lab_report", "scan_report", "bill", "medicine_photo", "other"];
+const RECORD_TYPE_V2_ICONS = { prescription: "💊", lab_report: "📄", scan_report: "🩻", bill: "🧾", medicine_photo: "📷", other: "🗂️" };
+// Old v1/v2 type values, kept only for display on rows that still have no
+// type_v2 (the "needs sorting" bucket) — never written to new uploads.
 const RECORD_TYPE_ICONS = { report: "📄", scan: "🩻", prescription: "💊", document: "🗂️" };
 
 const recordsState = {
   files: [],
   loading: true,
-  filterType: "",
+  folderFilter: "", // "" = folder-tile view; a type_v2 or "needs_sorting" = list filtered to it
+  search: "",
   filterFrom: "",
   filterTo: "",
   viewMode: "list",
@@ -3542,7 +3554,7 @@ async function renderRecordsView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
   try {
-    await reloadRecords();
+    recordsState.files = await store.call("files.list", {});
     recordsState.loading = false;
     renderRecordsBody(outlet);
   } catch (err) {
@@ -3552,12 +3564,19 @@ async function renderRecordsView(outlet) {
   }
 }
 
-async function reloadRecords() {
-  const payload = {};
-  if (recordsState.filterType) payload.type = recordsState.filterType;
-  if (recordsState.filterFrom) payload.date_from = recordsState.filterFrom;
-  if (recordsState.filterTo) payload.date_to = recordsState.filterTo;
-  recordsState.files = await store.call("files.list", payload);
+function recordsFiltered() {
+  const search = recordsState.search.trim().toLowerCase();
+  return recordsState.files.filter((f) => {
+    if (recordsState.folderFilter === "needs_sorting" && f.type_v2) return false;
+    if (recordsState.folderFilter && recordsState.folderFilter !== "needs_sorting" && f.type_v2 !== recordsState.folderFilter) return false;
+    if (recordsState.filterFrom && f.date < recordsState.filterFrom) return false;
+    if (recordsState.filterTo && f.date > recordsState.filterTo) return false;
+    if (search) {
+      const haystack = [f.title, f.doctor, f.notes].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  }).sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)));
 }
 
 function renderRecordsBody(outlet) {
@@ -3571,27 +3590,38 @@ function renderRecordsBody(outlet) {
     attachUploadHandlers(outlet);
     return;
   }
-  outlet.innerHTML = recordsListMarkup();
+  outlet.innerHTML = recordsState.folderFilter ? recordsListMarkup() : recordsFolderTilesMarkup();
   attachRecordsListHandlers(outlet);
 }
 
-function recordsListMarkup() {
+function recordsFolderTilesMarkup() {
+  const countOf = (ty) => recordsState.files.filter((f) => ty === "needs_sorting" ? !f.type_v2 : f.type_v2 === ty).length;
   return `
+    <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
+    <div class="records-grid">
+      ${[...RECORD_TYPE_V2_ORDER, "needs_sorting"].map((ty) => `
+        <button class="record-card" data-open-folder="${ty}">
+          <span class="record-type-icon">${ty === "needs_sorting" ? "📥" : RECORD_TYPE_V2_ICONS[ty]}</span>
+          <span class="record-card-title">${t(ty === "needs_sorting" ? "records.needsSorting" : "records.type." + ty)}</span>
+          <span class="muted">${t("records.folderCount", { n: countOf(ty) })}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function recordsListMarkup() {
+  const rows = recordsFiltered();
+  return `
+    <button class="btn-link" id="records-back-to-folders">${t("common.back")}</button>
     <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
 
     <div class="card">
-      <div class="records-filter-bar">
-        ${formField(
-          t("records.filter.type"),
-          `<select class="field" id="filter-type">
-            <option value="">${t("records.filter.allTypes")}</option>
-            ${["report", "scan", "prescription", "document"].map((ty) => `<option value="${ty}" ${recordsState.filterType === ty ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}
-          </select>`
-        )}
-        <div class="records-date-range">
-          ${formField(t("records.filter.from"), `<input class="field" type="date" id="filter-from" value="${escapeHtml(recordsState.filterFrom)}" />`)}
-          ${formField(t("records.filter.to"), `<input class="field" type="date" id="filter-to" value="${escapeHtml(recordsState.filterTo)}" />`)}
-        </div>
+      <h2>${t(recordsState.folderFilter === "needs_sorting" ? "records.needsSorting" : "records.type." + recordsState.folderFilter)}</h2>
+      <input class="field" id="records-search" placeholder="${t("records.filter.search")}" value="${escapeHtml(recordsState.search)}" />
+      <div class="records-date-range">
+        ${formField(t("records.filter.from"), `<input class="field" type="date" id="filter-from" value="${escapeHtml(recordsState.filterFrom)}" />`)}
+        ${formField(t("records.filter.to"), `<input class="field" type="date" id="filter-to" value="${escapeHtml(recordsState.filterTo)}" />`)}
       </div>
       <div class="view-toggle">
         <button class="btn-link ${recordsState.viewMode === "list" ? "view-toggle-active" : ""}" id="view-list-btn">${t("records.view.list")}</button>
@@ -3600,19 +3630,23 @@ function recordsListMarkup() {
     </div>
 
     ${
-      recordsState.files.length
+      rows.length
         ? recordsState.viewMode === "grid"
-          ? `<div class="records-grid">${recordsState.files.map((f) => recordCardMarkup(f)).join("")}</div>`
-          : `<div class="card"><ul class="entity-list">${recordsState.files.map((f) => recordRowMarkup(f)).join("")}</ul></div>`
+          ? `<div class="records-grid">${rows.map((f) => recordCardMarkup(f)).join("")}</div>`
+          : `<div class="card"><ul class="entity-list">${rows.map((f) => recordRowMarkup(f)).join("")}</ul></div>`
         : `<div class="card"><p class="empty">${t("records.none")}</p></div>`
     }
   `;
 }
 
+function recordIcon(f) {
+  return f.type_v2 ? RECORD_TYPE_V2_ICONS[f.type_v2] : (RECORD_TYPE_ICONS[f.type] || "🗂️");
+}
+
 function recordCardMarkup(f) {
   return `
     <button class="record-card" data-view-file="${escapeHtml(f.id)}">
-      <span class="record-type-icon">${RECORD_TYPE_ICONS[f.type] || "🗂️"}</span>
+      <span class="record-type-icon">${recordIcon(f)}</span>
       <span class="record-card-title">${escapeHtml(f.title)}</span>
       <span class="muted">${escapeHtml(formatDisplayDate(f.date))}</span>
     </button>
@@ -3623,10 +3657,11 @@ function recordRowMarkup(f) {
   return `
     <li class="entity-row">
       <button class="entity-main record-row-main" data-view-file="${escapeHtml(f.id)}">
-        <strong>${RECORD_TYPE_ICONS[f.type] || "🗂️"} ${escapeHtml(f.title)}</strong>
-        <span class="muted">${escapeHtml(t("records.type." + f.type))} · ${escapeHtml(formatDisplayDate(f.date))}${f.doctor ? " · " + escapeHtml(f.doctor) : ""}</span>
+        <strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong>
+        <span class="muted">${escapeHtml(formatDisplayDate(f.date))}${f.doctor ? " · " + escapeHtml(f.doctor) : ""}${!f.type_v2 ? " · " + escapeHtml(t("records.needsSorting")) : ""}</span>
       </button>
       <div class="entity-actions">
+        <button class="btn-link" data-edit-file="${escapeHtml(f.id)}">${t("common.edit")}</button>
         <button class="btn-link btn-link--danger" data-delete-file="${escapeHtml(f.id)}">${t("common.delete")}</button>
       </div>
     </li>
@@ -3634,24 +3669,32 @@ function recordRowMarkup(f) {
 }
 
 function attachRecordsListHandlers(outlet) {
-  outlet.querySelector("#add-record-btn").addEventListener("click", () => {
-    recordsState.uploadOpen = true;
-    renderRecordsBody(outlet);
-  });
+  const addBtn = outlet.querySelector("#add-record-btn");
+  if (addBtn) addBtn.addEventListener("click", () => { recordsState.uploadOpen = true; renderRecordsBody(outlet); });
 
-  const refilter = async () => {
-    recordsState.filterType = outlet.querySelector("#filter-type").value;
+  outlet.querySelectorAll("[data-open-folder]").forEach((btn) => {
+    btn.addEventListener("click", () => { recordsState.folderFilter = btn.dataset.openFolder; renderRecordsBody(outlet); });
+  });
+  const backBtn = outlet.querySelector("#records-back-to-folders");
+  if (backBtn) backBtn.addEventListener("click", () => { recordsState.folderFilter = ""; renderRecordsBody(outlet); });
+
+  const search = outlet.querySelector("#records-search");
+  if (search) search.addEventListener("input", (event) => { recordsState.search = event.target.value; renderRecordsBody(outlet); });
+
+  const refilterDates = () => {
     recordsState.filterFrom = outlet.querySelector("#filter-from").value;
     recordsState.filterTo = outlet.querySelector("#filter-to").value;
-    await reloadRecords();
     renderRecordsBody(outlet);
   };
-  outlet.querySelector("#filter-type").addEventListener("change", refilter);
-  outlet.querySelector("#filter-from").addEventListener("change", refilter);
-  outlet.querySelector("#filter-to").addEventListener("change", refilter);
+  const fromInput = outlet.querySelector("#filter-from");
+  if (fromInput) fromInput.addEventListener("change", refilterDates);
+  const toInput = outlet.querySelector("#filter-to");
+  if (toInput) toInput.addEventListener("change", refilterDates);
 
-  outlet.querySelector("#view-list-btn").addEventListener("click", () => { recordsState.viewMode = "list"; renderRecordsBody(outlet); });
-  outlet.querySelector("#view-grid-btn").addEventListener("click", () => { recordsState.viewMode = "grid"; renderRecordsBody(outlet); });
+  const listBtn = outlet.querySelector("#view-list-btn");
+  if (listBtn) listBtn.addEventListener("click", () => { recordsState.viewMode = "list"; renderRecordsBody(outlet); });
+  const gridBtn = outlet.querySelector("#view-grid-btn");
+  if (gridBtn) gridBtn.addEventListener("click", () => { recordsState.viewMode = "grid"; renderRecordsBody(outlet); });
 
   outlet.querySelectorAll("[data-view-file]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -3667,14 +3710,81 @@ function attachRecordsListHandlers(outlet) {
     });
   });
 
+  outlet.querySelectorAll("[data-edit-file]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const file = recordsState.files.find((f) => f.id === btn.dataset.editFile);
+      openFileMetadataSheet(file, () => renderRecordsView(outlet));
+    });
+  });
+
   outlet.querySelectorAll("[data-delete-file]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!confirm(t("records.confirmDelete"))) return;
+    btn.addEventListener("click", () => {
+      const idx = recordsState.files.findIndex((f) => f.id === btn.dataset.deleteFile);
+      if (idx === -1) return;
+      const removed = recordsState.files[idx];
+      recordsState.files.splice(idx, 1);
+      renderRecordsBody(outlet);
+      showUndoToast(t("records.deletedToast", { title: removed.title }), {
+        onUndo: () => { recordsState.files.splice(idx, 0, removed); renderRecordsBody(outlet); },
+        onCommit: async () => {
+          try {
+            await store.call("files.delete", { id: removed.id });
+          } catch (err) {
+            recordsState.files.splice(idx, 0, removed);
+            renderRecordsBody(outlet);
+            alert(err.message || t("common.error"));
+          }
+        }
+      });
+    });
+  });
+}
+
+function openFileMetadataSheet(file, onSaved) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("records.editMetadata")}</h2>
+    <form id="file-meta-form">
+      ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(file.title)}" />`)}
+      ${formField(
+        t("records.upload.type"),
+        `<select class="field" name="type_v2">
+          <option value="">${t("records.needsSorting")}</option>
+          ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}" ${file.type_v2 === ty ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}
+        </select>`
+      )}
+      ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(dateStrOf(file.date))}" />`)}
+      ${formField(t("records.upload.doctor"), `<input class="field" name="doctor" value="${escapeHtml(file.doctor)}" />`)}
+      ${formField(t("records.upload.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(file.notes)}</textarea>`)}
+      <p class="error-text" id="file-meta-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="file-meta-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary" id="file-meta-save">${t("common.save")}</button>
+      </div>
+    </form>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#file-meta-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#file-meta-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const saveBtn = sheetEl.querySelector("#file-meta-save");
+      saveBtn.disabled = true;
       try {
-        await store.call("files.delete", { id: btn.dataset.deleteFile });
-        await renderRecordsView(outlet);
+        await store.call("files.update", {
+          id: file.id,
+          title: fd.get("title").trim(),
+          type_v2: fd.get("type_v2") || "",
+          date: fd.get("date"),
+          doctor: fd.get("doctor").trim(),
+          notes: fd.get("notes").trim()
+        });
+        closeSheet();
+        await onSaved();
       } catch (err) {
-        alert(err.message || t("common.error"));
+        saveBtn.disabled = false;
+        const errEl = sheetEl.querySelector("#file-meta-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
       }
     });
   });
@@ -3709,8 +3819,8 @@ function uploadFormMarkup() {
           ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(pending.filename.replace(/\.[^.]+$/, ""))}" />`)}
           ${formField(
             t("records.upload.type"),
-            `<select class="field" name="type" required>
-              ${["report", "scan", "prescription", "document"].map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
+            `<select class="field" name="type_v2" required>
+              ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
             </select>`
           )}
           ${formField(t("records.upload.date"), `<input class="field" type="date" name="date" value="${escapeHtml(formatDateInput(new Date()))}" />`)}
@@ -3777,7 +3887,8 @@ function attachUploadHandlers(outlet) {
       try {
         await store.call("files.upload", {
           title: fd.get("title").trim(),
-          type: fd.get("type"),
+          type: "document", // legacy column, kept populated for back-compat; type_v2 is the real category now
+          type_v2: fd.get("type_v2"),
           date: fd.get("date"),
           doctor: fd.get("doctor").trim(),
           notes: fd.get("notes").trim(),
@@ -3804,7 +3915,7 @@ function fileViewerMarkup(file) {
     <button class="btn-link" id="viewer-back">${t("common.back")}</button>
     <div class="card">
       <h2>${escapeHtml(file.title)}</h2>
-      <p class="muted">${escapeHtml(t("records.type." + file.type))} · ${escapeHtml(formatDisplayDate(file.date))}${file.doctor ? " · " + escapeHtml(file.doctor) : ""}</p>
+      <p class="muted">${escapeHtml(formatDisplayDate(file.date))}${file.doctor ? " · " + escapeHtml(file.doctor) : ""}</p>
       ${file.notes ? `<p class="muted">${escapeHtml(file.notes)}</p>` : ""}
       ${
         isImage
@@ -3835,6 +3946,712 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// ---------------------------------------------------------------------------
+// Bookings — the real tracker for doctor visits/scans/blood tests/vaccines
+// (Phase 3). The plain Visits tab (#/visits, Phase 1) still exists for a
+// quick appointment with nothing else to track; this is for anything that
+// needs status, a report, a bill. Reachable from More.
+// ---------------------------------------------------------------------------
+
+const BOOKING_TYPES_LIST = ["doctor_visit", "scan", "blood_test", "vaccine", "other"];
+const BOOKING_STATUSES_LIST = ["booked", "done", "waiting_for_report", "report_uploaded", "closed"];
+const BOOKING_NEXT_STATUS = { booked: "done", done: "waiting_for_report", waiting_for_report: "report_uploaded", report_uploaded: "closed" };
+const BOOKING_TYPE_ICON = { doctor_visit: "🩺", scan: "🩻", blood_test: "🩸", vaccine: "💉", other: "📋" };
+const SUGGESTION_TYPES_LIST = ["medicine", "scan", "blood_test", "diet_lifestyle", "follow_up"];
+const BILL_STATUSES_LIST = ["not_applicable", "pay_on_visit", "to_collect", "paid", "unpaid"];
+
+const bookingsState = {
+  bookings: [], bills: [], loading: true,
+  typeFilter: "all", statusFilter: "all", billFilter: "all",
+  detail: null, detailSuggestions: [], detailBill: null, detailFiles: [], detailPrevVisitNotes: "", detailSinceLastVisit: []
+};
+
+async function renderBookingsView(outlet) {
+  bookingsState.loading = true;
+  bookingsState.detail = null;
+  outlet.innerHTML = genericSkeleton(5);
+  try {
+    const [bookings, bills] = await Promise.all([store.call("bookings.list", {}), store.call("bills.list", {})]);
+    bookingsState.bookings = bookings;
+    bookingsState.bills = bills;
+    bookingsState.loading = false;
+    renderBookingsBody(outlet);
+  } catch (err) {
+    bookingsState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderBookingsView(outlet));
+  }
+}
+
+function renderBookingsBody(outlet) {
+  if (bookingsState.detail) {
+    outlet.innerHTML = bookingDetailMarkup(bookingsState.detail);
+    attachBookingDetailHandlers(outlet);
+    return;
+  }
+  outlet.innerHTML = bookingsListMarkup();
+  attachBookingsListHandlers(outlet);
+}
+
+function billForBooking(bookingId) {
+  return bookingsState.bills.find((b) => b.booking_id === bookingId) || null;
+}
+
+function bookingsListMarkup() {
+  const rows = bookingsState.bookings.filter((b) => {
+    if (bookingsState.typeFilter !== "all" && b.type !== bookingsState.typeFilter) return false;
+    if (bookingsState.statusFilter !== "all" && b.status !== bookingsState.statusFilter) return false;
+    if (bookingsState.billFilter === "unpaid") {
+      const bill = billForBooking(b.id);
+      if (!bill || bill.status !== "unpaid") return false;
+    }
+    if (bookingsState.billFilter === "pending_report" && b.status !== "waiting_for_report") return false;
+    if (bookingsState.billFilter === "pending_prescription" && !(b.type === "doctor_visit" && b.status === "done")) return false;
+    return true;
+  }).sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
+
+  return `
+    <button class="btn btn-primary" id="add-booking-btn">${t("bookings.add")}</button>
+    <div class="card">
+      <p class="field-label">${t("bookings.filter.type")}</p>
+      <div class="chip-row">${["all", ...BOOKING_TYPES_LIST].map((ty) => `<button type="button" class="chip ${bookingsState.typeFilter === ty ? "chip-selected" : ""}" data-booking-type-filter="${ty}">${ty === "all" ? t("bookings.filter.all") : t("bookings.type." + ty)}</button>`).join("")}</div>
+      <p class="field-label">${t("bookings.filter.status")}</p>
+      <div class="chip-row">${["all", ...BOOKING_STATUSES_LIST].map((s) => `<button type="button" class="chip ${bookingsState.statusFilter === s ? "chip-selected" : ""}" data-booking-status-filter="${s}">${s === "all" ? t("bookings.filter.all") : t("bookings.status." + s)}</button>`).join("")}</div>
+      <p class="field-label">${t("bookings.filter.bill")}</p>
+      <div class="chip-row">
+        ${["all", "pending_report", "pending_prescription", "unpaid"].map((f) => `<button type="button" class="chip ${bookingsState.billFilter === f ? "chip-selected" : ""}" data-booking-bill-filter="${f}">${t("bookings.filter.bill." + f)}</button>`).join("")}
+      </div>
+    </div>
+    ${rows.length ? `<div class="card"><ul class="entity-list">${rows.map((b) => bookingRowMarkup(b)).join("")}</ul></div>` : `<div class="card"><p class="empty">${t("bookings.none")}</p></div>`}
+  `;
+}
+
+function bookingRowMarkup(b) {
+  const bill = billForBooking(b.id);
+  return `
+    <li class="entity-row tap-row" data-open-booking="${escapeHtml(b.id)}">
+      <div class="entity-main">
+        <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</strong>
+        <span class="muted">${escapeHtml(b.provider || "")}${b.provider ? " · " : ""}${escapeHtml(formatApptDateTime(b.datetime))}</span>
+        <span class="badge">${t("bookings.status." + b.status)}</span>
+        ${bill ? `<span class="muted">${t("bookings.bill." + bill.status)}${bill.amount ? " · ₹" + escapeHtml(bill.amount) : ""}</span>` : ""}
+      </div>
+    </li>
+  `;
+}
+
+function attachBookingsListHandlers(outlet) {
+  outlet.querySelector("#add-booking-btn").addEventListener("click", () => openBookingCreateSheet(() => renderBookingsView(outlet)));
+
+  outlet.querySelectorAll("[data-booking-type-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => { bookingsState.typeFilter = btn.dataset.bookingTypeFilter; renderBookingsBody(outlet); });
+  });
+  outlet.querySelectorAll("[data-booking-status-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => { bookingsState.statusFilter = btn.dataset.bookingStatusFilter; renderBookingsBody(outlet); });
+  });
+  outlet.querySelectorAll("[data-booking-bill-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => { bookingsState.billFilter = btn.dataset.bookingBillFilter; renderBookingsBody(outlet); });
+  });
+
+  outlet.querySelectorAll("[data-open-booking]").forEach((el) => {
+    el.addEventListener("click", async () => {
+      const booking = bookingsState.bookings.find((b) => b.id === el.dataset.openBooking);
+      await openBookingDetail(outlet, booking);
+    });
+  });
+}
+
+function openBookingCreateSheet(onSaved) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("bookings.form.titleNew")}</h2>
+    <form id="booking-create-form">
+      ${formField(t("bookings.form.type"), `<select class="field" name="type">${BOOKING_TYPES_LIST.map((ty) => `<option value="${ty}">${t("bookings.type." + ty)}</option>`).join("")}</select>`)}
+      ${formField(t("bookings.form.title"), `<input class="field" name="title" required />`)}
+      ${formField(t("bookings.form.provider"), `<input class="field" name="provider" />`)}
+      ${formField(t("bookings.form.datetime"), `<input class="field" type="datetime-local" name="datetime" required />`)}
+      ${formField(t("bookings.form.bookedVia"), `<select class="field" name="booked_via"><option value="">—</option>${BOOKING_VIA_LIST.map((v) => `<option value="${v}">${t("bookings.via." + v)}</option>`).join("")}</select>`)}
+      ${formField(t("bookings.form.location"), `<input class="field" name="location" />`)}
+      ${formField(t("bookings.form.approxReportDays"), `<input class="field" type="number" min="0" name="approx_report_days" />`, t("bookings.form.approxReportDaysHint"))}
+      <p class="error-text" id="booking-create-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="booking-create-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary" id="booking-create-save">${t("common.save")}</button>
+      </div>
+    </form>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#booking-create-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#booking-create-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const payload = {
+        type: fd.get("type"), title: fd.get("title").trim(), provider: fd.get("provider").trim(),
+        datetime: fd.get("datetime") ? new Date(fd.get("datetime")).toISOString() : "",
+        booked_via: fd.get("booked_via") || "", location: fd.get("location").trim(),
+        approx_report_days: fd.get("approx_report_days") || ""
+      };
+      const saveBtn = sheetEl.querySelector("#booking-create-save");
+      saveBtn.disabled = true;
+      try {
+        await store.call("bookings.create", payload);
+        closeSheet();
+        await onSaved();
+      } catch (err) {
+        saveBtn.disabled = false;
+        const errEl = sheetEl.querySelector("#booking-create-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  });
+}
+const BOOKING_VIA_LIST = ["call", "online", "in_person", "walk_in"];
+
+async function openBookingDetail(outlet, booking) {
+  outlet.innerHTML = genericSkeleton(5);
+  try {
+    const [suggestions, files] = await Promise.all([
+      store.call("suggestions.list", { booking_id: booking.id }),
+      store.call("files.list", { linked_booking_id: booking.id })
+    ]);
+    bookingsState.detail = booking;
+    bookingsState.detailSuggestions = suggestions;
+    bookingsState.detailBill = billForBooking(booking.id);
+    bookingsState.detailFiles = files;
+
+    // "What the doctor said last time" + "Since last visit" — only
+    // meaningful before the visit happens (status still 'booked').
+    if (booking.status === "booked") {
+      const sameTypePrior = bookingsState.bookings
+        .filter((b) => b.type === booking.type && b.status === "closed" && String(b.datetime) < String(booking.datetime))
+        .sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)))[0];
+      bookingsState.detailPrevVisitNotes = sameTypePrior ? sameTypePrior.notes : "";
+      if (sameTypePrior) {
+        const [symptoms, medicines] = await Promise.all([
+          store.call("symptoms.list", { date_from: dateStrOf(sameTypePrior.datetime), date_to: dateStrOf(booking.datetime) }),
+          store.call("medicines.list", {})
+        ]);
+        const sinceEntries = symptoms.map((s) => ({
+          date: dateStrOf(s.date), time: s.time,
+          summary: (s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key)) + (s.severity ? " · " + t("severity." + s.severity) : "")
+        }));
+        medicines.forEach((m) => {
+          const start = dateStrOf(m.start_date);
+          if (start >= dateStrOf(sameTypePrior.datetime) && start <= dateStrOf(booking.datetime)) {
+            sinceEntries.push({ date: start, time: "00:00", summary: t("timeline.medicineStarted", { name: m.name }) });
+          }
+          const stopped = dateStrOf(m.stopped_on);
+          if (stopped && stopped >= dateStrOf(sameTypePrior.datetime) && stopped <= dateStrOf(booking.datetime)) {
+            sinceEntries.push({ date: stopped, time: "00:01", summary: t("timeline.medicineStopped", { name: m.name }) });
+          }
+        });
+        sinceEntries.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+        bookingsState.detailSinceLastVisit = sinceEntries;
+      } else {
+        bookingsState.detailSinceLastVisit = [];
+      }
+    } else {
+      bookingsState.detailPrevVisitNotes = "";
+      bookingsState.detailSinceLastVisit = [];
+    }
+
+    renderBookingsBody(outlet);
+  } catch (err) {
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderBookingsView(outlet));
+  }
+}
+
+function questionsToItems(text) {
+  return String(text || "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+    const done = line.startsWith("[x]");
+    return { text: line.replace(/^\[[x ]\]\s*/i, ""), done };
+  });
+}
+
+function itemsToQuestionsText(items) {
+  return items.map((it) => `[${it.done ? "x" : " "}] ${it.text}`).join("\n");
+}
+
+function bookingDetailMarkup(b) {
+  const items = questionsToItems(b.questions);
+  const nextStatus = BOOKING_NEXT_STATUS[b.status];
+  const reportDue = b.status === "waiting_for_report" && b.approx_report_days && b.waiting_for_report_at
+    ? new Date(new Date(b.waiting_for_report_at).getTime() + Number(b.approx_report_days) * 86400000)
+    : null;
+
+  return `
+    <button class="btn-link" id="booking-detail-back">${t("common.back")}</button>
+    <div class="card">
+      <h2>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</h2>
+      <p class="muted">${escapeHtml(b.provider || "")}${b.provider ? " · " : ""}${escapeHtml(formatApptDateTime(b.datetime))}${b.location ? " · " + escapeHtml(b.location) : ""}</p>
+      <p><span class="badge">${t("bookings.status." + b.status)}</span></p>
+      ${reportDue ? `<p class="muted">${t("bookings.reportExpected", { date: formatDisplayDate(formatDateInput(reportDue)) })}</p>` : ""}
+      ${bookingStageDurationsMarkup(b)}
+      <div class="form-actions">
+        ${nextStatus ? `<button type="button" class="btn btn-secondary" id="booking-advance-status" data-next-status="${nextStatus}">${t("bookings.markAs", { status: t("bookings.status." + nextStatus) })}</button>` : ""}
+        ${b.status !== "closed" ? `<button type="button" class="btn btn-primary" id="booking-close-btn">${t("bookings.close")}</button>` : ""}
+      </div>
+      <p class="error-text" id="booking-close-error" hidden></p>
+      <button type="button" class="btn-link btn-link--danger" id="booking-delete-btn">${t("common.delete")}</button>
+    </div>
+
+    ${b.status === "booked" ? `
+      <div class="card">
+        <h2>${t("bookings.prepare.title")}</h2>
+        <p class="field-label">${t("bookings.prepare.questions")}</p>
+        <ul class="checklist-items" id="booking-questions-list">
+          ${items.map((it, i) => `
+            <li class="checklist-item">
+              <label class="checklist-check">
+                <input type="checkbox" data-question-index="${i}" ${it.done ? "checked" : ""} />
+                <span>${escapeHtml(it.text)}</span>
+              </label>
+            </li>
+          `).join("")}
+        </ul>
+        <div class="form-actions">
+          <input class="field" id="booking-add-question-input" placeholder="${t("bookings.prepare.addQuestion")}" />
+          <button type="button" class="btn btn-secondary" id="booking-add-question-btn">${t("common.add")}</button>
+        </div>
+
+        ${bookingsState.detailPrevVisitNotes ? `
+          <p class="field-label">${t("bookings.prepare.lastTime")}</p>
+          <p class="muted">${escapeHtml(bookingsState.detailPrevVisitNotes)}</p>
+        ` : ""}
+
+        ${bookingsState.detailSinceLastVisit.length ? `
+          <p class="field-label">${t("bookings.prepare.sinceLastVisit")}</p>
+          <ul>${bookingsState.detailSinceLastVisit.map((e) => `<li>${escapeHtml(formatDisplayDate(e.date))} — ${escapeHtml(e.summary)}</li>`).join("")}</ul>
+        ` : ""}
+      </div>
+    ` : ""}
+
+    ${b.status !== "booked" ? `
+      <div class="card">
+        <h2>${t("bookings.afterVisit.title")}</h2>
+        <textarea class="field" id="booking-notes-input" rows="3" placeholder="${t("bookings.afterVisit.notesPlaceholder")}">${escapeHtml(b.notes)}</textarea>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" id="booking-notes-save">${t("common.save")}</button></div>
+
+        <p class="field-label">${t("bookings.suggestions.title")}</p>
+        ${bookingsState.detailSuggestions.length ? `<ul class="entity-list">${bookingsState.detailSuggestions.map((s) => suggestionRowMarkup(s)).join("")}</ul>` : `<p class="empty">${t("common.none")}</p>`}
+        <div class="form-actions">
+          <select class="field" id="suggestion-type-input">${SUGGESTION_TYPES_LIST.map((ty) => `<option value="${ty}">${t("bookings.suggestionType." + ty)}</option>`).join("")}</select>
+        </div>
+        <div class="form-actions">
+          <input class="field" id="suggestion-text-input" placeholder="${t("bookings.suggestions.textPlaceholder")}" />
+          <button type="button" class="btn btn-secondary" id="suggestion-add-btn">${t("common.add")}</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>${t("bookings.bill.title")}</h2>
+        ${billFormMarkup(bookingsState.detailBill)}
+      </div>
+
+      <div class="card">
+        <h2>${t("bookings.linkedFiles.title")}</h2>
+        ${bookingsState.detailFiles.length ? `<ul class="entity-list">${bookingsState.detailFiles.map((f) => `<li class="entity-row"><div class="entity-main"><strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong></div></li>`).join("")}</ul>` : `<p class="empty">${t("bookings.linkedFiles.none")}</p>`}
+        <button type="button" class="btn btn-secondary" id="booking-link-file-btn">${t("bookings.linkedFiles.upload")}</button>
+      </div>
+    ` : ""}
+  `;
+}
+
+function bookingStageDurationsMarkup(b) {
+  const parts = [];
+  if (b.booked_at && b.done_at) parts.push(t("bookings.duration.toDone", { d: durationDaysHours(b.booked_at, b.done_at) }));
+  if (b.waiting_for_report_at && b.report_uploaded_at) parts.push(t("bookings.duration.reportTook", { d: durationDaysHours(b.waiting_for_report_at, b.report_uploaded_at) }));
+  return parts.length ? `<p class="muted">${parts.join(" · ")}</p>` : "";
+}
+
+function durationDaysHours(fromIso, toIso) {
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if (isNaN(ms) || ms < 0) return "";
+  const dur = formatDuration(ms);
+  return dur.days > 0 ? `${dur.days}d ${dur.hours}h` : `${dur.hours}h`;
+}
+
+function suggestionRowMarkup(s) {
+  const actionLabel = { medicine: "bookings.suggestions.addAsMedicine", scan: "bookings.suggestions.bookTest", blood_test: "bookings.suggestions.bookTest", follow_up: "bookings.suggestions.setCountdown" }[s.type];
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${t("bookings.suggestionType." + s.type)}</strong>
+        <span class="muted">${escapeHtml(s.text)}</span>
+        <span class="badge">${t("bookings.suggestionStatus." + s.status)}</span>
+      </div>
+      <div class="entity-actions">
+        ${actionLabel && s.status === "pending" ? `<button class="btn-link" data-suggestion-action="${escapeHtml(s.id)}">${t(actionLabel)}</button>` : ""}
+        ${s.status === "pending" ? `<button class="btn-link" data-suggestion-done="${escapeHtml(s.id)}">${t("bookings.suggestions.markDone")}</button>` : ""}
+      </div>
+    </li>
+  `;
+}
+
+function billFormMarkup(bill) {
+  const b = bill || { status: "not_applicable", amount: "", paid_on: "", notes: "" };
+  return `
+    <div class="chip-row" id="bill-status-chips">
+      ${BILL_STATUSES_LIST.map((s) => `<button type="button" class="chip ${b.status === s ? "chip-selected" : ""}" data-bill-status="${s}">${t("bookings.bill." + s)}</button>`).join("")}
+    </div>
+    ${formField(t("bookings.bill.amount"), `<input class="field" type="number" min="0" id="bill-amount-input" value="${escapeHtml(b.amount)}" />`)}
+    ${formField(t("bookings.bill.paidOn"), `<input class="field" type="date" id="bill-paid-on-input" value="${escapeHtml(b.paid_on)}" />`)}
+    <div class="form-actions"><button type="button" class="btn btn-secondary" id="bill-save-btn">${t("common.save")}</button></div>
+  `;
+}
+
+function attachBookingDetailHandlers(outlet) {
+  const b = bookingsState.detail;
+  outlet.querySelector("#booking-detail-back").addEventListener("click", () => { bookingsState.detail = null; renderBookingsBody(outlet); });
+
+  const advanceBtn = outlet.querySelector("#booking-advance-status");
+  if (advanceBtn) {
+    advanceBtn.addEventListener("click", async () => {
+      try {
+        const updated = await store.call("bookings.update", { id: b.id, status: advanceBtn.dataset.nextStatus });
+        Object.assign(b, updated);
+        await openBookingDetail(outlet, b);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  const closeBtn = outlet.querySelector("#booking-close-btn");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", async () => {
+      const errEl = outlet.querySelector("#booking-close-error");
+      errEl.hidden = true;
+      try {
+        await store.call("bookings.close", { id: b.id });
+        await renderBookingsView(outlet);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+
+  outlet.querySelector("#booking-delete-btn").addEventListener("click", () => {
+    bookingsState.detail = null;
+    const idx = bookingsState.bookings.findIndex((x) => x.id === b.id);
+    if (idx !== -1) bookingsState.bookings.splice(idx, 1);
+    renderBookingsBody(outlet);
+    showUndoToast(t("bookings.deletedToast", { title: b.title }), {
+      onUndo: () => { if (idx !== -1) bookingsState.bookings.splice(idx, 0, b); bookingsState.detail = b; renderBookingsBody(outlet); },
+      onCommit: async () => {
+        try { await store.call("bookings.delete", { id: b.id }); } catch (err) { alert(err.message || t("common.error")); }
+      }
+    });
+  });
+
+  // --- Prepare: questions checklist ---
+  outlet.querySelectorAll("[data-question-index]").forEach((checkbox) => {
+    checkbox.addEventListener("change", async () => {
+      const items = questionsToItems(b.questions);
+      items[Number(checkbox.dataset.questionIndex)].done = checkbox.checked;
+      const text = itemsToQuestionsText(items);
+      try {
+        const updated = await store.call("bookings.update", { id: b.id, questions: text });
+        b.questions = updated.questions;
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  const addQuestionBtn = outlet.querySelector("#booking-add-question-btn");
+  if (addQuestionBtn) {
+    addQuestionBtn.addEventListener("click", async () => {
+      const input = outlet.querySelector("#booking-add-question-input");
+      const text = input.value.trim();
+      if (!text) return;
+      const items = questionsToItems(b.questions);
+      items.push({ text, done: false });
+      try {
+        const updated = await store.call("bookings.update", { id: b.id, questions: itemsToQuestionsText(items) });
+        b.questions = updated.questions;
+        renderBookingsBody(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  // --- After visit: notes ---
+  const notesSaveBtn = outlet.querySelector("#booking-notes-save");
+  if (notesSaveBtn) {
+    notesSaveBtn.addEventListener("click", async () => {
+      try {
+        const updated = await store.call("bookings.update", { id: b.id, notes: outlet.querySelector("#booking-notes-input").value.trim() });
+        b.notes = updated.notes;
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  // --- Suggestions ---
+  const suggestionAddBtn = outlet.querySelector("#suggestion-add-btn");
+  if (suggestionAddBtn) {
+    suggestionAddBtn.addEventListener("click", async () => {
+      const text = outlet.querySelector("#suggestion-text-input").value.trim();
+      if (!text) return;
+      const type = outlet.querySelector("#suggestion-type-input").value;
+      try {
+        await store.call("suggestions.create", { booking_id: b.id, type, text });
+        await openBookingDetail(outlet, b);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+  outlet.querySelectorAll("[data-suggestion-done]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await store.call("suggestions.update", { id: btn.dataset.suggestionDone, status: "done" });
+        await openBookingDetail(outlet, b);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  outlet.querySelectorAll("[data-suggestion-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const suggestion = bookingsState.detailSuggestions.find((s) => s.id === btn.dataset.suggestionAction);
+      if (!suggestion) return;
+      if (suggestion.type === "medicine") {
+        openMedicineSheet({ reason: suggestion.text, source: "suggestion:" + suggestion.id }, async () => {
+          await store.call("suggestions.update", { id: suggestion.id, status: "done" });
+          await openBookingDetail(outlet, b);
+        });
+      } else if (suggestion.type === "scan" || suggestion.type === "blood_test") {
+        openBookingCreateSheet(async () => {
+          await store.call("suggestions.update", { id: suggestion.id, status: "done" });
+          await renderBookingsView(outlet);
+        });
+      } else if (suggestion.type === "follow_up") {
+        openCountdownSheet({ title: suggestion.text, kind: "event", target_datetime: suggestion.follow_up_date || "" }, [], async () => {
+          await store.call("suggestions.update", { id: suggestion.id, status: "done" });
+          await openBookingDetail(outlet, b);
+        });
+      }
+    });
+  });
+
+  // --- Bill ---
+  let billStatus = (bookingsState.detailBill && bookingsState.detailBill.status) || "not_applicable";
+  outlet.querySelectorAll("[data-bill-status]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      outlet.querySelectorAll("[data-bill-status]").forEach((x) => x.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      billStatus = btn.dataset.billStatus;
+    });
+  });
+  const billSaveBtn = outlet.querySelector("#bill-save-btn");
+  if (billSaveBtn) {
+    billSaveBtn.addEventListener("click", async () => {
+      const amount = outlet.querySelector("#bill-amount-input").value;
+      const paidOn = outlet.querySelector("#bill-paid-on-input").value;
+      try {
+        if (bookingsState.detailBill) {
+          await store.call("bills.update", { id: bookingsState.detailBill.id, status: billStatus, amount, paid_on: paidOn });
+        } else {
+          await store.call("bills.create", { booking_id: b.id, status: billStatus, amount, paid_on: paidOn });
+        }
+        await renderBookingsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  // --- Linked files: upload + link in one step ---
+  const linkFileBtn = outlet.querySelector("#booking-link-file-btn");
+  if (linkFileBtn) {
+    linkFileBtn.addEventListener("click", () => openLinkedFileUploadSheet(b, () => openBookingDetail(outlet, b)));
+  }
+}
+
+function openLinkedFileUploadSheet(booking, onSaved) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("bookings.linkedFiles.upload")}</h2>
+    <label class="btn btn-secondary">
+      ${t("records.upload.chooseFile")}
+      <input type="file" accept="image/*,application/pdf,.doc,.docx" id="linked-file-input" hidden />
+    </label>
+    <p class="error-text" id="linked-file-error" hidden></p>
+    <div id="linked-file-form-holder"></div>
+    <div class="form-actions"><button type="button" class="btn btn-secondary" id="linked-file-cancel">${t("common.cancel")}</button></div>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#linked-file-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#linked-file-input").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const errEl = sheetEl.querySelector("#linked-file-error");
+      if (file.size > MAX_UPLOAD_BYTES) { errEl.textContent = t("records.upload.tooLarge"); errEl.hidden = false; return; }
+      const dataUrl = await readFileAsDataUrl(file);
+      const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+      const defaultType = booking.type === "doctor_visit" ? "prescription" : "lab_report";
+      sheetEl.querySelector("#linked-file-form-holder").innerHTML = `
+        <form id="linked-file-form">
+          ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(file.name.replace(/\.[^.]+$/, ""))}" />`)}
+          ${formField(t("records.upload.type"), `<select class="field" name="type_v2">${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}" ${ty === defaultType ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}</select>`)}
+          <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+        </form>
+      `;
+      sheetEl.querySelector("#linked-file-form").addEventListener("submit", async (submitEvent) => {
+        submitEvent.preventDefault();
+        const fd = new FormData(submitEvent.target);
+        try {
+          await store.call("files.upload", {
+            title: fd.get("title").trim(), type: "document", type_v2: fd.get("type_v2"),
+            date: formatDateInput(new Date()), filename: file.name,
+            mimeType: (match && match[1]) || file.type, base64: match ? match[2] : "",
+            linked_booking_id: booking.id
+          });
+          closeSheet();
+          await onSaved();
+        } catch (err) {
+          errEl.textContent = err.message || t("common.error");
+          errEl.hidden = false;
+        }
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reimbursement — bookings + bills across a date range, totals, CSV/print.
+// ---------------------------------------------------------------------------
+
+const reimbursementState = { bookings: [], bills: [], files: [], loading: true, dateFrom: "", dateTo: "", typeFilter: "all" };
+
+async function renderReimbursementView(outlet) {
+  reimbursementState.loading = true;
+  outlet.innerHTML = genericSkeleton(5);
+  const now = new Date();
+  if (!reimbursementState.dateFrom) reimbursementState.dateFrom = formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1));
+  if (!reimbursementState.dateTo) reimbursementState.dateTo = formatDateInput(now);
+  try {
+    const [bookings, bills, files] = await Promise.all([
+      store.call("bookings.list", {}), store.call("bills.list", {}), store.call("files.list", {})
+    ]);
+    reimbursementState.bookings = bookings;
+    reimbursementState.bills = bills;
+    reimbursementState.files = files;
+    reimbursementState.loading = false;
+    renderReimbursementBody(outlet);
+  } catch (err) {
+    reimbursementState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderReimbursementView(outlet));
+  }
+}
+
+function reimbursementRows() {
+  const { dateFrom, dateTo, typeFilter } = reimbursementState;
+  return reimbursementState.bookings
+    .filter((b) => {
+      const d = dateStrOf(b.datetime);
+      if (d < dateFrom || d > dateTo) return false;
+      if (typeFilter !== "all" && b.type !== typeFilter) return false;
+      return true;
+    })
+    .map((b) => {
+      const bill = reimbursementState.bills.find((x) => x.booking_id === b.id);
+      const files = reimbursementState.files.filter((f) => f.linked_booking_id === b.id);
+      return {
+        booking: b, bill,
+        hasReport: files.some((f) => f.type_v2 === "lab_report" || f.type_v2 === "scan_report"),
+        hasPrescription: files.some((f) => f.type_v2 === "prescription")
+      };
+    })
+    .sort((a, b) => String(b.booking.datetime).localeCompare(String(a.booking.datetime)));
+}
+
+function renderReimbursementBody(outlet) {
+  const rows = reimbursementRows();
+  const grandTotal = rows.reduce((sum, r) => sum + (r.bill && r.bill.amount ? Number(r.bill.amount) : 0), 0);
+  const monthlyTotals = {};
+  rows.forEach((r) => {
+    const month = dateStrOf(r.booking.datetime).slice(0, 7);
+    monthlyTotals[month] = (monthlyTotals[month] || 0) + (r.bill && r.bill.amount ? Number(r.bill.amount) : 0);
+  });
+
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("reimbursement.title")}</h2>
+      <div class="form-actions">
+        <input class="field" type="date" id="reimb-from" value="${escapeHtml(reimbursementState.dateFrom)}" />
+        <input class="field" type="date" id="reimb-to" value="${escapeHtml(reimbursementState.dateTo)}" />
+      </div>
+      <div class="chip-row">${["all", ...BOOKING_TYPES_LIST].map((ty) => `<button type="button" class="chip ${reimbursementState.typeFilter === ty ? "chip-selected" : ""}" data-reimb-type="${ty}">${ty === "all" ? t("bookings.filter.all") : t("bookings.type." + ty)}</button>`).join("")}</div>
+      <p><strong>${t("reimbursement.grandTotal", { amount: grandTotal })}</strong></p>
+      ${Object.keys(monthlyTotals).sort().map((m) => `<p class="muted">${escapeHtml(m)}: ₹${monthlyTotals[m]}</p>`).join("")}
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="reimb-export-csv">${t("reimbursement.exportCsv")}</button>
+        <button type="button" class="btn btn-secondary" id="reimb-print">${t("reimbursement.print")}</button>
+      </div>
+    </div>
+    <div class="card">
+      ${rows.length ? `<ul class="entity-list">${rows.map((r) => reimbursementRowMarkup(r)).join("")}</ul>` : `<p class="empty">${t("reimbursement.none")}</p>`}
+    </div>
+  `;
+
+  outlet.querySelector("#reimb-from").addEventListener("change", (e) => { reimbursementState.dateFrom = e.target.value; renderReimbursementBody(outlet); });
+  outlet.querySelector("#reimb-to").addEventListener("change", (e) => { reimbursementState.dateTo = e.target.value; renderReimbursementBody(outlet); });
+  outlet.querySelectorAll("[data-reimb-type]").forEach((btn) => {
+    btn.addEventListener("click", () => { reimbursementState.typeFilter = btn.dataset.reimbType; renderReimbursementBody(outlet); });
+  });
+  outlet.querySelector("#reimb-export-csv").addEventListener("click", () => exportReimbursementCsv(rows));
+  outlet.querySelector("#reimb-print").addEventListener("click", () => window.print());
+}
+
+function reimbursementRowMarkup(r) {
+  const b = r.booking;
+  const flags = [];
+  if (!r.hasReport && (b.type === "scan" || b.type === "blood_test")) flags.push(t("reimbursement.flag.noReport"));
+  if (!r.bill || !r.bill.receipt_file_id) if (r.bill && r.bill.status !== "not_applicable") flags.push(t("reimbursement.flag.noReceipt"));
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)} · ${escapeHtml(formatDisplayDate(dateStrOf(b.datetime)))}</strong>
+        <span class="muted">${escapeHtml(b.provider || "")} ${r.bill ? "· ₹" + escapeHtml(r.bill.amount || 0) + " (" + t("bookings.bill." + r.bill.status) + ")" : ""}</span>
+        ${flags.length ? `<span class="muted dose-state-amber">${flags.join(" · ")}</span>` : ""}
+      </div>
+    </li>
+  `;
+}
+
+function exportReimbursementCsv(rows) {
+  const header = ["Date", "Type", "Title", "Provider", "Amount", "Bill status", "Report", "Prescription"];
+  const lines = [header.join(",")];
+  rows.forEach((r) => {
+    const b = r.booking;
+    lines.push([
+      dateStrOf(b.datetime), b.type, csvEscape(b.title), csvEscape(b.provider || ""),
+      r.bill && r.bill.amount ? r.bill.amount : "", r.bill ? r.bill.status : "",
+      r.hasReport ? "yes" : "no", r.hasPrescription ? "yes" : "no"
+    ].join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "reimbursement.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function csvEscape(value) {
+  const str = String(value || "");
+  return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
 }
 
 // ---------------------------------------------------------------------------
@@ -4368,8 +5185,8 @@ function formatMsParts(ms) {
 }
 
 function countdownFormMarkup(item, medicines) {
-  const isNew = item === "new";
-  const cd = isNew ? { kind: "event", repeat: "none" } : item;
+  const isNew = item === "new" || !item.id;
+  const cd = item === "new" ? { kind: "event", repeat: "none" } : { kind: "event", repeat: "none", ...item };
 
   return `
     <div class="card">
@@ -4572,6 +5389,8 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/water">${t("more.water")}</button></li>
       <li><button data-nav="#/food">${t("more.food")}</button></li>
       <li><button data-nav="#/timeline">${t("more.timeline")}</button></li>
+      <li><button data-nav="#/bookings">${t("more.bookings")}</button></li>
+      <li><button data-nav="#/reimbursement">${t("more.reimbursement")}</button></li>
       <li><button data-nav="#/settings">${t("more.settings")}</button></li>
     </ul>
   `;

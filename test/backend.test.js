@@ -612,6 +612,9 @@ check("booking created with status booked + booked_at stamped", visit.status ===
 const visitDone = bookingsUpdate({ id: visit.id, status: "done" });
 check("bookingsUpdate stamps done_at on status -> done", visitDone.status === "done" && !!visitDone.done_at);
 
+const visitWithQuestions = bookingsUpdate({ id: visit.id, questions: "[ ] Ask about iron levels\n[x] Ask about kicks" });
+check("bookingsUpdate can save a questions checklist as plain text", visitWithQuestions.questions === "[ ] Ask about iron levels\n[x] Ask about kicks");
+
 throws("bookingsClose a doctor_visit with no prescription and no note fails", () => bookingsClose({ id: visit.id }));
 const visitClosedNoRx = bookingsClose({ id: visit.id, no_prescription_note: "Nothing needed this time" });
 check("bookingsClose succeeds with a no-prescription note", visitClosedNoRx.status === "closed" && visitClosedNoRx.closed_without_prescription === true);

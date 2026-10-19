@@ -342,7 +342,20 @@ const db = {
     { id: "mock-cl-3", list: "documents", item: "ID proof", done: false },
     { id: "mock-cl-4", list: "baby_items", item: "Onesies", done: false }
   ],
-  files: [],
+  files: [
+    { id: "mock-file-1", drive_file_id: "mock-drive-1", title: "Anomaly scan report", type: "scan", date: todayStr(-20), doctor: "Dr. Rao", notes: "", mime: "", thumb_file_id: "", type_v2: "scan_report", linked_booking_id: "mock-booking-2" },
+    { id: "mock-file-2", drive_file_id: "mock-drive-2", title: "Old lab slip", type: "report", date: todayStr(-90), doctor: "", notes: "", mime: "", thumb_file_id: "", type_v2: "", linked_booking_id: "" }
+  ],
+  bookings: [
+    { id: "mock-booking-1", type: "doctor_visit", title: "Routine checkup", provider: "Dr. Rao", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), booked_via: "call", location: "City Women's Hospital", notes: "", approx_report_days: "", status: "booked", booked_at: new Date(Date.now() - 2 * 86400000).toISOString(), done_at: "", waiting_for_report_at: "", report_uploaded_at: "", closed_at: "", closed_without_prescription: false, no_prescription_note: "", questions: "[ ] Ask about iron levels\n[x] Ask about kicks per day", created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
+    { id: "mock-booking-2", type: "scan", title: "Anomaly scan", provider: "City Imaging", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), booked_via: "online", location: "", notes: "Everything looked normal.", approx_report_days: 2, status: "closed", booked_at: new Date(Date.now() - 25 * 86400000).toISOString(), done_at: new Date(Date.now() - 20 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 20 * 86400000).toISOString(), report_uploaded_at: new Date(Date.now() - 18 * 86400000).toISOString(), closed_at: new Date(Date.now() - 17 * 86400000).toISOString(), closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 25 * 86400000).toISOString() }
+  ],
+  suggestions: [
+    { id: "mock-sugg-1", booking_id: "mock-booking-2", type: "diet_lifestyle", text: "More iron-rich foods", follow_up_date: "", status: "pending", created_at: new Date().toISOString() }
+  ],
+  bills: [
+    { id: "mock-bill-1", booking_id: "mock-booking-2", amount: 1500, status: "paid", paid_on: todayStr(-19), receipt_file_id: "", notes: "" }
+  ],
   // One example of every kind, covering upcoming/dueSoon/overdue/done states
   // for visual testing without touching a real backend.
   countdowns: [
@@ -765,6 +778,9 @@ export async function mockCall(action, payload) {
     case "files.list": {
       let rows = clone(db.files);
       if (payload.type) rows = rows.filter((f) => f.type === payload.type);
+      if (payload.type_v2) rows = rows.filter((f) => f.type_v2 === payload.type_v2);
+      if (payload.needs_sorting) rows = rows.filter((f) => !f.type_v2);
+      if (payload.linked_booking_id) rows = rows.filter((f) => f.linked_booking_id === payload.linked_booking_id);
       if (payload.date_from) rows = rows.filter((f) => f.date >= payload.date_from);
       if (payload.date_to) rows = rows.filter((f) => f.date <= payload.date_to);
       return rows.sort((a, b) => b.date.localeCompare(a.date));
@@ -781,6 +797,8 @@ export async function mockCall(action, payload) {
         date: payload.date || todayStr(),
         doctor: payload.doctor || "",
         notes: payload.notes || "",
+        type_v2: payload.type_v2 || "",
+        linked_booking_id: payload.linked_booking_id || "",
         _base64: payload.base64,
         _mimeType: payload.mimeType || "application/octet-stream",
         _filename: payload.filename
@@ -795,9 +813,98 @@ export async function mockCall(action, payload) {
       if (!row) throw new Error("File not found.");
       return { id: row.id, title: row.title, type: row.type, date: row.date, doctor: row.doctor, notes: row.notes, filename: row._filename, mimeType: row._mimeType, base64: row._base64 };
     }
+    case "files.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.files, payload.id, payload);
     case "files.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.files, payload.id);
+
+    case "bookings.list": {
+      let rows = clone(db.bookings);
+      if (payload.type) rows = rows.filter((b) => b.type === payload.type);
+      if (payload.status) rows = rows.filter((b) => b.status === payload.status);
+      return rows.sort((a, b) => b.datetime.localeCompare(a.datetime));
+    }
+    case "bookings.create": {
+      requireFields(payload, ["type", "title", "datetime"]);
+      const now = new Date().toISOString();
+      const row = {
+        id: payload.id || uid(), provider: "", booked_via: "", location: "", notes: "", approx_report_days: "",
+        status: "booked", booked_at: now, done_at: "", waiting_for_report_at: "", report_uploaded_at: "", closed_at: "",
+        closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: now,
+        ...payload
+      };
+      db.bookings.push(row);
+      return clone(row);
+    }
+    case "bookings.update": {
+      requireFields(payload, ["id"]);
+      const fields = { ...payload };
+      const stampField = { done: "done_at", waiting_for_report: "waiting_for_report_at", report_uploaded: "report_uploaded_at", closed: "closed_at" }[payload.status];
+      if (stampField) fields[stampField] = new Date().toISOString();
+      return upsertInto(db.bookings, payload.id, fields);
+    }
+    case "bookings.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.bookings, payload.id);
+    case "bookings.close": {
+      requireFields(payload, ["id"]);
+      const booking = db.bookings.find((b) => b.id === payload.id);
+      if (!booking) throw new Error("Not found: " + payload.id);
+      const linkedFiles = db.files.filter((f) => f.linked_booking_id === payload.id);
+      if (booking.type === "doctor_visit") {
+        const hasPrescription = linkedFiles.some((f) => f.type_v2 === "prescription");
+        const note = payload.no_prescription_note !== undefined ? payload.no_prescription_note : booking.no_prescription_note;
+        if (!hasPrescription && !String(note || "").trim()) {
+          throw new Error('Closing a doctor visit needs either an uploaded prescription or a "No prescription this time" note.');
+        }
+        return upsertInto(db.bookings, payload.id, { status: "closed", closed_at: new Date().toISOString(), closed_without_prescription: !hasPrescription, no_prescription_note: hasPrescription ? "" : note });
+      }
+      if (booking.type === "scan" || booking.type === "blood_test") {
+        const hasReport = linkedFiles.some((f) => f.type_v2 === "lab_report" || f.type_v2 === "scan_report");
+        if (!hasReport) throw new Error("Closing a scan/blood test needs the report uploaded and linked first.");
+      }
+      return upsertInto(db.bookings, payload.id, { status: "closed", closed_at: new Date().toISOString() });
+    }
+
+    case "suggestions.list": {
+      let rows = clone(db.suggestions);
+      if (payload.booking_id) rows = rows.filter((s) => s.booking_id === payload.booking_id);
+      if (payload.status) rows = rows.filter((s) => s.status === payload.status);
+      return rows;
+    }
+    case "suggestions.create": {
+      requireFields(payload, ["booking_id", "type", "text"]);
+      const row = { id: payload.id || uid(), follow_up_date: "", status: "pending", created_at: new Date().toISOString(), ...payload };
+      db.suggestions.push(row);
+      return clone(row);
+    }
+    case "suggestions.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.suggestions, payload.id, payload);
+    case "suggestions.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.suggestions, payload.id);
+
+    case "bills.list": {
+      let rows = clone(db.bills);
+      if (payload.booking_id) rows = rows.filter((b) => b.booking_id === payload.booking_id);
+      if (payload.status) rows = rows.filter((b) => b.status === payload.status);
+      return rows;
+    }
+    case "bills.create": {
+      requireFields(payload, ["booking_id", "status"]);
+      const row = { id: payload.id || uid(), amount: "", paid_on: "", receipt_file_id: "", notes: "", ...payload };
+      db.bills.push(row);
+      return clone(row);
+    }
+    case "bills.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.bills, payload.id, payload);
+    case "bills.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.bills, payload.id);
 
     case "countdowns.list": {
       let rows = clone(db.countdowns);
