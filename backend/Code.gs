@@ -7,7 +7,6 @@
  * (Project Settings > Script properties) before deploying as a web app.
  * See the README for full step-by-step deploy instructions.
  *
- * All real requests come in as doPost({postData:{contents: JSON string}}),
  * body shape: {pin, action, payload}. Every action requires a valid pin.
  *
  * v2 additions (data_version freshness tracking, bootstrap, thumbnails):
