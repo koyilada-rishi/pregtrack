@@ -2211,6 +2211,33 @@ async function renderMedicinesHistoryView(outlet) {
 }
 
 function renderMedsHistoryBody(outlet) {
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("meds.history.title")}</h2>
+      <input class="field" id="meds-history-search" placeholder="${t("meds.history.searchPlaceholder")}" value="${escapeHtml(medsHistoryState.search)}" />
+      <div class="chip-row" id="meds-history-filters">
+        ${["all", "active", "finished", "stopped"].map((s) => `<button type="button" class="chip ${medsHistoryState.statusFilter === s ? "chip-selected" : ""}" data-history-filter="${s}">${t("meds.history.filter." + s)}</button>`).join("")}
+      </div>
+      <div id="meds-history-results">${medsHistoryResultsMarkup()}</div>
+    </div>
+  `;
+
+  outlet.querySelector("#meds-history-search").addEventListener("input", (event) => {
+    medsHistoryState.search = event.target.value;
+    renderMedsHistoryResults(outlet);
+  });
+  outlet.querySelectorAll("[data-history-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      medsHistoryState.statusFilter = btn.dataset.historyFilter;
+      outlet.querySelectorAll("[data-history-filter]").forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      renderMedsHistoryResults(outlet);
+    });
+  });
+  attachMedsHistoryResultsHandlers(outlet);
+}
+
+function medsHistoryFiltered() {
   const search = medsHistoryState.search.trim().toLowerCase();
   const rows = medsHistoryState.medicines.filter((m) => {
     if (medsHistoryState.statusFilter !== "all" && (m.status || "active") !== medsHistoryState.statusFilter) return false;
@@ -2221,32 +2248,23 @@ function renderMedsHistoryBody(outlet) {
     return true;
   });
   rows.sort((a, b) => dateStrOf(b.start_date).localeCompare(dateStrOf(a.start_date)));
+  return rows;
+}
 
-  outlet.innerHTML = `
-    <div class="card">
-      <h2>${t("meds.history.title")}</h2>
-      <input class="field" id="meds-history-search" placeholder="${t("meds.history.searchPlaceholder")}" value="${escapeHtml(medsHistoryState.search)}" />
-      <div class="chip-row" id="meds-history-filters">
-        ${["all", "active", "finished", "stopped"].map((s) => `<button type="button" class="chip ${medsHistoryState.statusFilter === s ? "chip-selected" : ""}" data-history-filter="${s}">${t("meds.history.filter." + s)}</button>`).join("")}
-      </div>
-      ${
-        rows.length
-          ? `<ul class="entity-list">${rows.map((m) => medsHistoryRowMarkup(m)).join("")}</ul>`
-          : `<p class="empty">${t("meds.history.none")}</p>`
-      }
-    </div>
-  `;
+function medsHistoryResultsMarkup() {
+  const rows = medsHistoryFiltered();
+  return rows.length ? `<ul class="entity-list">${rows.map((m) => medsHistoryRowMarkup(m)).join("")}</ul>` : `<p class="empty">${t("meds.history.none")}</p>`;
+}
 
-  outlet.querySelector("#meds-history-search").addEventListener("input", (event) => {
-    medsHistoryState.search = event.target.value;
-    renderMedsHistoryBody(outlet);
-  });
-  outlet.querySelectorAll("[data-history-filter]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      medsHistoryState.statusFilter = btn.dataset.historyFilter;
-      renderMedsHistoryBody(outlet);
-    });
-  });
+// Re-renders just the results list, not the whole page/search box — see
+// Records' identical fix (renderRecordsResults) for why that matters.
+function renderMedsHistoryResults(outlet) {
+  const container = outlet.querySelector("#meds-history-results");
+  if (container) container.innerHTML = medsHistoryResultsMarkup();
+  attachMedsHistoryResultsHandlers(outlet);
+}
+
+function attachMedsHistoryResultsHandlers(outlet) {
   outlet.querySelectorAll("[data-history-edit]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const m = medsHistoryState.medicines.find((x) => x.id === btn.dataset.historyEdit);
@@ -3145,14 +3163,30 @@ async function renderFoodView(outlet) {
   }
 }
 
-function renderFoodBody(outlet) {
+function foodHistoryFiltered() {
   const search = foodState.search.trim().toLowerCase();
-  const rows = foodState.log.filter((f) => {
+  return foodState.log.filter((f) => {
     if (foodState.mealFilter !== "all" && f.meal !== foodState.mealFilter) return false;
     if (search && !String(f.items || "").toLowerCase().includes(search)) return false;
     return true;
   }).sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)));
+}
 
+function foodHistoryResultsMarkup() {
+  const rows = foodHistoryFiltered();
+  return rows.length ? `<ul class="entity-list">${rows.map((f) => foodlogRowMarkup(f)).join("")}</ul>` : `<p class="empty">${t("food.history.none")}</p>`;
+}
+
+// Re-renders just the results list on every search keystroke / filter
+// click — not the whole page, which would destroy and recreate the search
+// input itself and drop focus after a single character (see Records'
+// identical fix for the full explanation).
+function renderFoodHistoryResults(outlet) {
+  const container = outlet.querySelector("#food-history-results");
+  if (container) container.innerHTML = foodHistoryResultsMarkup();
+}
+
+function renderFoodBody(outlet) {
   const interested = foodState.prefs.filter((p) => p.status === "interested");
   const notInterested = foodState.prefs.filter((p) => p.status === "not_interested");
 
@@ -3191,7 +3225,7 @@ function renderFoodBody(outlet) {
       <div class="chip-row">
         ${["all", ...MEAL_CHIPS].map((m) => `<button type="button" class="chip ${foodState.mealFilter === m ? "chip-selected" : ""}" data-meal-filter="${m}">${m === "all" ? t("food.history.allMeals") : t("food.meal." + m.toLowerCase())}</button>`).join("")}
       </div>
-      ${rows.length ? `<ul class="entity-list">${rows.map((f) => foodlogRowMarkup(f)).join("")}</ul>` : `<p class="empty">${t("food.history.none")}</p>`}
+      <div id="food-history-results">${foodHistoryResultsMarkup()}</div>
     </div>
   `;
 
@@ -3245,12 +3279,14 @@ function attachFoodBodyHandlers(outlet) {
 
   outlet.querySelector("#food-search-input").addEventListener("input", (event) => {
     foodState.search = event.target.value;
-    renderFoodBody(outlet);
+    renderFoodHistoryResults(outlet);
   });
   outlet.querySelectorAll("[data-meal-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       foodState.mealFilter = btn.dataset.mealFilter;
-      renderFoodBody(outlet);
+      outlet.querySelectorAll("[data-meal-filter]").forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      renderFoodHistoryResults(outlet);
     });
   });
 }
@@ -4043,7 +4079,6 @@ function recordsFolderTilesMarkup() {
 }
 
 function recordsListMarkup() {
-  const rows = recordsFiltered();
   return `
     <button class="btn-link" id="records-back-to-folders">${t("common.back")}</button>
     <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
@@ -4061,14 +4096,29 @@ function recordsListMarkup() {
       </div>
     </div>
 
-    ${
-      rows.length
-        ? recordsState.viewMode === "grid"
-          ? `<div class="records-grid">${rows.map((f) => recordCardMarkup(f)).join("")}</div>`
-          : `<div class="card"><ul class="entity-list">${rows.map((f) => recordRowMarkup(f)).join("")}</ul></div>`
-        : `<div class="card"><p class="empty">${t("records.none")}</p></div>`
-    }
+    <div id="records-results">${recordsResultsMarkup()}</div>
   `;
+}
+
+// Just the filtered rows/grid, re-rendered on its own on every search
+// keystroke or filter change — NOT the whole page. Replacing the whole
+// page's innerHTML (search box included) on every keystroke would destroy
+// and recreate the search input itself, so it loses focus after a single
+// character; this container is the only thing search/filter changes touch.
+function recordsResultsMarkup() {
+  const rows = recordsFiltered();
+  return rows.length
+    ? recordsState.viewMode === "grid"
+      ? `<div class="records-grid">${rows.map((f) => recordCardMarkup(f)).join("")}</div>`
+      : `<div class="card"><ul class="entity-list">${rows.map((f) => recordRowMarkup(f)).join("")}</ul></div>`
+    : `<div class="card"><p class="empty">${t("records.none")}</p></div>`;
+}
+
+function renderRecordsResults(outlet) {
+  const container = outlet.querySelector("#records-results");
+  if (!container) return;
+  container.innerHTML = recordsResultsMarkup();
+  attachRecordsResultsHandlers(outlet);
 }
 
 function recordIcon(f) {
@@ -4111,12 +4161,12 @@ function attachRecordsListHandlers(outlet) {
   if (backBtn) backBtn.addEventListener("click", () => { recordsState.folderFilter = ""; renderRecordsBody(outlet); });
 
   const search = outlet.querySelector("#records-search");
-  if (search) search.addEventListener("input", (event) => { recordsState.search = event.target.value; renderRecordsBody(outlet); });
+  if (search) search.addEventListener("input", (event) => { recordsState.search = event.target.value; renderRecordsResults(outlet); });
 
   const refilterDates = () => {
     recordsState.filterFrom = outlet.querySelector("#filter-from").value;
     recordsState.filterTo = outlet.querySelector("#filter-to").value;
-    renderRecordsBody(outlet);
+    renderRecordsResults(outlet);
   };
   const fromInput = outlet.querySelector("#filter-from");
   if (fromInput) fromInput.addEventListener("change", refilterDates);
@@ -4128,6 +4178,10 @@ function attachRecordsListHandlers(outlet) {
   const gridBtn = outlet.querySelector("#view-grid-btn");
   if (gridBtn) gridBtn.addEventListener("click", () => { recordsState.viewMode = "grid"; renderRecordsBody(outlet); });
 
+  attachRecordsResultsHandlers(outlet);
+}
+
+function attachRecordsResultsHandlers(outlet) {
   outlet.querySelectorAll("[data-view-file]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.viewFile;
@@ -4155,15 +4209,15 @@ function attachRecordsListHandlers(outlet) {
       if (idx === -1) return;
       const removed = recordsState.files[idx];
       recordsState.files.splice(idx, 1);
-      renderRecordsBody(outlet);
+      renderRecordsResults(outlet);
       showUndoToast(t("records.deletedToast", { title: removed.title }), {
-        onUndo: () => { recordsState.files.splice(idx, 0, removed); renderRecordsBody(outlet); },
+        onUndo: () => { recordsState.files.splice(idx, 0, removed); renderRecordsResults(outlet); },
         onCommit: async () => {
           try {
             await store.call("files.delete", { id: removed.id });
           } catch (err) {
             recordsState.files.splice(idx, 0, removed);
-            renderRecordsBody(outlet);
+            renderRecordsResults(outlet);
             alert(err.message || t("common.error"));
           }
         }
