@@ -254,6 +254,11 @@ function todayStr(offsetDays) {
   return `${y}-${m}-${day}`;
 }
 
+function todayTime() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
 function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
@@ -269,7 +274,8 @@ const db = {
     hospital_phone: "+91 90000 00000",
     hospital_address: "12 MG Road, Hyderabad",
     insurance_info: "",
-    language: "en"
+    language: "en",
+    water_goal_glasses: "8"
   },
   medicines: [
     { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "before_food", status: "active" },
@@ -308,7 +314,28 @@ const db = {
     { id: "mock-contact-1", name: "Dr. Rao", role: "OB-GYN", phone: "+91 98765 43210", address: "", maps_link: "", is_emergency: true },
     { id: "mock-contact-2", name: "Apollo Pharmacy", role: "Pharmacy", phone: "+91 98765 00000", address: "", maps_link: "", is_emergency: false }
   ],
-  foodlog: [],
+  foodlog: [
+    { id: "mock-fl-1", date: todayStr(), meal: "Breakfast", items: "Idli, sambar", craving_or_aversion: "", notes: "" },
+    { id: "mock-fl-2", date: todayStr(-1), meal: "Dinner", items: "Dal, rice, curd", craving_or_aversion: "Craving something sweet", notes: "" },
+    { id: "mock-fl-3", date: todayStr(-1), meal: "Lunch", items: "Vegetable khichdi", craving_or_aversion: "", notes: "" }
+  ],
+  foodPrefs: [
+    { id: "mock-fp-1", name: "Eggs", status: "not_interested", date: todayStr(-10), notes: "Off them this trimester" },
+    { id: "mock-fp-2", name: "Mango", status: "interested", date: todayStr(-5), notes: "" }
+  ],
+  checkins: [
+    { id: "mock-ci-1", date: todayStr(), time: "09:15", mood: 4, note: "Slept well", created_at: new Date().toISOString() }
+  ],
+  symptoms: [
+    { id: "mock-sym-1", date: todayStr(-1), time: "20:00", symptom_key: "heartburn", custom_name: "", severity: "mild", bleeding_scale: "", note: "", created_at: new Date().toISOString() }
+  ],
+  water: [
+    { id: "mock-w-1", date: todayStr(), time: "08:30", glasses: 1, created_at: new Date().toISOString() },
+    { id: "mock-w-2", date: todayStr(), time: "11:00", glasses: 1, created_at: new Date().toISOString() },
+    { id: "mock-w-3", date: todayStr(-1), time: "09:00", glasses: 1, created_at: new Date().toISOString() },
+    { id: "mock-w-4", date: todayStr(-1), time: "14:00", glasses: 1, created_at: new Date().toISOString() },
+    { id: "mock-w-5", date: todayStr(-1), time: "19:00", glasses: 1, created_at: new Date().toISOString() }
+  ],
   checklist: [
     { id: "mock-cl-1", list: "hospital_bag", item: "Phone charger", done: false },
     { id: "mock-cl-2", list: "hospital_bag", item: "Comfortable clothes", done: true },
@@ -583,6 +610,82 @@ export async function mockCall(action, payload) {
       const logs = memberIds.map((medicineId) => mockCall("medicines.logTaken", { medicine_id: medicineId, date: payload.date, time: payload.time, status }));
       return Promise.all(logs).then((resolved) => ({ pack_id: payload.id, logs: resolved }));
     }
+
+    case "checkins.list": {
+      let rows = clone(db.checkins);
+      if (payload.date_from) rows = rows.filter((r) => r.date >= payload.date_from);
+      if (payload.date_to) rows = rows.filter((r) => r.date <= payload.date_to);
+      return rows.sort((a, b) => (b.date + " " + b.time).localeCompare(a.date + " " + a.time));
+    }
+    case "checkins.create": {
+      requireFields(payload, ["date", "mood"]);
+      const row = { id: payload.id || uid(), time: todayTime(), note: "", ...payload, created_at: new Date().toISOString() };
+      db.checkins.push(row);
+      return clone(row);
+    }
+    case "checkins.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.checkins, payload.id);
+
+    case "symptoms.list": {
+      let rows = clone(db.symptoms);
+      if (payload.date_from) rows = rows.filter((r) => r.date >= payload.date_from);
+      if (payload.date_to) rows = rows.filter((r) => r.date <= payload.date_to);
+      if (payload.symptom_key) rows = rows.filter((r) => r.symptom_key === payload.symptom_key);
+      return rows.sort((a, b) => (b.date + " " + b.time).localeCompare(a.date + " " + a.time));
+    }
+    case "symptoms.create": {
+      requireFields(payload, ["date", "symptom_key"]);
+      const row = { id: payload.id || uid(), time: todayTime(), custom_name: "", severity: "", bleeding_scale: "", note: "", ...payload, created_at: new Date().toISOString() };
+      db.symptoms.push(row);
+      return clone(row);
+    }
+    case "symptoms.update": {
+      requireFields(payload, ["id"]);
+      const fields = {};
+      if (Object.prototype.hasOwnProperty.call(payload, "note")) fields.note = payload.note;
+      return upsertInto(db.symptoms, payload.id, fields);
+    }
+    case "symptoms.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.symptoms, payload.id);
+
+    case "water.list": {
+      let rows = clone(db.water);
+      if (payload.date_from) rows = rows.filter((r) => r.date >= payload.date_from);
+      if (payload.date_to) rows = rows.filter((r) => r.date <= payload.date_to);
+      return rows;
+    }
+    case "water.add": {
+      requireFields(payload, ["date"]);
+      const row = { id: payload.id || uid(), time: todayTime(), glasses: 1, ...payload, created_at: new Date().toISOString() };
+      db.water.push(row);
+      return clone(row);
+    }
+    case "water.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.water, payload.id);
+
+    case "foodprefs.list": {
+      let rows = clone(db.foodPrefs);
+      if (payload.status) rows = rows.filter((r) => r.status === payload.status);
+      return rows;
+    }
+    case "foodprefs.create": {
+      requireFields(payload, ["name", "status"]);
+      const row = { id: payload.id || uid(), notes: "", ...payload, date: todayStr() };
+      db.foodPrefs.push(row);
+      return clone(row);
+    }
+    case "foodprefs.update": {
+      requireFields(payload, ["id"]);
+      const fields = { ...payload };
+      if (fields.status) fields.date = todayStr();
+      return upsertInto(db.foodPrefs, payload.id, fields);
+    }
+    case "foodprefs.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.foodPrefs, payload.id);
 
     case "appointments.list":
       return clone(db.appointments);

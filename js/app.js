@@ -112,6 +112,9 @@ const ROUTES = {
   "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") },
   "/checklist": { render: renderChecklistView, navKey: null, title: () => t("checklist.title") },
   "/countdowns": { render: renderCountdownsView, navKey: null, title: () => t("countdowns.title") },
+  "/water": { render: renderWaterView, navKey: null, title: () => t("water.title") },
+  "/food": { render: renderFoodView, navKey: null, title: () => t("food.title") },
+  "/timeline": { render: renderTimelineView, navKey: null, title: () => t("timeline.title") },
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
 
@@ -356,7 +359,15 @@ const homeState = {
   weekEntry: null,
   countdownExpanded: false,
   refreshIntervalId: null,
-  midnightTimeoutId: null
+  midnightTimeoutId: null,
+  // Phase 2: daily check-in, water, food — all "today only" on Home (the
+  // dedicated Timeline/Water/Food views pull their own wider history).
+  todaysCheckins: [],
+  todaysWater: [],
+  customSymptomNames: [],
+  recentFoods: [],
+  selectedMood: null,
+  selectedMeal: null
 };
 
 async function renderHomeView(outlet) {
@@ -366,11 +377,22 @@ async function renderHomeView(outlet) {
   const paint = async (boot) => {
     homeState.bootstrap = boot;
     homeState.weekEntry = await weekEntryFor(computeCountdown(boot.settings || {}, new Date())).catch(() => null);
+    const todayStr = schedule.formatLocalDate(new Date());
     try {
       homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs);
     } catch {
       homeState.logs = homeState.logs || [];
     }
+    await Promise.all([
+      store.call("checkins.list", { date_from: todayStr, date_to: todayStr }).then((r) => { homeState.todaysCheckins = r; }).catch(() => {}),
+      store.call("water.list", { date_from: todayStr, date_to: todayStr }).then((r) => { homeState.todaysWater = r; }).catch(() => {}),
+      store.call("symptoms.list", {}).then((rows) => {
+        homeState.customSymptomNames = [...new Set(rows.filter((r) => r.symptom_key === "custom" && r.custom_name).map((r) => r.custom_name))];
+      }).catch(() => {}),
+      store.call("foodlog.list", {}).then((rows) => {
+        homeState.recentFoods = [...new Set(rows.slice().sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date))).map((r) => r.items).filter(Boolean))].slice(0, 6);
+      }).catch(() => {})
+    ]);
     renderHomeBody(outlet);
   };
 
@@ -397,10 +419,13 @@ function renderHomeBody(outlet) {
 
 async function refreshHome() {
   if (!homeState.outlet) return;
+  const todayStr = schedule.formatLocalDate(new Date());
   try {
     const boot = await store.call("bootstrap", {});
     homeState.bootstrap = boot;
     homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs).catch(() => homeState.logs);
+    homeState.todaysCheckins = await store.call("checkins.list", { date_from: todayStr, date_to: todayStr }).catch(() => homeState.todaysCheckins);
+    homeState.todaysWater = await store.call("water.list", { date_from: todayStr, date_to: todayStr }).catch(() => homeState.todaysWater);
   } catch {
     // Keep showing the last-known state rather than erroring the whole page.
   }
@@ -485,6 +510,12 @@ function homeMarkup(boot, logs, weekEntry, now) {
 
   return `
     ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
+
+    ${checkinCardMarkup()}
+
+    ${waterCardMarkup(settings)}
+
+    ${foodCardMarkup()}
 
     <div class="card">
       <div class="card-head">
@@ -824,6 +855,217 @@ function formatTimeOfDay(date) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Daily check-in + symptoms + water + food — Home cards (Phase 2).
+// ---------------------------------------------------------------------------
+
+const MOOD_FACES = ["😢", "😕", "😐", "🙂", "😄"];
+const SYMPTOM_FIXED_KEYS = [
+  "nausea", "vomiting", "spotting", "bleeding", "headache", "dizziness", "tiredness",
+  "back_pain", "cramps", "heartburn", "swelling", "constipation", "fever", "other"
+];
+const BLEEDING_TYPE_SYMPTOMS = ["spotting", "bleeding"];
+const SYMPTOM_SEVERITY_CHIPS = ["mild", "moderate", "severe"];
+const BLEEDING_SCALE_CHIPS = ["spotting", "light", "one_pad", "more_than_one_pad"];
+const MEAL_CHIPS = ["Breakfast", "Lunch", "Snack", "Dinner"];
+
+function checkinCardMarkup() {
+  const todaysCheckins = homeState.todaysCheckins || [];
+  return `
+    <div class="card checkin-card">
+      <h2>${t("checkin.title")}</h2>
+      <div class="mood-face-row">
+        ${MOOD_FACES.map((face, i) => `<button type="button" class="mood-face ${homeState.selectedMood === i + 1 ? "mood-face-selected" : ""}" data-mood="${i + 1}" aria-label="${t("checkin.mood." + (i + 1))}">${face}</button>`).join("")}
+      </div>
+      <textarea class="field" id="checkin-note-input" placeholder="${t("checkin.notePlaceholder")}" rows="2">${escapeHtml(homeState.checkinNoteDraft || "")}</textarea>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary btn-small" id="save-checkin-btn" ${homeState.selectedMood ? "" : "disabled"}>${t("checkin.save")}</button>
+      </div>
+
+      <p class="field-label">${t("checkin.symptomsLabel")}</p>
+      <div class="chip-row">
+        ${SYMPTOM_FIXED_KEYS.map((k) => `<button type="button" class="chip" data-symptom-key="${k}">${t("symptom." + k)}</button>`).join("")}
+        ${(homeState.customSymptomNames || []).map((name) => `<button type="button" class="chip" data-symptom-key="custom" data-symptom-custom-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}
+        <button type="button" class="chip" id="add-custom-symptom-btn">+ ${t("checkin.addCustomSymptom")}</button>
+      </div>
+
+      ${todaysCheckins.length ? `
+        <ul class="med-slot-list">
+          ${todaysCheckins.map((c) => `
+            <li class="med-slot-row">
+              <span>${MOOD_FACES[c.mood - 1] || ""}${c.note ? " " + escapeHtml(c.note) : ""}</span>
+              <span class="muted">${escapeHtml(c.time)}</span>
+            </li>
+          `).join("")}
+        </ul>
+      ` : ""}
+    </div>
+  `;
+}
+
+function waterCardMarkup(settings) {
+  const goal = Number(settings.water_goal_glasses) || 8;
+  const todayGlasses = (homeState.todaysWater || []).reduce((sum, w) => sum + Number(w.glasses || 1), 0);
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("water.title")}</h2></div>
+      <div class="water-row">
+        ${Array.from({ length: goal }, (_, i) => `<span class="water-glass ${i < todayGlasses ? "water-glass-filled" : ""}">💧</span>`).join("")}
+      </div>
+      <p class="muted">${t("water.progress", { n: todayGlasses, goal })}</p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="add-water-btn">${t("water.addGlass")}</button>
+      </div>
+      <a class="card-link" data-nav="#/water">${t("water.seeHistory")}</a>
+    </div>
+  `;
+}
+
+function mealChipForTime(now) {
+  const h = now.getHours();
+  if (h < 11) return "Breakfast";
+  if (h < 16) return "Lunch";
+  if (h < 19) return "Snack";
+  return "Dinner";
+}
+
+function foodCardMarkup() {
+  const selectedMeal = homeState.selectedMeal || mealChipForTime(new Date());
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("food.title")}</h2></div>
+      <div class="chip-row" id="home-meal-chips">
+        ${MEAL_CHIPS.map((m) => `<button type="button" class="chip ${selectedMeal === m ? "chip-selected" : ""}" data-meal-chip="${m}">${t("food.meal." + m.toLowerCase())}</button>`).join("")}
+      </div>
+      <input class="field" id="home-food-input" placeholder="${t("food.whatDidYouEat")}" />
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="home-food-save-btn">${t("food.save")}</button>
+      </div>
+      ${(homeState.recentFoods || []).length ? `
+        <p class="field-label">${t("food.recent")}</p>
+        <div class="chip-row">${homeState.recentFoods.map((item) => `<button type="button" class="chip" data-recent-food="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join("")}</div>
+      ` : ""}
+      <a class="card-link" data-nav="#/food">${t("food.seeAll")}</a>
+    </div>
+  `;
+}
+
+// A symptom tap always opens a sheet asking severity (+ bleeding scale for
+// spotting/bleeding) + an optional note. A brand-new custom symptom asks
+// for its name first, then opens straight into the same detail sheet —
+// the name is remembered for reuse via homeState.customSymptomNames
+// (derived from past Symptoms rows, no separate catalog to manage).
+function openSymptomSheet(symptomKey, customName) {
+  if (symptomKey === "custom" && !customName) {
+    openSheet(customSymptomNameSheetMarkup(), (sheetEl) => attachCustomSymptomNameHandlers(sheetEl));
+    return;
+  }
+  openSheet(symptomDetailSheetMarkup(symptomKey, customName), (sheetEl) => attachSymptomDetailHandlers(sheetEl, symptomKey, customName));
+}
+
+function customSymptomNameSheetMarkup() {
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("checkin.addCustomSymptom")}</h2>
+    <input class="field" id="custom-symptom-name-input" placeholder="${t("checkin.customSymptomPlaceholder")}" />
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" id="custom-symptom-cancel">${t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="custom-symptom-next">${t("common.add")}</button>
+    </div>
+  `;
+}
+
+function attachCustomSymptomNameHandlers(sheetEl) {
+  sheetEl.querySelector("#custom-symptom-cancel").addEventListener("click", closeSheet);
+  sheetEl.querySelector("#custom-symptom-next").addEventListener("click", () => {
+    const name = sheetEl.querySelector("#custom-symptom-name-input").value.trim();
+    if (!name) return;
+    openSymptomSheet("custom", name);
+  });
+}
+
+function symptomDetailSheetMarkup(symptomKey, customName) {
+  const isBleedingType = BLEEDING_TYPE_SYMPTOMS.includes(symptomKey);
+  const label = symptomKey === "custom" ? customName : t("symptom." + symptomKey);
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${escapeHtml(label)}</h2>
+    <p class="field-label">${t("checkin.severity")}</p>
+    <div class="chip-row">
+      ${SYMPTOM_SEVERITY_CHIPS.map((s) => `<button type="button" class="chip" data-chip-group="severity" data-chip-value="${s}">${t("severity." + s)}</button>`).join("")}
+    </div>
+    ${isBleedingType ? `
+      <p class="field-label">${t("checkin.bleedingScale")}</p>
+      <div class="chip-row">
+        ${BLEEDING_SCALE_CHIPS.map((s) => `<button type="button" class="chip" data-chip-group="bleeding" data-chip-value="${s}">${t("bleedingScale." + s)}</button>`).join("")}
+      </div>
+    ` : ""}
+    <textarea class="field" id="symptom-note-input" placeholder="${t("checkin.notePlaceholder")}" rows="2"></textarea>
+    <div id="severe-safety-box" hidden></div>
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" id="symptom-cancel">${t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="symptom-save">${t("checkin.logSymptom")}</button>
+    </div>
+  `;
+}
+
+function attachSymptomDetailHandlers(sheetEl, symptomKey, customName) {
+  let severity = "";
+  let bleedingScale = "";
+
+  function updateSafetyBox() {
+    const box = sheetEl.querySelector("#severe-safety-box");
+    const severe = severity === "severe" || bleedingScale === "more_than_one_pad";
+    box.hidden = !severe;
+    if (severe) {
+      box.innerHTML = `
+        <div class="safety-box">
+          <p>${t("checkin.contactDoctorNow")}</p>
+          <button type="button" class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
+        </div>
+      `;
+      attachNavButtons(sheetEl);
+    }
+  }
+
+  sheetEl.querySelectorAll('[data-chip-group="severity"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sheetEl.querySelectorAll('[data-chip-group="severity"]').forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      severity = btn.dataset.chipValue;
+      updateSafetyBox();
+    });
+  });
+  sheetEl.querySelectorAll('[data-chip-group="bleeding"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sheetEl.querySelectorAll('[data-chip-group="bleeding"]').forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      bleedingScale = btn.dataset.chipValue;
+      updateSafetyBox();
+    });
+  });
+
+  sheetEl.querySelector("#symptom-cancel").addEventListener("click", closeSheet);
+  sheetEl.querySelector("#symptom-save").addEventListener("click", async () => {
+    const note = sheetEl.querySelector("#symptom-note-input").value.trim();
+    const saveBtn = sheetEl.querySelector("#symptom-save");
+    saveBtn.disabled = true;
+    try {
+      await store.call("symptoms.create", {
+        date: schedule.formatLocalDate(new Date()),
+        symptom_key: symptomKey,
+        custom_name: symptomKey === "custom" ? customName : "",
+        severity, bleeding_scale: bleedingScale, note
+      });
+      closeSheet();
+      await refreshHome();
+    } catch (err) {
+      saveBtn.disabled = false;
+      alert(err.message || t("common.error"));
+    }
+  });
+}
+
 function attachHomeHandlers(outlet) {
   const heroCard = outlet.querySelector("#hero-countdown-card");
   if (heroCard) {
@@ -931,6 +1173,100 @@ function attachHomeHandlers(outlet) {
     btn.addEventListener("click", () => {
       const appt = homeState.bootstrap.dashboard && homeState.bootstrap.dashboard.next_appointment;
       openAppointmentSheet(appt || "new", refreshHome);
+    });
+  });
+
+  // --- Daily check-in ---
+  outlet.querySelectorAll("[data-mood]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const noteInput = outlet.querySelector("#checkin-note-input");
+      homeState.checkinNoteDraft = noteInput ? noteInput.value : "";
+      homeState.selectedMood = Number(btn.dataset.mood);
+      renderHomeBody(outlet);
+    });
+  });
+  const saveCheckinBtn = outlet.querySelector("#save-checkin-btn");
+  if (saveCheckinBtn) {
+    saveCheckinBtn.addEventListener("click", async () => {
+      if (!homeState.selectedMood) return;
+      const note = outlet.querySelector("#checkin-note-input").value.trim();
+      saveCheckinBtn.disabled = true;
+      try {
+        await store.call("checkins.create", { date: schedule.formatLocalDate(new Date()), mood: homeState.selectedMood, note });
+        homeState.selectedMood = null;
+        homeState.checkinNoteDraft = "";
+        await refreshHome();
+      } catch (err) {
+        saveCheckinBtn.disabled = false;
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+  outlet.querySelectorAll("[data-symptom-key]").forEach((btn) => {
+    btn.addEventListener("click", () => openSymptomSheet(btn.dataset.symptomKey, btn.dataset.symptomCustomName));
+  });
+  const addCustomSymptomBtn = outlet.querySelector("#add-custom-symptom-btn");
+  if (addCustomSymptomBtn) addCustomSymptomBtn.addEventListener("click", () => openSymptomSheet("custom", null));
+
+  // --- Water: optimistic add with a 6s undo, same pattern as delete/stop ---
+  const addWaterBtn = outlet.querySelector("#add-water-btn");
+  if (addWaterBtn) {
+    addWaterBtn.addEventListener("click", () => {
+      const todayStr = schedule.formatLocalDate(new Date());
+      const time = formatTimeHHMM(new Date());
+      const tempRow = { id: "optimistic-" + Date.now(), date: todayStr, time, glasses: 1 };
+      homeState.todaysWater = [...(homeState.todaysWater || []), tempRow];
+      renderHomeBody(outlet);
+      showUndoToast(t("water.addedToast"), {
+        onUndo: () => {
+          homeState.todaysWater = homeState.todaysWater.filter((w) => w.id !== tempRow.id);
+          renderHomeBody(outlet);
+        },
+        onCommit: async () => {
+          try {
+            await store.call("water.add", { date: todayStr, time, glasses: 1 });
+          } catch (err) {
+            homeState.todaysWater = homeState.todaysWater.filter((w) => w.id !== tempRow.id);
+            renderHomeBody(outlet);
+            alert(err.message || t("common.error"));
+          }
+        }
+      });
+    });
+  }
+
+  // --- Food quick-add ---
+  outlet.querySelectorAll("[data-meal-chip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      homeState.selectedMeal = btn.dataset.mealChip;
+      renderHomeBody(outlet);
+    });
+  });
+  const saveFoodBtn = outlet.querySelector("#home-food-save-btn");
+  if (saveFoodBtn) {
+    saveFoodBtn.addEventListener("click", async () => {
+      const input = outlet.querySelector("#home-food-input");
+      const items = input.value.trim();
+      if (!items) return;
+      saveFoodBtn.disabled = true;
+      try {
+        await store.call("foodlog.create", { date: schedule.formatLocalDate(new Date()), meal: homeState.selectedMeal || mealChipForTime(new Date()), items, craving_or_aversion: "", notes: "" });
+        input.value = "";
+        await refreshHome();
+      } catch (err) {
+        saveFoodBtn.disabled = false;
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+  outlet.querySelectorAll("[data-recent-food]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await store.call("foodlog.create", { date: schedule.formatLocalDate(new Date()), meal: homeState.selectedMeal || mealChipForTime(new Date()), items: btn.dataset.recentFood, craving_or_aversion: "", notes: "" });
+        await refreshHome();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
     });
   });
 }
@@ -2233,6 +2569,451 @@ function attachAppointmentSheetHandlers(sheetEl, item, onSaved) {
       alert(err.message || t("common.error"));
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Water — today/week/month/all-time totals, a 14-day bar chart, goal streak.
+// ---------------------------------------------------------------------------
+
+const waterState = { rows: [], goal: 8, loading: true, chart: null };
+
+async function renderWaterView(outlet) {
+  waterState.loading = true;
+  outlet.innerHTML = genericSkeleton(4);
+  try {
+    const [rows, settings] = await Promise.all([store.call("water.list", {}), store.call("settings.get", {})]);
+    waterState.rows = rows;
+    waterState.goal = Number(settings.water_goal_glasses) || 8;
+    waterState.loading = false;
+    renderWaterBody(outlet);
+  } catch (err) {
+    waterState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderWaterView(outlet));
+  }
+}
+
+function glassesOn(rows, dateStr) {
+  return rows.filter((r) => dateStrOf(r.date) === dateStr).reduce((sum, r) => sum + Number(r.glasses || 1), 0);
+}
+
+function waterStreak(rows, goal, now) {
+  let streak = 0;
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(now.getTime() - i * 86400000);
+    if (glassesOn(rows, formatDateInput(d)) < goal) break;
+    streak++;
+  }
+  return streak;
+}
+
+function renderWaterBody(outlet) {
+  const now = new Date();
+  const todayStr = formatDateInput(now);
+  const weekStart = formatDateInput(new Date(now.getTime() - 6 * 86400000));
+  const monthStart = formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1));
+
+  const sumSince = (fromStr) => waterState.rows.filter((r) => dateStrOf(r.date) >= fromStr).reduce((sum, r) => sum + Number(r.glasses || 1), 0);
+
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("water.title")}</h2>
+      <div class="water-row">
+        ${Array.from({ length: waterState.goal }, (_, i) => `<span class="water-glass ${i < glassesOn(waterState.rows, todayStr) ? "water-glass-filled" : ""}">💧</span>`).join("")}
+      </div>
+      <p class="muted">${t("water.progress", { n: glassesOn(waterState.rows, todayStr), goal: waterState.goal })}</p>
+      <button type="button" class="btn btn-secondary" id="water-add-btn">${t("water.addGlass")}</button>
+    </div>
+
+    <div class="card">
+      <h2>${t("water.totals.title")}</h2>
+      <ul class="entity-list">
+        <li class="entity-row"><div class="entity-main"><strong>${t("water.totals.today")}</strong></div><span>${glassesOn(waterState.rows, todayStr)}</span></li>
+        <li class="entity-row"><div class="entity-main"><strong>${t("water.totals.week")}</strong></div><span>${sumSince(weekStart)}</span></li>
+        <li class="entity-row"><div class="entity-main"><strong>${t("water.totals.month")}</strong></div><span>${sumSince(monthStart)}</span></li>
+        <li class="entity-row"><div class="entity-main"><strong>${t("water.totals.allTime")}</strong></div><span>${sumSince("0000-01-01")}</span></li>
+      </ul>
+      <p class="muted">${t("water.streak", { n: waterStreak(waterState.rows, waterState.goal, now) })}</p>
+    </div>
+
+    <div class="card">
+      <h2>${t("water.chart.title")}</h2>
+      <div class="chart-container"><canvas id="water-chart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h2>${t("water.goal.title")}</h2>
+      <div class="form-actions">
+        <input class="field" type="number" min="1" step="1" id="water-goal-input" value="${escapeHtml(waterState.goal)}" />
+        <button type="button" class="btn btn-secondary" id="water-goal-save">${t("common.save")}</button>
+      </div>
+    </div>
+  `;
+
+  outlet.querySelector("#water-add-btn").addEventListener("click", async () => {
+    const dateStr = formatDateInput(new Date());
+    const time = formatTimeHHMM(new Date());
+    try {
+      await store.call("water.add", { date: dateStr, time, glasses: 1 });
+      await renderWaterView(outlet);
+    } catch (err) {
+      alert(err.message || t("common.error"));
+    }
+  });
+
+  outlet.querySelector("#water-goal-save").addEventListener("click", async () => {
+    const value = Number(outlet.querySelector("#water-goal-input").value) || 8;
+    try {
+      await store.call("settings.set", { water_goal_glasses: value });
+      waterState.goal = value;
+      renderWaterBody(outlet);
+    } catch (err) {
+      alert(err.message || t("common.error"));
+    }
+  });
+
+  renderWaterChart(outlet, now);
+}
+
+function renderWaterChart(outlet, now) {
+  loadChartJs().then(() => {
+    const canvas = outlet.querySelector("#water-chart");
+    if (!canvas) return;
+    if (waterState.chart) { waterState.chart.destroy(); waterState.chart = null; }
+    const labels = [];
+    const data = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 86400000);
+      labels.push(new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(d));
+      data.push(glassesOn(waterState.rows, formatDateInput(d)));
+    }
+    waterState.chart = new window.Chart(canvas, {
+      type: "bar",
+      data: { labels, datasets: [{ label: t("water.chart.title"), data, backgroundColor: "#8fae8b" }] },
+      options: { scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }, plugins: { legend: { display: false } } }
+    });
+  }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Food — quick history, liked/not-interested management, search & filters.
+// ---------------------------------------------------------------------------
+
+const foodState = { log: [], prefs: [], loading: true, search: "", mealFilter: "all" };
+
+async function renderFoodView(outlet) {
+  foodState.loading = true;
+  outlet.innerHTML = genericSkeleton(5);
+  try {
+    const [log, prefs] = await Promise.all([store.call("foodlog.list", {}), store.call("foodprefs.list", {})]);
+    foodState.log = log;
+    foodState.prefs = prefs;
+    foodState.loading = false;
+    renderFoodBody(outlet);
+  } catch (err) {
+    foodState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderFoodView(outlet));
+  }
+}
+
+function renderFoodBody(outlet) {
+  const search = foodState.search.trim().toLowerCase();
+  const rows = foodState.log.filter((f) => {
+    if (foodState.mealFilter !== "all" && f.meal !== foodState.mealFilter) return false;
+    if (search && !String(f.items || "").toLowerCase().includes(search)) return false;
+    return true;
+  }).sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)));
+
+  const interested = foodState.prefs.filter((p) => p.status === "interested");
+  const notInterested = foodState.prefs.filter((p) => p.status === "not_interested");
+
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("food.title")}</h2>
+      <div class="chip-row" id="food-meal-chips">
+        ${MEAL_CHIPS.map((m) => `<button type="button" class="chip" data-meal-chip="${m}">${t("food.meal." + m.toLowerCase())}</button>`).join("")}
+      </div>
+      <input class="field" id="food-page-input" placeholder="${t("food.whatDidYouEat")}" />
+      <div class="form-actions"><button type="button" class="btn btn-secondary" id="food-page-save-btn">${t("food.save")}</button></div>
+    </div>
+
+    <div class="card">
+      <h2>${t("food.prefs.title")}</h2>
+      <div class="food-pref-columns">
+        <div>
+          <p class="field-label">${t("food.prefs.interested")}</p>
+          ${interested.length ? interested.map((p) => foodPrefRowMarkup(p)).join("") : `<p class="empty">${t("common.none")}</p>`}
+        </div>
+        <div>
+          <p class="field-label">${t("food.prefs.notInterested")}</p>
+          ${notInterested.length ? notInterested.map((p) => foodPrefRowMarkup(p)).join("") : `<p class="empty">${t("common.none")}</p>`}
+        </div>
+      </div>
+      <div class="form-actions">
+        <input class="field" id="food-pref-name-input" placeholder="${t("food.prefs.addPlaceholder")}" />
+        <button type="button" class="btn btn-secondary" id="food-pref-add-interested">${t("food.prefs.interested")}</button>
+        <button type="button" class="btn btn-secondary" id="food-pref-add-not-interested">${t("food.prefs.notInterested")}</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>${t("food.history.title")}</h2>
+      <input class="field" id="food-search-input" placeholder="${t("food.history.searchPlaceholder")}" value="${escapeHtml(foodState.search)}" />
+      <div class="chip-row">
+        ${["all", ...MEAL_CHIPS].map((m) => `<button type="button" class="chip ${foodState.mealFilter === m ? "chip-selected" : ""}" data-meal-filter="${m}">${m === "all" ? t("food.history.allMeals") : t("food.meal." + m.toLowerCase())}</button>`).join("")}
+      </div>
+      ${rows.length ? `<ul class="entity-list">${rows.map((f) => foodlogRowMarkup(f)).join("")}</ul>` : `<p class="empty">${t("food.history.none")}</p>`}
+    </div>
+  `;
+
+  attachFoodBodyHandlers(outlet);
+}
+
+function foodPrefRowMarkup(p) {
+  const toggleTo = p.status === "interested" ? "not_interested" : "interested";
+  const toggleLabel = p.status === "interested" ? t("food.prefs.moveToNotInterested") : t("food.prefs.moveToInterested");
+  return `
+    <div class="food-pref-chip">
+      <span>${escapeHtml(p.name)}</span>
+      <button type="button" class="btn-link" data-toggle-pref="${escapeHtml(p.id)}" data-toggle-to="${toggleTo}">${toggleLabel}</button>
+    </div>
+  `;
+}
+
+function attachFoodBodyHandlers(outlet) {
+  outlet.querySelectorAll("[data-meal-chip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      outlet.querySelectorAll("[data-meal-chip]").forEach((b) => b.classList.remove("chip-selected"));
+      btn.classList.add("chip-selected");
+      outlet.querySelector("#food-page-input").dataset.selectedMeal = btn.dataset.mealChip;
+    });
+  });
+  outlet.querySelector("#food-page-save-btn").addEventListener("click", async () => {
+    const input = outlet.querySelector("#food-page-input");
+    const items = input.value.trim();
+    if (!items) return;
+    const meal = input.dataset.selectedMeal || mealChipForTime(new Date());
+    try {
+      await store.call("foodlog.create", { date: formatDateInput(new Date()), meal, items, craving_or_aversion: "", notes: "" });
+      await renderFoodView(outlet);
+    } catch (err) {
+      alert(err.message || t("common.error"));
+    }
+  });
+
+  outlet.querySelector("#food-pref-add-interested").addEventListener("click", () => addFoodPref(outlet, "interested"));
+  outlet.querySelector("#food-pref-add-not-interested").addEventListener("click", () => addFoodPref(outlet, "not_interested"));
+  outlet.querySelectorAll("[data-toggle-pref]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await store.call("foodprefs.update", { id: btn.dataset.togglePref, status: btn.dataset.toggleTo });
+        await renderFoodView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelector("#food-search-input").addEventListener("input", (event) => {
+    foodState.search = event.target.value;
+    renderFoodBody(outlet);
+  });
+  outlet.querySelectorAll("[data-meal-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      foodState.mealFilter = btn.dataset.mealFilter;
+      renderFoodBody(outlet);
+    });
+  });
+}
+
+async function addFoodPref(outlet, status) {
+  const input = outlet.querySelector("#food-pref-name-input");
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    await store.call("foodprefs.create", { name, status });
+    await renderFoodView(outlet);
+  } catch (err) {
+    alert(err.message || t("common.error"));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline — one chronological, filterable feed combining check-ins,
+// symptoms, water, medicines started/stopped/doses skipped-or-missed,
+// appointments, vitals and food. Everything here is read-only and derived
+// client-side from a handful of lazy fetches, never its own stored tab —
+// NEVER states or implies one entry caused another; entries are just laid
+// side by side in time order.
+// ---------------------------------------------------------------------------
+
+const TIMELINE_TYPES = ["checkin", "symptom", "water", "medicine", "appointment", "vitals", "food"];
+const timelineState = { entries: [], loading: true, dateFrom: "", dateTo: "", activeTypes: new Set(TIMELINE_TYPES), doctorSummary: false };
+
+async function renderTimelineView(outlet) {
+  timelineState.loading = true;
+  outlet.innerHTML = genericSkeleton(5);
+  const now = new Date();
+  if (!timelineState.dateFrom) timelineState.dateFrom = formatDateInput(new Date(now.getTime() - 29 * 86400000));
+  if (!timelineState.dateTo) timelineState.dateTo = formatDateInput(now);
+
+  try {
+    const days = Math.max(1, Math.round((new Date(timelineState.dateTo) - new Date(timelineState.dateFrom)) / 86400000) + 1);
+    const [checkins, symptoms, water, medHistory, medicines, appointments, healthlog, foodlog] = await Promise.all([
+      store.call("checkins.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
+      store.call("symptoms.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
+      store.call("water.list", { date_from: timelineState.dateFrom, date_to: timelineState.dateTo }).catch(() => []),
+      store.call("medicines.history", { days: days + 1 }).catch(() => ({ logs: [] })),
+      store.call("medicines.list", {}).catch(() => []),
+      store.call("appointments.list", {}).catch(() => []),
+      store.call("healthlog.list", {}).catch(() => []),
+      store.call("foodlog.list", {}).catch(() => [])
+    ]);
+    timelineState.entries = buildTimelineEntries({ checkins, symptoms, water, medLogs: medHistory.logs || [], medicines, appointments, healthlog, foodlog });
+    timelineState.loading = false;
+    renderTimelineBody(outlet);
+  } catch (err) {
+    timelineState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderTimelineView(outlet));
+  }
+}
+
+function buildTimelineEntries(data) {
+  const { dateFrom, dateTo } = timelineState;
+  const inRange = (d) => d >= dateFrom && d <= dateTo;
+  const entries = [];
+
+  data.checkins.forEach((c) => entries.push({ date: dateStrOf(c.date), time: c.time, type: "checkin", summary: `${MOOD_FACES[c.mood - 1] || ""} ${c.note || ""}`.trim() || t("timeline.checkinPlain") }));
+  data.symptoms.forEach((s) => {
+    const label = s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key);
+    const bits = [label, s.severity ? t("severity." + s.severity) : "", s.bleeding_scale ? t("bleedingScale." + s.bleeding_scale) : "", s.note || ""].filter(Boolean);
+    entries.push({ date: dateStrOf(s.date), time: s.time, type: "symptom", summary: bits.join(" · ") });
+  });
+
+  const waterByDate = {};
+  data.water.forEach((w) => { const d = dateStrOf(w.date); waterByDate[d] = (waterByDate[d] || 0) + Number(w.glasses || 1); });
+  Object.keys(waterByDate).forEach((d) => { if (inRange(d)) entries.push({ date: d, time: "23:59", type: "water", summary: t("timeline.waterSummary", { n: waterByDate[d] }) }); });
+
+  data.foodlog.forEach((f) => { if (inRange(dateStrOf(f.date))) entries.push({ date: dateStrOf(f.date), time: "12:00", type: "food", summary: `${f.meal}: ${f.items || ""}`.trim() }); });
+
+  data.medicines.forEach((m) => {
+    const start = dateStrOf(m.start_date);
+    if (start && inRange(start)) entries.push({ date: start, time: "00:00", type: "medicine", summary: t("timeline.medicineStarted", { name: m.name }) });
+    const stopped = dateStrOf(m.stopped_on);
+    if (stopped && inRange(stopped)) entries.push({ date: stopped, time: "00:01", type: "medicine", summary: t("timeline.medicineStopped", { name: m.name }) + (m.stop_note ? " — " + m.stop_note : "") });
+  });
+  const medById = indexById(data.medicines);
+  const skippedOrMissedByDay = {};
+  data.medLogs.forEach((l) => {
+    const status = l.status || (isTruthy(l.taken) ? "taken" : "skipped");
+    if (status === "taken") return;
+    const d = dateStrOf(l.date);
+    if (!inRange(d)) return;
+    const med = medById[l.medicine_id];
+    const key = d + "|" + (med ? med.name : l.medicine_id);
+    skippedOrMissedByDay[key] = (skippedOrMissedByDay[key] || 0) + 1;
+  });
+  Object.keys(skippedOrMissedByDay).forEach((key) => {
+    const [d, name] = key.split("|");
+    entries.push({ date: d, time: "00:02", type: "medicine", summary: t("timeline.doseMissedCount", { n: skippedOrMissedByDay[key], name }) });
+  });
+
+  data.appointments.forEach((a) => {
+    const d = dateStrOf(a.datetime);
+    if (inRange(d)) entries.push({ date: d, time: formatTimeHHMM(new Date(a.datetime)), type: "appointment", summary: `${a.purpose || a.doctor || t("appt.form.titleNew")}${a.notes_after_visit ? " — " + a.notes_after_visit : ""}` });
+  });
+
+  data.healthlog.forEach((h) => {
+    if (!inRange(dateStrOf(h.date))) return;
+    const bits = [];
+    if (h.weight_kg) bits.push(t("timeline.vitalsWeight", { n: h.weight_kg }));
+    if (h.bp_sys && h.bp_dia) bits.push(t("timeline.vitalsBp", { sys: h.bp_sys, dia: h.bp_dia }));
+    if (h.symptoms) bits.push(h.symptoms);
+    if (bits.length) entries.push({ date: dateStrOf(h.date), time: "08:00", type: "vitals", summary: bits.join(" · ") });
+  });
+
+  entries.sort((a, b) => (b.date + " " + b.time).localeCompare(a.date + " " + a.time));
+  return entries;
+}
+
+const TIMELINE_TYPE_ICON = { checkin: "🙂", symptom: "⚠️", water: "💧", medicine: "💊", appointment: "🩺", vitals: "📈", food: "🍽️" };
+
+function renderTimelineBody(outlet) {
+  const filtered = timelineState.entries.filter((e) => timelineState.activeTypes.has(e.type));
+
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("timeline.title")}</h2>
+      <div class="form-actions">
+        <input class="field" type="date" id="timeline-from" value="${escapeHtml(timelineState.dateFrom)}" />
+        <input class="field" type="date" id="timeline-to" value="${escapeHtml(timelineState.dateTo)}" />
+      </div>
+      <div class="chip-row">
+        ${TIMELINE_TYPES.map((ty) => `<button type="button" class="chip ${timelineState.activeTypes.has(ty) ? "chip-selected" : ""}" data-timeline-type="${ty}">${TIMELINE_TYPE_ICON[ty]} ${t("timeline.type." + ty)}</button>`).join("")}
+      </div>
+      <label class="checkbox-field">
+        <input type="checkbox" id="doctor-summary-toggle" ${timelineState.doctorSummary ? "checked" : ""} />
+        <span>${t("timeline.doctorSummary")}</span>
+      </label>
+    </div>
+
+    ${timelineState.doctorSummary ? doctorSummaryMarkup(filtered) : timelineListMarkup(filtered)}
+  `;
+
+  outlet.querySelector("#timeline-from").addEventListener("change", (event) => { timelineState.dateFrom = event.target.value; renderTimelineView(outlet); });
+  outlet.querySelector("#timeline-to").addEventListener("change", (event) => { timelineState.dateTo = event.target.value; renderTimelineView(outlet); });
+  outlet.querySelectorAll("[data-timeline-type]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const ty = btn.dataset.timelineType;
+      if (timelineState.activeTypes.has(ty)) timelineState.activeTypes.delete(ty);
+      else timelineState.activeTypes.add(ty);
+      renderTimelineBody(outlet);
+    });
+  });
+  outlet.querySelector("#doctor-summary-toggle").addEventListener("change", (event) => {
+    timelineState.doctorSummary = event.target.checked;
+    renderTimelineBody(outlet);
+  });
+}
+
+function timelineListMarkup(entries) {
+  if (!entries.length) return `<div class="card"><p class="empty">${t("timeline.none")}</p></div>`;
+  return `
+    <div class="card">
+      <ul class="entity-list">
+        ${entries.map((e) => `
+          <li class="entity-row">
+            <div class="entity-main">
+              <strong>${TIMELINE_TYPE_ICON[e.type]} ${escapeHtml(formatDisplayDate(e.date))} · ${escapeHtml(e.time)}</strong>
+              <span class="muted">${escapeHtml(e.summary)}</span>
+            </div>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+// Groups the same filtered entries by type instead of strictly
+// chronologically — "what the doctor needs to see for this range" without
+// the tick-by-tick noise. Still just lists entries side by side; never
+// states or implies one caused another.
+function doctorSummaryMarkup(entries) {
+  if (!entries.length) return `<div class="card"><p class="empty">${t("timeline.none")}</p></div>`;
+  return TIMELINE_TYPES.map((ty) => {
+    const rows = entries.filter((e) => e.type === ty);
+    if (!rows.length) return "";
+    return `
+      <div class="card">
+        <h2>${TIMELINE_TYPE_ICON[ty]} ${t("timeline.type." + ty)}</h2>
+        <ul>
+          ${rows.map((e) => `<li>${escapeHtml(formatDisplayDate(e.date))} · ${escapeHtml(e.time)} — ${escapeHtml(e.summary)}</li>`).join("")}
+        </ul>
+      </div>
+    `;
+  }).join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -3788,6 +4569,9 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>
       <li><button data-nav="#/countdowns">${t("more.countdowns")}</button></li>
+      <li><button data-nav="#/water">${t("more.water")}</button></li>
+      <li><button data-nav="#/food">${t("more.food")}</button></li>
+      <li><button data-nav="#/timeline">${t("more.timeline")}</button></li>
       <li><button data-nav="#/settings">${t("more.settings")}</button></li>
     </ul>
   `;

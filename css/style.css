@@ -1245,6 +1245,72 @@ a { color: var(--color-primary-dark); }
   white-space: nowrap;
 }
 
+/* ---------- Daily check-in, water, food (v3 Phase 2) ---------- */
+
+.mood-face-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.mood-face {
+  flex: 1;
+  min-height: 48px;
+  font-size: 1.6rem;
+  border-radius: var(--radius-control);
+  border: 2px solid transparent;
+  background: var(--color-surface-muted);
+  cursor: pointer;
+}
+
+.mood-face-selected {
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+}
+
+.safety-box {
+  background: var(--color-state-rose-bg);
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+  margin: 8px 0;
+}
+
+.safety-box p {
+  margin: 0 0 8px;
+  color: var(--color-state-rose);
+  font-weight: 600;
+}
+
+.water-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 1.4rem;
+}
+
+.water-glass { opacity: 0.3; }
+.water-glass-filled { opacity: 1; }
+
+.food-pref-columns {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.food-pref-columns > div { flex: 1; min-width: 0; }
+
+.food-pref-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.9rem;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 420px) {
