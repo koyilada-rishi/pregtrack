@@ -606,17 +606,41 @@ const SLOT_STATUS_STATE_CLASS = {
   missed: "dose-state-rose", skipped: "dose-state-amber", upcoming: "dose-state-calm"
 };
 
+// The tick circle's actual stored status, independent of how it's
+// displayed — a 'pending' log row still *shows* as the natural due_now/
+// late/upcoming status (dueStatus() falls through to the time-based
+// calculation for it), but the tap cycle needs to know it's there.
+function effectiveLogStatus(log) {
+  if (!log) return null;
+  if (log.status) return log.status;
+  return isTruthy(log.taken) ? "taken" : null; // old boolean-only rows with taken=false predate `status` entirely
+}
+
+// One tap = one step. taken -> pending (cleared, NOT skipped — untapping
+// a dose should never silently record it as skipped) -> skipped (the
+// deliberate "I missed/won't take this one" record, now one tap further
+// away) -> back to taken. A dose that's never been touched always goes to
+// taken first, regardless of how it displays (due_now/late/upcoming/
+// missed are all "nothing decided yet" for this purpose).
+function nextTickStatus(currentLogStatus) {
+  if (currentLogStatus === "taken") return "pending";
+  if (currentLogStatus === "pending") return "skipped";
+  return "taken";
+}
+
 function medicineSlotRowMarkup(m, slot) {
   const taken = slot.status === "taken";
+  const skipped = slot.status === "skipped";
+  const next = nextTickStatus(effectiveLogStatus(slot.log));
   const takenAtLabel = taken && slot.log && slot.log.taken_at
     ? t("home.doseStatus.takenAt", { time: formatTimeOfDay(new Date(slot.log.taken_at)) })
     : t(SLOT_STATUS_LABEL_KEYS[slot.status] || "home.doseStatus.upcoming");
 
   return `
     <li class="med-slot-row">
-      <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""}"
-        data-tick-med="${escapeHtml(m.id)}" data-tick-time="${escapeHtml(slot.time)}" data-tick-taken="${taken ? "0" : "1"}"
-        aria-label="${escapeHtml(m.name)} ${escapeHtml(slot.time)}">${taken ? "✓" : ""}</button>
+      <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""} ${skipped ? "tick-circle-skipped" : ""}"
+        data-tick-med="${escapeHtml(m.id)}" data-tick-time="${escapeHtml(slot.time)}" data-tick-next-status="${next}"
+        aria-label="${escapeHtml(m.name)} ${escapeHtml(slot.time)}">${taken ? "✓" : skipped ? "✕" : ""}</button>
       <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(m.id)}">
         <span class="med-slot-name">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
         <span class="muted">${escapeHtml(slot.time)} · <span class="${SLOT_STATUS_STATE_CLASS[slot.status] || ""}">${takenAtLabel}</span></span>
@@ -702,11 +726,14 @@ function packRowMarkup(pack, medicinesById, logs, todayStr) {
           const m = medicinesById[id];
           if (!m) return "";
           const taken = status.memberStatuses[id] === "taken";
+          const skipped = status.memberStatuses[id] === "skipped";
+          const memberLog = logsByMedicineId[id].find((l) => dateStrOf(l.date) === todayStr && String(l.time) === String(time));
+          const next = nextTickStatus(effectiveLogStatus(memberLog));
           return `
             <li class="med-slot-row">
-              <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""}"
-                data-tick-med="${escapeHtml(id)}" data-tick-time="${escapeHtml(time)}" data-tick-taken="${taken ? "0" : "1"}"
-                aria-label="${escapeHtml(m.name)}">${taken ? "✓" : ""}</button>
+              <button type="button" class="tick-circle ${taken ? "tick-circle-done" : ""} ${skipped ? "tick-circle-skipped" : ""}"
+                data-tick-med="${escapeHtml(id)}" data-tick-time="${escapeHtml(time)}" data-tick-next-status="${next}"
+                aria-label="${escapeHtml(m.name)}">${taken ? "✓" : skipped ? "✕" : ""}</button>
               <span class="med-slot-name">${escapeHtml(m.name)}</span>
             </li>
           `;
@@ -1080,7 +1107,7 @@ function attachHomeHandlers(outlet) {
   outlet.querySelectorAll("[data-tick-med]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
-      toggleDoseTaken(btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickTaken === "1");
+      toggleDoseTaken(btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickNextStatus);
     });
   });
 
@@ -1088,7 +1115,7 @@ function attachHomeHandlers(outlet) {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       const now = new Date();
-      toggleDoseTaken(btn.dataset.takeNow, formatTimeHHMM(now), true);
+      toggleDoseTaken(btn.dataset.takeNow, formatTimeHHMM(now), "taken");
     });
   });
 
@@ -1278,25 +1305,27 @@ function formatTimeHHMM(date) {
 }
 
 // Optimistic dose tick: flips local state + re-renders immediately, fires
-// the real call in the background, reverts on failure. Re-tapping undoes
-// it trivially (it's a toggle), so this doesn't need the undo-toast
-// treatment that delete/stop get — tapping again already is the undo.
-async function toggleDoseTaken(medicineId, time, taken) {
+// the real call in the background, reverts on failure. Re-tapping cycles
+// through the next status in nextTickStatus()'s order, so this doesn't
+// need the undo-toast treatment that delete/stop get — tapping again
+// already moves it on, deliberately, one step at a time (taken -> pending
+// -> skipped -> taken), never straight from taken to skipped in one tap.
+async function toggleDoseTaken(medicineId, time, status) {
   const outlet = homeState.outlet;
   if (!outlet) return;
   const todayStr = schedule.formatLocalDate(new Date());
   const snapshot = JSON.parse(JSON.stringify(homeState.logs));
   const existing = homeState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === todayStr && String(l.time) === String(time));
   if (existing) {
-    existing.taken = taken;
-    existing.status = taken ? "taken" : "skipped";
+    existing.taken = status === "taken";
+    existing.status = status;
   } else {
-    homeState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken, status: taken ? "taken" : "skipped" });
+    homeState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken: status === "taken", status });
   }
   renderHomeBody(outlet);
 
   try {
-    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status: taken ? "taken" : "skipped" });
+    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status });
     await refreshHome();
   } catch (err) {
     homeState.logs = snapshot;
@@ -1773,20 +1802,20 @@ function lastDoseByMedicineFrom(logs) {
   return latest;
 }
 
-async function toggleMedsPageDoseTaken(outlet, medicineId, time, taken) {
+async function toggleMedsPageDoseTaken(outlet, medicineId, time, status) {
   const todayStr = schedule.formatLocalDate(new Date());
   const snapshot = JSON.parse(JSON.stringify(medsState.logs));
   const existing = medsState.logs.find((l) => l.medicine_id === medicineId && dateStrOf(l.date) === todayStr && String(l.time) === String(time));
   if (existing) {
-    existing.taken = taken;
-    existing.status = taken ? "taken" : "skipped";
+    existing.taken = status === "taken";
+    existing.status = status;
   } else {
-    medsState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken, status: taken ? "taken" : "skipped" });
+    medsState.logs.push({ id: "optimistic-" + Date.now(), medicine_id: medicineId, date: todayStr, time, taken: status === "taken", status });
   }
   renderMedsBody(outlet);
 
   try {
-    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status: taken ? "taken" : "skipped" });
+    await store.call("medicines.logTaken", { medicine_id: medicineId, date: todayStr, time, status });
     await renderMedicinesView(outlet);
   } catch (err) {
     medsState.logs = snapshot;
@@ -1815,13 +1844,13 @@ function attachMedsHandlers(outlet) {
   });
 
   outlet.querySelectorAll("[data-tick-med]").forEach((btn) => {
-    btn.addEventListener("click", () => toggleMedsPageDoseTaken(outlet, btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickTaken === "1"));
+    btn.addEventListener("click", () => toggleMedsPageDoseTaken(outlet, btn.dataset.tickMed, btn.dataset.tickTime, btn.dataset.tickNextStatus));
   });
 
   outlet.querySelectorAll("[data-take-now]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const now = new Date();
-      toggleMedsPageDoseTaken(outlet, btn.dataset.takeNow, formatTimeHHMM(now), true);
+      toggleMedsPageDoseTaken(outlet, btn.dataset.takeNow, formatTimeHHMM(now), "taken");
     });
   });
 

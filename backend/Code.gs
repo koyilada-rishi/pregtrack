@@ -580,7 +580,11 @@ var MEDICINE_SCHEDULE_TYPES = ['daily', 'interval', 'weekdays', 'every_n_days', 
 var MEDICINE_ANCHOR_MODES = ['fixed', 'from_last'];
 var MEDICINE_INSTRUCTIONS = ['before_food', 'after_food', 'with_food', 'empty_stomach', 'bedtime', 'none'];
 var MEDICINE_STATUSES = ['active', 'finished', 'stopped'];
-var MEDICINE_LOG_STATUSES = ['taken', 'skipped', 'missed'];
+// 'pending' is a deliberate "cleared, not yet decided" state distinct from
+// no row at all — it's what the tick circle writes when you untick a dose
+// that was marked taken, so untapping never silently records it as
+// skipped. See js/app.js's nextTickStatus() for the full tap cycle.
+var MEDICINE_LOG_STATUSES = ['taken', 'skipped', 'missed', 'pending'];
 
 function validateEnum(value, allowed, fieldName) {
   if (value !== undefined && value !== '' && allowed.indexOf(value) === -1) {

@@ -478,6 +478,9 @@ check("logTaken (status shape) sets taken_at", typeof takenLog.taken_at === "str
 const skippedLog = medicinesLogTaken({ medicine_id: richMed.id, date: "2026-10-19", time: "20:00", status: "skipped" });
 check("logTaken can record a skipped dose", skippedLog.status === "skipped" && skippedLog.taken === false);
 
+const pendingLog = medicinesLogTaken({ medicine_id: richMed.id, date: "2026-10-19", time: "18:00", status: "pending" });
+check("logTaken can record a pending (cleared) dose", pendingLog.status === "pending" && pendingLog.taken === false);
+
 const missedLog = medicinesLogTaken({ medicine_id: richMed.id, date: "2026-10-19", time: "12:00", status: "missed" });
 check("logTaken can record a missed dose", missedLog.status === "missed" && missedLog.taken === false);
 throws("logTaken rejects an invalid status", () => medicinesLogTaken({ medicine_id: richMed.id, date: "2026-10-19", time: "12:00", status: "bogus" }));
@@ -494,7 +497,7 @@ check("logTaken: toggling taken without sending `note` preserves the existing no
 // --- medicinelog.list (unbounded, for the Medicines history view) ---
 
 const fullLog = routeAction("medicinelog.list", { medicine_id: richMed.id });
-check("medicinelog.list returns every log row for a medicine, no day cutoff", fullLog.length === 4);
+check("medicinelog.list returns every log row for a medicine, no day cutoff", fullLog.length === 5);
 // Same sort convention as medicinesHistory: most recent date first, then
 // chronological (not reverse-chronological) within a single day.
 check("medicinelog.list sorts same-day entries chronologically", fullLog[0].time === "08:00" && fullLog[fullLog.length - 1].time === "20:00");
