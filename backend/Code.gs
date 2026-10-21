@@ -315,7 +315,7 @@ function recordSuccessfulAuth() {
 
 var SETTINGS_KEYS = [
   'due_date', 'lmp_date', 'wife_name', 'blood_group', 'allergies',
-  'hospital_name', 'hospital_phone', 'hospital_address', 'insurance_info', 'language',
+  'hospital_name', 'hospital_phone', 'hospital_address', 'language',
   // Dating method: 'lmp' (default — due_date/lmp_date entered directly, as
   // before) or 'usg' (a scan's reported gestational age on a given date;
   // due_date/lmp_date are then back-computed and overwritten by

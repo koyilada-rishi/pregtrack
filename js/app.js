@@ -135,7 +135,6 @@ const ROUTES = {
   "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: null, title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
-  "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
   "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
   "/health/new": { render: (outlet) => renderHealthView(outlet, true), navKey: null, title: () => t("health.title") },
   "/checklist": { render: renderChecklistView, navKey: null, title: () => t("checklist.title") },
@@ -483,7 +482,7 @@ function buildNotificationsList() {
   (boot.medicines || []).forEach((m) => {
     const stock = computeStockCountdown(m);
     if (stock && stock.needsRefill) {
-      items.push({ icon: "warning", text: t("header.notif.lowStock", { name: m.name, days: Math.max(0, Math.floor(stock.daysLeft)) }) });
+      items.push({ icon: "medication", text: t("header.notif.lowStock", { name: m.name, days: Math.max(0, Math.floor(stock.daysLeft)) }) });
     }
   });
 
@@ -794,13 +793,22 @@ function bucketOf(items, key, labelKey) {
   `;
 }
 
+// Only 4 states ever show on screen: upcoming, due now, taken, untaken —
+// "late"/"missed"/"skipped" are real internal distinctions (schedule.js
+// still needs them, and the tap cycle below still needs its own "cleared"
+// state so un-tapping a taken dose doesn't silently record a skip) but
+// they're never worded or colored differently from each other on screen.
+// An untaken dose is just untaken, whether it's 10 minutes or 10 days past
+// its time — no amber/rose, no "late"/"missed"/"overdue".
 const SLOT_STATUS_LABEL_KEYS = {
-  taken: "home.doseStatus.taken", due_now: "home.doseStatus.dueNow", late: "home.doseStatus.late",
-  missed: "home.doseStatus.missed", skipped: "home.doseStatus.skipped", upcoming: "home.doseStatus.upcoming"
+  taken: "home.doseStatus.taken", due_now: "home.doseStatus.dueNow",
+  late: "home.doseStatus.untaken", missed: "home.doseStatus.untaken", skipped: "home.doseStatus.untaken",
+  upcoming: "home.doseStatus.upcoming"
 };
 const SLOT_STATUS_STATE_CLASS = {
-  taken: "dose-state-sage", due_now: "dose-state-calm", late: "dose-state-amber",
-  missed: "dose-state-rose", skipped: "dose-state-amber", upcoming: "dose-state-calm"
+  taken: "dose-state-sage", due_now: "dose-state-calm",
+  late: "dose-state-calm", missed: "dose-state-calm", skipped: "dose-state-calm",
+  upcoming: "dose-state-calm"
 };
 
 // The tick circle's actual stored status, independent of how it's
@@ -857,7 +865,7 @@ function intervalOrPrnRowMarkup(m, logs, now) {
           <li class="med-slot-row">
             <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(m.id)}">
               <span class="med-slot-name">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</span>
-              <span class="muted ${msLeft !== null && msLeft <= 0 ? "dose-state-amber" : "dose-state-calm"}">
+              <span class="muted dose-state-calm">
                 ${msLeft === null ? t("home.doseStatus.noDoseYet") : msLeft <= 0 ? t("home.doseStatus.dueNow") : t("meds.nextDoseIn", formatDuration(msLeft))}
               </span>
             </button>
@@ -880,7 +888,7 @@ function intervalOrPrnRowMarkup(m, logs, now) {
           <button type="button" class="btn btn-secondary btn-small" data-take-prn="${escapeHtml(m.id)}" data-prn-confirm="0">${t("home.takeOne")}</button>
         </li>
         <li class="prn-confirm-row" data-prn-confirm-row="${escapeHtml(m.id)}" hidden>
-          <span class="muted dose-state-amber">${t("home.prnConfirm", { n: gate.takenToday })}</span>
+          <span class="muted dose-state-calm">${t("home.prnConfirm", { n: gate.takenToday })}</span>
           <button type="button" class="btn-link" data-take-prn="${escapeHtml(m.id)}" data-prn-confirm="1">${t("home.logAnyway")}</button>
         </li>
       </ul>
@@ -943,6 +951,17 @@ function packRowMarkup(pack, medicinesById, logs, todayStr) {
   `;
 }
 
+// A weekly/monthly shot's due state, worded as a plain fact — never a
+// relative "overdue"/alert framing, and always the same neutral color
+// regardless of state. A date in the past is just its own date, like a
+// bill that's sitting unpaid: true whether it happened yesterday or
+// last month, so there's nothing more alarming to say about it either way.
+function comingUpDueLabel(due) {
+  if (due.state === "overdue") return t("home.comingUp.due", { date: formatDisplayDate(schedule.formatLocalDate(due.date)) });
+  if (due.state === "due_today") return t("home.comingUp.dueToday");
+  return t("home.comingUp.dueIn", { n: due.daysUntil });
+}
+
 function comingUpCardMarkup(boot, logs, now) {
   const rows = upcomingShots(boot, logs, now);
   if (!rows.length) return "";
@@ -954,9 +973,7 @@ function comingUpCardMarkup(boot, logs, now) {
           <li class="med-slot-row">
             <button type="button" class="tap-row med-slot-info" data-edit-medicine="${escapeHtml(medicine.id)}">
               <span class="med-slot-name">${escapeHtml(medicine.name)}</span>
-              <span class="muted ${due.state === "overdue" ? "dose-state-rose" : due.state === "due_today" ? "dose-state-amber" : "dose-state-calm"}">
-                ${due.state === "overdue" ? t("home.comingUp.overdue") : due.state === "due_today" ? t("home.comingUp.dueToday") : t("home.comingUp.dueIn", { n: due.daysUntil })}
-              </span>
+              <span class="muted dose-state-calm">${comingUpDueLabel(due)}</span>
             </button>
             <button type="button" class="btn btn-secondary btn-small" data-mark-given="${escapeHtml(medicine.id)}" data-given-date="${escapeHtml(schedule.formatLocalDate(due.date))}">${t("home.markGiven")}</button>
           </li>
@@ -993,7 +1010,7 @@ function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
       <p class="hero-week-line">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${weekPct}%"></div></div>
       ${dueDateLabel ? `<p class="hero-due-date">${t("home.dueDateSentence", { date: dueDateLabel })}</p>` : ""}
-      ${weekEntry ? `<p class="hero-baby-size">${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>` : ""}
+      ${weekEntry ? `<p class="hero-baby-size">${t("home.babySize", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>` : ""}
       <div class="hero-detail" id="hero-detail" ${homeState.countdownExpanded ? "" : "hidden"}></div>
     </button>
   `;
@@ -1227,7 +1244,6 @@ function symptomDetailSheetMarkup(symptomKey, customName) {
       </div>
     ` : ""}
     <textarea class="field" id="symptom-note-input" placeholder="${t("checkin.notePlaceholder")}" rows="2"></textarea>
-    <div id="severe-safety-box" hidden></div>
     <div class="form-actions">
       <button type="button" class="btn btn-secondary" id="symptom-cancel">${t("common.cancel")}</button>
       <button type="button" class="btn btn-primary" id="symptom-save">${t("checkin.logSymptom")}</button>
@@ -1235,31 +1251,20 @@ function symptomDetailSheetMarkup(symptomKey, customName) {
   `;
 }
 
+// Severity and the bleeding-pad scale are her own record, same as every
+// other field here — the app never reacts to a chosen value with a
+// prompt, box or suggestion. The Emergency card is one tap away from
+// Today regardless, same as always; it never appears *because* of
+// something logged here.
 function attachSymptomDetailHandlers(sheetEl, symptomKey, customName) {
   let severity = "";
   let bleedingScale = "";
-
-  function updateSafetyBox() {
-    const box = sheetEl.querySelector("#severe-safety-box");
-    const severe = severity === "severe" || bleedingScale === "more_than_one_pad";
-    box.hidden = !severe;
-    if (severe) {
-      box.innerHTML = `
-        <div class="safety-box">
-          <p>${t("checkin.contactDoctorNow")}</p>
-          <button type="button" class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
-        </div>
-      `;
-      attachNavButtons(sheetEl);
-    }
-  }
 
   sheetEl.querySelectorAll('[data-chip-group="severity"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       sheetEl.querySelectorAll('[data-chip-group="severity"]').forEach((b) => b.classList.remove("chip-selected"));
       btn.classList.add("chip-selected");
       severity = btn.dataset.chipValue;
-      updateSafetyBox();
     });
   });
   sheetEl.querySelectorAll('[data-chip-group="bleeding"]').forEach((btn) => {
@@ -1267,7 +1272,6 @@ function attachSymptomDetailHandlers(sheetEl, symptomKey, customName) {
       sheetEl.querySelectorAll('[data-chip-group="bleeding"]').forEach((b) => b.classList.remove("chip-selected"));
       btn.classList.add("chip-selected");
       bleedingScale = btn.dataset.chipValue;
-      updateSafetyBox();
     });
   });
 
@@ -1904,161 +1908,6 @@ function emergencyContactRowMarkup(c) {
     </li>
   `;
 }
-// ---------------------------------------------------------------------------
-// Food & body guide
-// ---------------------------------------------------------------------------
-
-const guideState = { foodlog: [] };
-
-async function renderGuideView(outlet) {
-  outlet.innerHTML = genericSkeleton(8);
-
-  try {
-    const [boot, weeksData, foodData, warningsData, foodlog] = await Promise.all([
-      store.loadBootstrap(),
-      loadJson("./data/weeks.json"),
-      loadJson("./data/food.json"),
-      loadJson("./data/warnings.json"),
-      store.call("foodlog.list", {}).catch(() => [])
-    ]);
-    guideState.foodlog = foodlog;
-    // Computed locally (same as Home's countdown) rather than from the
-    // backend, so the week shown here always matches Home exactly.
-    const age = computeCountdown(boot.settings || {}, new Date());
-    outlet.innerHTML = guideMarkup(age, weeksData, foodData, warningsData);
-    attachNavButtons(outlet);
-    attachFoodlogHandlers(outlet);
-  } catch (err) {
-    const cachedBoot = store.getCachedBootstrap();
-    if (cachedBoot) {
-      const age = computeCountdown(cachedBoot.settings || {}, new Date());
-      try {
-        const [weeksData, foodData, warningsData] = await Promise.all([
-          loadJson("./data/weeks.json"),
-          loadJson("./data/food.json"),
-          loadJson("./data/warnings.json")
-        ]);
-        guideState.foodlog = [];
-        outlet.innerHTML = guideMarkup(age, weeksData, foodData, warningsData);
-        attachNavButtons(outlet);
-        attachFoodlogHandlers(outlet);
-        return;
-      } catch {
-        // fall through to the error state below
-      }
-    }
-    outlet.innerHTML = errorMarkup(err);
-    attachRetryHandler(outlet, () => renderGuideView(outlet));
-  }
-}
-
-function attachFoodlogHandlers(outlet) {
-  const form = outlet.querySelector("#foodlog-form");
-  if (!form) return;
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-    const payload = {
-      date: formatDateInput(new Date()),
-      meal: fd.get("meal"),
-      items: fd.get("items").trim(),
-      craving_or_aversion: fd.get("craving_or_aversion").trim(),
-      notes: ""
-    };
-    if (!payload.items && !payload.craving_or_aversion) return;
-    const saveBtn = form.querySelector('button[type="submit"]');
-    saveBtn.disabled = true;
-    try {
-      await store.call("foodlog.create", payload);
-      await renderGuideView(outlet);
-    } catch (err) {
-      saveBtn.disabled = false;
-      alert(err.message || t("common.error"));
-    }
-  });
-}
-
-function guideMarkup(age, weeksData, foodData, warningsData) {
-  const weekNum = age ? Math.min(40, Math.max(4, age.weeks)) : null;
-  const weekEntry = weekNum ? weeksData.weeks.find((w) => w.week === weekNum) : null;
-  const trimester = weekEntry ? weekEntry.trimester : 1;
-  const foodTrimester = foodData.trimesters.find((ft) => ft.trimester === trimester) || foodData.trimesters[0];
-
-  return `
-    ${!age ? `<div class="card"><p class="empty">${t("guide.noDueDate")}</p></div>` : ""}
-
-    <div class="card">
-      <h2>${t("guide.thisWeek.title")}</h2>
-      ${
-        weekEntry
-          ? `
-        <p>${t("guide.thisWeek.size", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
-        <p>${escapeHtml(weekEntry.development)}</p>
-        <h3>${t("guide.commonSymptoms")}</h3>
-        <ul>${weekEntry.common_symptoms.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>
-        <h3>${t("guide.tips")}</h3>
-        <ul>${weekEntry.tips.map((tip) => `<li>${escapeHtml(tip)}</li>`).join("")}</ul>
-        ${weekEntry.review ? `<p class="review-note">${t("guide.reviewNote", { note: escapeHtml(weekEntry.review_note) })}</p>` : ""}
-      `
-          : `<p class="empty">${t("common.none")}</p>`
-      }
-    </div>
-
-    <div class="card">
-      <h2>${t("guide.food.title", { label: escapeHtml(foodTrimester.label) })}</h2>
-      ${foodSectionMarkup(t("guide.food.recommended"), foodTrimester.recommended)}
-      ${foodSectionMarkup(t("guide.food.limit"), foodTrimester.limit)}
-      ${foodSectionMarkup(null, foodTrimester.avoid)}
-      <h3>${t("guide.food.alwaysAvoid")}</h3>
-      <ul>${foodData.always_avoid.items.map((item) => foodItemMarkup(item)).join("")}</ul>
-    </div>
-
-    <div class="card warnings-card">
-      <h2>${t("guide.warnings.title")}</h2>
-      <ul class="warning-list">
-        ${warningsData.warnings
-          .map(
-            (w) => `
-          <li>
-            <strong>${escapeHtml(w.symptom)}</strong><br />
-            <span class="muted">${escapeHtml(w.action)}</span>
-          </li>
-        `
-          )
-          .join("")}
-      </ul>
-      <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
-    </div>
-
-    <div class="card">
-      <h2>${t("foodlog.title")}</h2>
-      <form id="foodlog-form">
-        ${formField(
-          t("foodlog.meal"),
-          `<select class="field" name="meal">
-            ${["Breakfast", "Lunch", "Dinner", "Snack"].map((m) => `<option value="${m}">${m}</option>`).join("")}
-          </select>`
-        )}
-        ${formField(t("foodlog.items"), `<input class="field" name="items" />`)}
-        ${formField(t("foodlog.craving"), `<input class="field" name="craving_or_aversion" />`)}
-        <button type="submit" class="btn btn-secondary">${t("foodlog.add")}</button>
-      </form>
-      <h3>${t("foodlog.recent.title")}</h3>
-      ${
-        guideState.foodlog.length
-          ? `<ul class="entity-list">${[...guideState.foodlog]
-              .sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date)))
-              .slice(0, 10)
-              .map((f) => foodlogRowMarkup(f))
-              .join("")}</ul>`
-          : `<p class="empty">${t("foodlog.recent.none")}</p>`
-      }
-    </div>
-
-    <p class="disclaimer">${escapeHtml(warningsData.disclaimer || t("app.disclaimer"))}</p>
-  `;
-}
-
 function foodlogRowMarkup(f) {
   const parts = [f.meal, f.items].filter(Boolean);
   return `
@@ -2069,17 +1918,6 @@ function foodlogRowMarkup(f) {
       </div>
     </li>
   `;
-}
-
-function foodSectionMarkup(title, items) {
-  if (!items || !items.length) return "";
-  return `${title ? `<h3>${title}</h3>` : ""}<ul>${items.map((item) => foodItemMarkup(item)).join("")}</ul>`;
-}
-
-function foodItemMarkup(item) {
-  return `<li><strong>${escapeHtml(item.item)}</strong> — ${escapeHtml(item.reason)}${
-    item.review ? ` <span class="review-flag">${t("guide.needsReview")}</span>` : ""
-  }</li>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2193,9 +2031,9 @@ function expiryBadgeMarkup(m) {
   const expiry = new Date(dateStrOf(m.expiry_date));
   if (isNaN(expiry.getTime())) return "";
   const daysLeft = Math.round((expiry.getTime() - new Date(formatDateInput(new Date())).getTime()) / 86400000);
-  if (daysLeft < 0) return `<span class="muted dose-state-rose">${t("meds.expiry.expired", { n: Math.abs(daysLeft) })}</span>`;
+  if (daysLeft < 0) return `<span class="muted dose-state-calm">${t("meds.expiry.expired", { n: Math.abs(daysLeft) })}</span>`;
   const alertDays = medsState.expiryAlertDays || 30;
-  if (daysLeft <= alertDays) return `<span class="muted dose-state-amber">${t("meds.expiry.expiresIn", { n: daysLeft })}</span>`;
+  if (daysLeft <= alertDays) return `<span class="muted dose-state-calm">${t("meds.expiry.expiresIn", { n: daysLeft })}</span>`;
   return "";
 }
 
@@ -2210,10 +2048,10 @@ function medicineRowMarkup(m, countdowns, logs) {
     if (type === "interval") {
       const next = schedule.nextDose(m, logsForMedicine(logs, m.id), now);
       const msLeft = next ? next.getTime() - now.getTime() : null;
-      extraLines.push(`<span class="muted ${msLeft !== null && msLeft <= 0 ? "dose-state-amber" : "dose-state-calm"}">${msLeft === null ? t("home.doseStatus.noDoseYet") : t("meds.nextDoseIn", formatDuration(Math.max(0, msLeft)))}</span>`);
+      extraLines.push(`<span class="muted dose-state-calm">${msLeft === null ? t("home.doseStatus.noDoseYet") : t("meds.nextDoseIn", formatDuration(Math.max(0, msLeft)))}</span>`);
     } else if (["weekly", "monthly"].includes(type)) {
       const due = schedule.weeklyMonthlyDueState(m, logsForMedicine(logs, m.id), now);
-      extraLines.push(`<span class="muted ${due.state === "overdue" ? "dose-state-rose" : due.state === "due_today" ? "dose-state-amber" : "dose-state-calm"}">${due.state === "overdue" ? t("home.comingUp.overdue") : due.state === "due_today" ? t("home.comingUp.dueToday") : t("home.comingUp.dueIn", { n: due.daysUntil })}</span>`);
+      extraLines.push(`<span class="muted dose-state-calm">${comingUpDueLabel(due)}</span>`);
     }
     const progress = schedule.courseProgress(m, now);
     if (progress && progress.totalDays !== null) {
@@ -2221,7 +2059,7 @@ function medicineRowMarkup(m, countdowns, logs) {
     }
     const daysLeft = schedule.stockDaysLeft(m, logsForMedicine(logs, m.id), now);
     if (daysLeft !== null) {
-      extraLines.push(`<span class="muted ${daysLeft <= 0 ? "dose-state-rose" : daysLeft <= (m.refill_alert_days || 3) ? "dose-state-amber" : "dose-state-calm"}">${daysLeft <= 0 ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(daysLeft) })}</span>`);
+      extraLines.push(`<span class="muted dose-state-calm">${daysLeft <= 0 ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(daysLeft) })}</span>`);
     }
   } else {
     // Pre-v3 row — fall back to the old linked-Countdown-row display.
@@ -2239,8 +2077,7 @@ function medicineRowMarkup(m, countdowns, logs) {
       if (computed.daysLeft !== null) extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.courseEnds", { n: computed.daysLeft })}</span>`);
     }
     if (stock) {
-      const stateClass = stock.outOfStock ? "dose-state-rose" : stock.needsRefill ? "dose-state-amber" : "dose-state-calm";
-      extraLines.push(`<span class="muted ${stateClass}">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}</span>`);
+      extraLines.push(`<span class="muted dose-state-calm">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}</span>`);
     }
   }
 
@@ -5714,7 +5551,7 @@ function reimbursementRowMarkup(r) {
       <div class="entity-main">
         <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)} · ${escapeHtml(formatDisplayDate(dateStrOf(b.datetime)))}</strong>
         <span class="muted">${escapeHtml(b.provider || "")} ${r.bill ? "· ₹" + escapeHtml(r.bill.amount || 0) + " (" + t("bookings.bill." + r.bill.status) + ")" : ""}</span>
-        ${flags.length ? `<span class="muted dose-state-amber">${flags.join(" · ")}</span>` : ""}
+        ${flags.length ? `<span class="muted dose-state-calm">${flags.join(" · ")}</span>` : ""}
       </div>
     </li>
   `;
@@ -5908,7 +5745,6 @@ function renderSettingsBody(outlet) {
         ${formField(t("settings.hospitalName"), `<input class="field" name="hospital_name" value="${escapeHtml(s.hospital_name)}" />`)}
         ${formField(t("settings.hospitalPhone"), `<input class="field" type="tel" name="hospital_phone" value="${escapeHtml(s.hospital_phone)}" />`)}
         ${formField(t("settings.hospitalAddress"), `<input class="field" name="hospital_address" value="${escapeHtml(s.hospital_address)}" />`)}
-        ${formField(t("settings.insurance"), `<textarea class="field" name="insurance_info" rows="2">${escapeHtml(s.insurance_info)}</textarea>`)}
         ${formField(t("settings.language"), `<select class="field" name="language"><option value="en" selected>English</option></select>`, t("settings.languageHint"))}
         <p class="error-text" id="settings-form-error" hidden></p>
         <p class="success-text" id="settings-form-success" hidden>${t("settings.saved")}</p>
@@ -6042,7 +5878,7 @@ function attachSettingsHandlers(outlet) {
     event.preventDefault();
     const fd = new FormData(form);
     const payload = {};
-    ["due_date", "lmp_date", "wife_name", "blood_group", "allergies", "hospital_name", "hospital_phone", "hospital_address", "insurance_info", "language", "dating_method", "usg_date", "usg_weeks", "usg_days"].forEach((key) => {
+    ["due_date", "lmp_date", "wife_name", "blood_group", "allergies", "hospital_name", "hospital_phone", "hospital_address", "language", "dating_method", "usg_date", "usg_weeks", "usg_days"].forEach((key) => {
       payload[key] = (fd.get(key) || "").toString().trim();
     });
     const errEl = outlet.querySelector("#settings-form-error");
@@ -6565,7 +6401,6 @@ function renderMoreView(outlet) {
     <ul class="menu-list">
       <li><button data-nav="#/emergency">${t("more.emergency")}</button></li>
       <li><button data-nav="#/health">${t("more.health")}</button></li>
-      <li><button data-nav="#/guide">${t("more.guide")}</button></li>
       <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>
       <li><button data-nav="#/countdowns">${t("more.countdowns")}</button></li>
       <li><button data-nav="#/water">${t("more.water")}</button></li>

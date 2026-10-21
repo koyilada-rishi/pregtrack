@@ -901,20 +901,18 @@ a { color: var(--color-primary-dark); }
   width: fit-content;
 }
 
-.countdown-state-upcoming { color: var(--color-text-muted); }
-.countdown-state-badge.countdown-state-upcoming { background: var(--color-surface-muted); color: var(--color-text-muted); }
-
-.countdown-state-dueSoon { color: var(--color-warning-text); }
-.countdown-state-badge.countdown-state-dueSoon { background: var(--color-warning-bg); color: var(--color-warning-text); }
-
-.countdown-state-overdue { color: var(--color-emergency); }
-.countdown-state-badge.countdown-state-overdue { background: var(--color-emergency); color: var(--color-emergency-contrast); }
+/* Every state (upcoming, due soon, past, done) gets the exact same
+   neutral treatment — no amber/red color-coding by urgency. A countdown
+   that's close or past its target is just a fact, not a warning. */
+.countdown-state-upcoming,
+.countdown-state-dueSoon,
+.countdown-state-overdue { color: var(--color-text-muted); }
+.countdown-state-badge.countdown-state-upcoming,
+.countdown-state-badge.countdown-state-dueSoon,
+.countdown-state-badge.countdown-state-overdue { background: var(--color-surface-muted); color: var(--color-text-muted); }
 
 .countdown-state-done { color: var(--color-text-muted); text-decoration: line-through; }
 .countdown-state-badge.countdown-state-done { background: var(--color-surface-muted); color: var(--color-text-muted); }
-
-.countdown-row.countdown-state-overdue { border-left: 3px solid var(--color-emergency); padding-left: 10px; }
-.countdown-row.countdown-state-dueSoon { border-left: 3px solid var(--color-warning-text); padding-left: 10px; }
 
 .pinned-countdown-list {
   list-style: none;
@@ -984,8 +982,6 @@ a { color: var(--color-primary-dark); }
 /* ---------- Dose/status state colors (shared) ---------- */
 
 .dose-state-calm { color: var(--color-state-calm); }
-.dose-state-amber { color: var(--color-state-amber); }
-.dose-state-rose { color: var(--color-state-rose); }
 .dose-state-sage { color: var(--color-state-sage); }
 
 /* ---------- Hero countdown card ---------- */
@@ -1116,9 +1112,9 @@ a { color: var(--color-primary-dark); }
 }
 
 .tick-circle-skipped {
-  background: var(--color-state-amber-bg);
-  border-color: var(--color-state-amber);
-  color: var(--color-state-amber);
+  background: var(--color-surface-muted);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
 }
 
 .btn-small {
@@ -1332,19 +1328,6 @@ a { color: var(--color-primary-dark); }
 .mood-face-selected {
   border-color: var(--color-primary);
   background: var(--color-surface);
-}
-
-.safety-box {
-  background: var(--color-state-rose-bg);
-  border-radius: var(--radius-control);
-  padding: 12px 14px;
-  margin: 8px 0;
-}
-
-.safety-box p {
-  margin: 0 0 8px;
-  color: var(--color-state-rose);
-  font-weight: 600;
 }
 
 .water-row {

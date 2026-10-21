@@ -217,7 +217,7 @@ setup();
 fakeProps.APP_PIN = "246810";
 check("setup created all 19 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
   "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills,Notes".split(",").sort().join(","));
-check("Settings seeded with 19 editable keys + data_version", fakeSS.sheets.Settings.rows.length === 21); // header + 19 keys + data_version
+check("Settings seeded with " + SETTINGS_KEYS.length + " editable keys + data_version", fakeSS.sheets.Settings.rows.length === SETTINGS_KEYS.length + 2); // header + keys + data_version
 
 // --- PIN check ---
 check("checkPin correct", checkPin("246810") === true);

@@ -1,6 +1,4 @@
 {
-  "_note": "Week-by-week baby size/development/symptoms/tips, weeks 4-40. Sizes and measurements are widely-cited approximations, not a diagnostic measurement — every baby grows differently.",
-  "disclaimer": "This guide is general information, not medical advice. Always follow your own doctor's guidance for your pregnancy.",
   "weeks": [
     {
       "week": 4,
@@ -8,20 +6,7 @@
       "size_comparison": "a poppy seed",
       "length_cm": 0.1,
       "weight_g": null,
-      "development": "The fertilized egg has implanted in the uterus, and the basic layers that will form your baby are starting to develop.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "The fertilized egg has implanted in the uterus, and the basic layers that will form your baby are starting to develop."
     },
     {
       "week": 5,
@@ -29,20 +14,7 @@
       "size_comparison": "a sesame seed",
       "length_cm": 0.3,
       "weight_g": null,
-      "development": "A simple heart tube is forming and will soon start to beat.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "A simple heart tube is forming and will soon start to beat."
     },
     {
       "week": 6,
@@ -50,20 +22,7 @@
       "size_comparison": "a lentil",
       "length_cm": 0.6,
       "weight_g": null,
-      "development": "The heart begins to beat, and tiny buds that will become arms and legs appear.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "The heart begins to beat, and tiny buds that will become arms and legs appear."
     },
     {
       "week": 7,
@@ -71,20 +30,7 @@
       "size_comparison": "a blueberry",
       "length_cm": 1.3,
       "weight_g": null,
-      "development": "The brain and face are developing quickly, and small hand buds are visible.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "The brain and face are developing quickly, and small hand buds are visible."
     },
     {
       "week": 8,
@@ -92,20 +38,7 @@
       "size_comparison": "a raspberry",
       "length_cm": 1.6,
       "weight_g": 1,
-      "development": "Fingers are starting to form, and the beginnings of eyes and ears are visible.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "Fingers are starting to form, and the beginnings of eyes and ears are visible."
     },
     {
       "week": 9,
@@ -113,20 +46,7 @@
       "size_comparison": "a grape",
       "length_cm": 2.3,
       "weight_g": 2,
-      "development": "All major organs have begun to form, and the embryo is starting to look more baby-shaped.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "All major organs have begun to form, and the embryo is starting to look more baby-shaped."
     },
     {
       "week": 10,
@@ -134,20 +54,7 @@
       "size_comparison": "a kumquat",
       "length_cm": 3.1,
       "weight_g": 4,
-      "development": "Fingers and toes are separating, and bones are starting to harden.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "Fingers and toes are separating, and bones are starting to harden."
     },
     {
       "week": 11,
@@ -155,20 +62,7 @@
       "size_comparison": "a fig",
       "length_cm": 4.1,
       "weight_g": 7,
-      "development": "Your baby is now officially called a fetus. Fingernails are starting to form.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "Your baby is now officially called a fetus. Fingernails are starting to form."
     },
     {
       "week": 12,
@@ -176,20 +70,7 @@
       "size_comparison": "a lime",
       "length_cm": 5.4,
       "weight_g": 14,
-      "development": "Reflexes are developing — your baby may start making small movements you can't feel yet.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "Reflexes are developing, with small movements beginning that you cannot feel yet."
     },
     {
       "week": 13,
@@ -197,20 +78,7 @@
       "size_comparison": "a lemon",
       "length_cm": 7.4,
       "weight_g": 23,
-      "development": "Vocal cords are forming, and fingerprints are starting to develop.",
-      "common_symptoms": [
-        "Nausea or morning sickness",
-        "Feeling more tired than usual",
-        "Tender, swollen breasts",
-        "Needing to pee more often",
-        "Mood swings"
-      ],
-      "tips": [
-        "Start a prenatal vitamin with folic acid if you haven't already.",
-        "Rest when you're tired — feeling more tired than usual is normal now.",
-        "Try small, frequent meals if nausea is an issue."
-      ],
-      "review": false
+      "development": "Vocal cords are forming, and fingerprints are starting to develop."
     },
     {
       "week": 14,
@@ -218,20 +86,7 @@
       "size_comparison": "a peach",
       "length_cm": 8.7,
       "weight_g": 43,
-      "development": "Your baby can make facial expressions, and the neck is more defined.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby can make facial expressions, and the neck is more defined."
     },
     {
       "week": 15,
@@ -239,20 +94,7 @@
       "size_comparison": "an apple",
       "length_cm": 10.1,
       "weight_g": 70,
-      "development": "Bones are getting stronger, and your baby may be starting to sense light.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Bones are getting stronger, and light sensitivity is starting to develop."
     },
     {
       "week": 16,
@@ -260,20 +102,7 @@
       "size_comparison": "an avocado",
       "length_cm": 11.6,
       "weight_g": 100,
-      "development": "Your baby's ears are in their final position — sounds may start to register as vibration.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby's ears are in their final position, picking up sound as vibration."
     },
     {
       "week": 17,
@@ -281,20 +110,7 @@
       "size_comparison": "a pear",
       "length_cm": 13,
       "weight_g": 140,
-      "development": "Your baby is laying down fat stores, and the skeleton is hardening.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby is laying down fat stores, and the skeleton is hardening."
     },
     {
       "week": 18,
@@ -302,20 +118,7 @@
       "size_comparison": "a bell pepper",
       "length_cm": 14.2,
       "weight_g": 190,
-      "development": "Your baby can hear some sounds now, like your heartbeat and voice.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby can hear some sounds now, like your heartbeat and voice."
     },
     {
       "week": 19,
@@ -323,20 +126,7 @@
       "size_comparison": "a large tomato",
       "length_cm": 15.3,
       "weight_g": 240,
-      "development": "A protective waxy coating (vernix) is forming on your baby's skin.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "A protective waxy coating (vernix) is forming on your baby's skin."
     },
     {
       "week": 20,
@@ -344,20 +134,7 @@
       "size_comparison": "a banana",
       "length_cm": 25.6,
       "weight_g": 300,
-      "development": "You're halfway there. Your baby is swallowing more and practicing breathing movements.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "You're halfway there. Your baby is swallowing more and practicing breathing movements."
     },
     {
       "week": 21,
@@ -365,20 +142,7 @@
       "size_comparison": "a carrot",
       "length_cm": 26.7,
       "weight_g": 360,
-      "development": "Your baby's movements may feel stronger as muscles keep developing.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby's movements are growing stronger as muscles keep developing."
     },
     {
       "week": 22,
@@ -386,20 +150,7 @@
       "size_comparison": "a spaghetti squash",
       "length_cm": 27.8,
       "weight_g": 430,
-      "development": "Your baby's senses of touch and taste are developing further.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby's senses of touch and taste are developing further."
     },
     {
       "week": 23,
@@ -407,20 +158,7 @@
       "size_comparison": "a large mango",
       "length_cm": 28.9,
       "weight_g": 501,
-      "development": "Blood vessels in the lungs are developing to prepare for breathing air.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Blood vessels in the lungs are developing to prepare for breathing air."
     },
     {
       "week": 24,
@@ -428,20 +166,7 @@
       "size_comparison": "an ear of corn",
       "length_cm": 30,
       "weight_g": 600,
-      "development": "Your baby's face is almost fully formed, and taste buds are developing.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby's face is almost fully formed, and taste buds are developing."
     },
     {
       "week": 25,
@@ -449,20 +174,7 @@
       "size_comparison": "a rutabaga",
       "length_cm": 34.6,
       "weight_g": 660,
-      "development": "Your baby is putting on more baby fat and starting to look less wrinkled.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby is putting on more baby fat and starting to look less wrinkled."
     },
     {
       "week": 26,
@@ -470,20 +182,7 @@
       "size_comparison": "a head of cauliflower",
       "length_cm": 35.6,
       "weight_g": 760,
-      "development": "Your baby's eyes may start to open and respond to light and sound.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby's eyes are developing the ability to open and respond to light and sound."
     },
     {
       "week": 27,
@@ -491,20 +190,7 @@
       "size_comparison": "a head of lettuce",
       "length_cm": 36.6,
       "weight_g": 875,
-      "development": "Your baby is settling into more regular sleeping and waking cycles.",
-      "common_symptoms": [
-        "More energy than the first trimester",
-        "A visible, growing belly",
-        "Mild back or round-ligament aches",
-        "Skin changes, like a dark line down the belly",
-        "Feeling the baby move (quickening)"
-      ],
-      "tips": [
-        "Keep up gentle activity your doctor has approved, like walking.",
-        "Comfortable, supportive shoes help as your balance shifts.",
-        "This is a good time to start thinking about your hospital bag and birth plan basics."
-      ],
-      "review": false
+      "development": "Your baby is settling into more regular sleeping and waking cycles."
     },
     {
       "week": 28,
@@ -512,22 +198,7 @@
       "size_comparison": "a large eggplant",
       "length_cm": 37.6,
       "weight_g": 1005,
-      "development": "Your baby can blink, and eyelashes have grown in.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby can blink, and eyelashes have grown in."
     },
     {
       "week": 29,
@@ -535,22 +206,7 @@
       "size_comparison": "a butternut squash",
       "length_cm": 38.6,
       "weight_g": 1153,
-      "development": "Your baby's bones are fully formed but still soft and flexible.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby's bones are fully formed but still soft and flexible."
     },
     {
       "week": 30,
@@ -558,22 +214,7 @@
       "size_comparison": "a cabbage",
       "length_cm": 39.9,
       "weight_g": 1319,
-      "development": "Your baby is gaining weight quickly, and the brain is developing fast.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby is gaining weight quickly, and the brain is developing fast."
     },
     {
       "week": 31,
@@ -581,22 +222,7 @@
       "size_comparison": "a coconut",
       "length_cm": 41.1,
       "weight_g": 1502,
-      "development": "Your baby can turn their head and may be practicing sucking.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby can turn their head and is practicing sucking."
     },
     {
       "week": 32,
@@ -604,22 +230,7 @@
       "size_comparison": "a jicama",
       "length_cm": 42.4,
       "weight_g": 1702,
-      "development": "Your baby's fingernails have reached their fingertips.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby's fingernails have reached their fingertips."
     },
     {
       "week": 33,
@@ -627,22 +238,7 @@
       "size_comparison": "a pineapple",
       "length_cm": 43.7,
       "weight_g": 1918,
-      "development": "Your baby's bones are hardening, except the skull, which stays soft to help with birth.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby's bones are hardening, except the skull, which stays soft to help with birth."
     },
     {
       "week": 34,
@@ -650,22 +246,7 @@
       "size_comparison": "a cantaloupe",
       "length_cm": 45,
       "weight_g": 2146,
-      "development": "Your baby's fingernails are fully grown, and the skin is becoming smoother.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby's fingernails are fully grown, and the skin is becoming smoother."
     },
     {
       "week": 35,
@@ -673,22 +254,7 @@
       "size_comparison": "a honeydew melon",
       "length_cm": 46.2,
       "weight_g": 2383,
-      "development": "Your baby's kidneys are fully developed, and the liver is starting to process waste.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby's kidneys are fully developed, and the liver is starting to process waste."
     },
     {
       "week": 36,
@@ -696,22 +262,7 @@
       "size_comparison": "a large papaya",
       "length_cm": 47.4,
       "weight_g": 2622,
-      "development": "Your baby is likely settling into a head-down position to get ready for birth.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby is likely settling into a head-down position to get ready for birth."
     },
     {
       "week": 37,
@@ -719,22 +270,7 @@
       "size_comparison": "a bunch of Swiss chard",
       "length_cm": 48.6,
       "weight_g": 2859,
-      "development": "Your baby is considered \"early term\" — organs are mature enough to function on their own.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby is considered \"early term\" — organs are mature enough to function on their own."
     },
     {
       "week": 38,
@@ -742,22 +278,7 @@
       "size_comparison": "a leek",
       "length_cm": 49.8,
       "weight_g": 3083,
-      "development": "Your baby is practicing small movements like grasping, in preparation for birth.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby is practicing small movements like grasping, in preparation for birth."
     },
     {
       "week": 39,
@@ -765,22 +286,7 @@
       "size_comparison": "a mini watermelon",
       "length_cm": 50.7,
       "weight_g": 3288,
-      "development": "Your baby is considered full term. The brain and lungs keep maturing even now.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your baby is considered full term. The brain and lungs keep maturing even now."
     },
     {
       "week": 40,
@@ -788,22 +294,7 @@
       "size_comparison": "a small pumpkin",
       "length_cm": 51.2,
       "weight_g": 3462,
-      "development": "Your due date has arrived — many babies arrive within two weeks before or after this date.",
-      "common_symptoms": [
-        "Swelling in the feet and ankles",
-        "Shortness of breath",
-        "Heartburn",
-        "Trouble sleeping",
-        "Practice contractions (Braxton Hicks)",
-        "Needing to pee more often again"
-      ],
-      "tips": [
-        "Many doctors recommend sleeping on your side in the third trimester.",
-        "Packing your hospital bag a few weeks before your due date can ease last-minute stress.",
-        "Keep track of your baby's movements, and mention any big change in pattern to your doctor."
-      ],
-      "review": true,
-      "review_note": "Side-sleeping is widely recommended, but exact guidance (which side, from which week) varies — good to confirm with her doctor."
+      "development": "Your due date has arrived — many babies arrive within two weeks before or after this date."
     }
   ]
 }

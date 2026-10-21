@@ -293,7 +293,6 @@ const db = {
     hospital_name: "City Women's Hospital",
     hospital_phone: "+91 90000 00000",
     hospital_address: "12 MG Road, Hyderabad",
-    insurance_info: "",
     language: "en",
     water_goal_glasses: "8",
     photos_enabled: "true",
@@ -327,7 +326,7 @@ const db = {
   ],
   appointments: [
     { id: "mock-appt-1", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Routine checkup", location: "City Women's Hospital", status: "upcoming", notes_after_visit: "" },
-    { id: "mock-appt-2", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Anomaly scan", location: "City Women's Hospital", status: "done", notes_after_visit: "Everything looked normal." }
+    { id: "mock-appt-2", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), doctor: "Dr. Rao", purpose: "Anomaly scan", location: "City Women's Hospital", status: "done", notes_after_visit: "Scan reviewed at the visit." }
   ],
   healthlog: [
     { id: "mock-hl-1", date: todayStr(-14), weight_kg: 60.5, bp_sys: 112, bp_dia: 74, sugar_fasting: 85, sugar_pp: 115, kicks: 8, mood: "Good", symptoms: "", notes: "" },
@@ -376,7 +375,7 @@ const db = {
   ],
   bookings: [
     { id: "mock-booking-1", type: "doctor_visit", title: "Routine checkup", provider: "Dr. Rao", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), booked_via: "call", location: "City Women's Hospital", notes: "", approx_report_days: "", status: "booked", booked_at: new Date(Date.now() - 2 * 86400000).toISOString(), done_at: "", waiting_for_report_at: "", report_uploaded_at: "", closed_at: "", closed_without_prescription: false, no_prescription_note: "", questions: "[ ] Ask about iron levels\n[x] Ask about kicks per day", created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
-    { id: "mock-booking-2", type: "scan", title: "Anomaly scan", provider: "City Imaging", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), booked_via: "online", location: "", notes: "Everything looked normal.", approx_report_days: 2, status: "closed", booked_at: new Date(Date.now() - 25 * 86400000).toISOString(), done_at: new Date(Date.now() - 20 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 20 * 86400000).toISOString(), report_uploaded_at: new Date(Date.now() - 18 * 86400000).toISOString(), closed_at: new Date(Date.now() - 17 * 86400000).toISOString(), closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 25 * 86400000).toISOString() }
+    { id: "mock-booking-2", type: "scan", title: "Anomaly scan", provider: "City Imaging", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), booked_via: "online", location: "", notes: "Scan reviewed at the visit.", approx_report_days: 2, status: "closed", booked_at: new Date(Date.now() - 25 * 86400000).toISOString(), done_at: new Date(Date.now() - 20 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 20 * 86400000).toISOString(), report_uploaded_at: new Date(Date.now() - 18 * 86400000).toISOString(), closed_at: new Date(Date.now() - 17 * 86400000).toISOString(), closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 25 * 86400000).toISOString() }
   ],
   suggestions: [
     { id: "mock-sugg-1", booking_id: "mock-booking-2", type: "diet_lifestyle", text: "More iron-rich foods", follow_up_date: "", status: "pending", created_at: new Date().toISOString() }
@@ -392,7 +391,7 @@ const db = {
     { id: "mock-cd-3", title: "Iron dose", kind: "interval", target_datetime: "", start_date: "", repeat: "none", interval_hours: 12, linked_medicine_id: "mock-med-2", show_on_home: true, pinned_order: 3, notes: "", done: false, created_at: new Date(Date.now() - 30 * 86400000).toISOString() },
     { id: "mock-cd-4", title: "Weekly midwife check-in", kind: "recurring", target_datetime: new Date(Date.now() - 2 * 86400000).toISOString(), start_date: "", repeat: "weekly", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "Phone call", done: false, created_at: new Date(Date.now() - 40 * 86400000).toISOString() },
     { id: "mock-cd-5", title: "Trying since", kind: "countup", target_datetime: "", start_date: todayStr(-220), repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "", done: false, created_at: new Date(Date.now() - 220 * 86400000).toISOString() },
-    { id: "mock-cd-6", title: "Pack hospital bag", kind: "event", target_datetime: new Date(Date.now() - 36 * 3600000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "Overdue on purpose, for visual testing", done: false, created_at: new Date(Date.now() - 15 * 86400000).toISOString() },
+    { id: "mock-cd-6", title: "Pack hospital bag", kind: "event", target_datetime: new Date(Date.now() - 36 * 3600000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "Past its target date, for visual testing", done: false, created_at: new Date(Date.now() - 15 * 86400000).toISOString() },
     { id: "mock-cd-7", title: "First prenatal yoga class", kind: "event", target_datetime: new Date(Date.now() - 5 * 86400000).toISOString(), start_date: "", repeat: "none", interval_hours: "", linked_medicine_id: "", show_on_home: false, pinned_order: 0, notes: "", done: true, created_at: new Date(Date.now() - 20 * 86400000).toISOString() }
   ]
 };

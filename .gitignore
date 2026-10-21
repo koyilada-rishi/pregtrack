@@ -23,7 +23,12 @@ npm-debug.log*
 .env
 .env.*
 
-# MamaCare design mockups (design/1-today.html etc.) — reference only for
-# the UI restyle, never committed; the mockups themselves may not be ours
-# to publish, and only their design tokens get translated into css/tokens.css.
+# MamaCare design mockups (design/1-today.html etc., design/mamacare/) —
+# reference only for the UI restyle, never committed; the mockups
+# themselves may not be ours to publish, and only their design tokens get
+# translated into css/tokens.css. mamacare.zip is the source archive for
+# design/mamacare/ — also never committed (and design/mamacare/ was
+# extracted from it with firebase-applet-config.json deliberately excluded,
+# per the project's secrets rules).
 design/
+mamacare.zip
