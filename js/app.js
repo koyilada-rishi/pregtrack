@@ -2495,7 +2495,14 @@ function medicineSheetMarkup(item, packs, settings) {
   const isNew = item === "new" || !item.id;
   const m = item === "new" ? {} : item; // a prefilled object (e.g. from a doctor suggestion) keeps its fields even though it's still "new"
   const type = schedule.effectiveScheduleType(m);
-  const times = schedule.parseTimesList(m);
+  // A brand new medicine defaults to the daily schedule with nothing timed
+  // yet — without a default here, none of the "how many times a day" chips
+  // start selected, so saving without ever tapping one left times blank
+  // and the medicine silently never showed up as due. Defaulting to once a
+  // day at 08:00 means there's always a predefined timing unless she picks
+  // her own, matching how the other schedule types' time fields already
+  // behave (a pre-filled <input type="time">, not an unselected chip row).
+  const times = isNew && type === "daily" ? TIMES_PER_DAY_DEFAULTS[1] : schedule.parseTimesList(m);
   const weekdaysList = schedule.parseWeekdaysList(m);
   const instructions = m.instructions || "none";
   const howLong = m.total_doses ? "doses" : m.end_date ? "until" : "ongoing";
@@ -2656,7 +2663,11 @@ function readMedicineSheetForm(form) {
   };
 
   if (scheduleType === "daily") {
-    result.times = fd.get("times") || "";
+    // Belt-and-suspenders: if she somehow still ends up with no times
+    // picked at all (untapping the pre-filled default, say), fall back to
+    // it rather than silently saving a daily medicine that can never show
+    // up as due — "if given, use it; if not, take the predefined timing."
+    result.times = fd.get("times") || TIMES_PER_DAY_DEFAULTS[1].join(",");
   } else if (scheduleType === "interval") {
     result.interval_hours = fd.get("interval_hours");
     result.anchor_mode = fd.get("anchor_from_last") === "on" ? "from_last" : "fixed";
