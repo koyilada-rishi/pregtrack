@@ -80,7 +80,8 @@ const STRINGS = {
     "home.medicines.title": "Today's medicines",
     "home.medicines.none": "Nothing pending right now.",
     "home.medicines.hint": "Check doses off from the Meds tab.",
-    "home.logVitals": "Log vitals",
+    "home.scanDocument": "Scan a document",
+    "home.logVitals": "Log symptoms & vitals",
     "home.emergency": "Emergency",
 
     "home.greeting.morning": "Good morning",

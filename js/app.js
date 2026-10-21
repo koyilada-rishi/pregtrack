@@ -780,6 +780,7 @@ function homeMarkup(boot, logs, weekEntry, now) {
     </div>
 
     <div class="dashboard-actions">
+      <button class="btn btn-secondary" data-nav="#/scan">${t("home.scanDocument")}</button>
       <button class="btn btn-secondary" data-nav="#/health/new">${t("home.logVitals")}</button>
       <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
     </div>
