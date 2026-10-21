@@ -24,6 +24,11 @@ const state = {
   swUpdateWorker: null // set once a new service worker is waiting to take over
 };
 
+// Set by the "+ Add anything" sheet's Report/Prescription/Bill tiles right
+// before navigating to #/records, then consumed once by renderRecordsView
+// so the upload sheet opens immediately with that category already chosen.
+let pendingAddPreset = null;
+
 // ---------------------------------------------------------------------------
 // Shared UI: bottom sheets + 6-second undo toasts.
 //
@@ -606,9 +611,10 @@ async function renderHomeView(outlet) {
 }
 
 function renderHomeBody(outlet) {
-  outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.logs, homeState.weekEntry, new Date());
+  outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.logs, homeState.weekEntry, new Date()) + addAnythingFabMarkup();
   attachNavButtons(outlet);
   attachHomeHandlers(outlet);
+  attachAddAnythingFabHandler(outlet);
   startHomeTimers(outlet);
 }
 
@@ -1304,6 +1310,18 @@ function attachSymptomDetailHandlers(sheetEl, symptomKey, customName) {
 // ever auto-saved — every path here ends at openSheet() first.
 // ---------------------------------------------------------------------------
 
+// Quick note — the default action is a single plain-text timeline entry,
+// saved as typed with no parsing and no confirmation screen. The "Make it:
+// ..." chips are the opt-in path into the rule-based parser below (and its
+// own editable confirm card) for the rarer case she actually wants the app
+// to recognize a date/time/structure in what she typed.
+const QUICKNOTE_CHIP_INTENTS = [
+  { intent: "booking", labelKey: "quickadd.intent.booking" },
+  { intent: "medicine", labelKey: "quickadd.intent.medicine" },
+  { intent: "question", labelKey: "quickadd.intent.question" },
+  { intent: "symptom", labelKey: "quickadd.intent.symptom" }
+];
+
 function quickAddCardMarkup() {
   return `
     <div class="card quickadd-card">
@@ -1312,47 +1330,228 @@ function quickAddCardMarkup() {
         <input class="field" id="quickadd-input" placeholder="${t("quickadd.placeholder")}" />
         <button type="button" class="btn-add quickadd-mic-btn" id="quickadd-mic-btn" aria-label="${t("quickadd.mic")}" hidden>🎤</button>
       </div>
-      <button type="button" class="btn btn-primary" id="quickadd-submit-btn">${t("quickadd.add")}</button>
+      <label class="btn-link quickadd-photo-label">
+        <span id="quickadd-photo-status">${t("quickadd.addPhoto")}</span>
+        <input type="file" accept="image/*" id="quickadd-photo-input" hidden />
+      </label>
+      <div class="chip-row">
+        ${QUICKNOTE_CHIP_INTENTS.map((c) => `<button type="button" class="chip" data-quicknote-intent="${c.intent}">${t(c.labelKey)}</button>`).join("")}
+      </div>
+      <button type="button" class="btn btn-primary" id="quickadd-submit-btn">${t("quickadd.save")}</button>
     </div>
   `;
 }
 
-function openQuickAddConfirmSheet(outlet, rawText) {
-  const draft = parseQuickAdd(rawText, new Date());
-  if (draft.intent === "ambiguous") {
-    openSheet(quickAddAmbiguousMarkup(draft), (sheetEl) => attachQuickAddAmbiguousHandlers(sheetEl, draft, outlet));
-  } else {
-    openSheet(quickAddConfirmMarkup(draft), (sheetEl) => attachQuickAddConfirmHandlers(sheetEl, draft, outlet));
+// ---------------------------------------------------------------------------
+// "+ Add anything" — a floating pill (Today/Meds/Records) opening one
+// bottom sheet of big tiles for every kind of entry. Each tile reuses the
+// exact same creation flow its own view's "+" button already opens — this
+// is just a faster way to reach it from wherever she already is, not a
+// second implementation of any of them.
+// ---------------------------------------------------------------------------
+
+const ADD_ANYTHING_TILES = [
+  { key: "medicine", icon: "medication", labelKey: "addAnything.medicine" },
+  { key: "report", icon: "folder_open", labelKey: "addAnything.report" },
+  { key: "prescription", icon: "prescriptions", labelKey: "addAnything.prescription" },
+  { key: "bill", icon: "receipt_long", labelKey: "addAnything.bill" },
+  { key: "booking", icon: "calendar_clock", labelKey: "addAnything.booking" },
+  { key: "symptom", icon: "vital_signs", labelKey: "addAnything.symptom" },
+  { key: "water", icon: "water_drop", labelKey: "addAnything.water" },
+  { key: "food", icon: "restaurant", labelKey: "addAnything.food" },
+  { key: "note", icon: "edit", labelKey: "addAnything.note" },
+  { key: "countdown", icon: "schedule", labelKey: "addAnything.countdown" }
+];
+
+function addAnythingFabMarkup() {
+  return `<button type="button" class="mc-fab" id="add-anything-fab" aria-label="${t("addAnything.title")}">${icon("add", "icon-lg")}<span>${t("addAnything.title")}</span></button>`;
+}
+
+function attachAddAnythingFabHandler(outlet) {
+  const fab = outlet.querySelector("#add-anything-fab");
+  if (fab) fab.addEventListener("click", openAddAnythingSheet);
+}
+
+function openAddAnythingSheet() {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("addAnything.title")}</h2>
+    <div class="add-anything-grid">
+      ${ADD_ANYTHING_TILES.map((item) => `
+        <button type="button" class="add-anything-tile" data-add-anything="${item.key}">
+          ${icon(item.icon, "icon-lg")}
+          <span>${t(item.labelKey)}</span>
+        </button>
+      `).join("")}
+    </div>
+    <button type="button" class="btn-link" id="add-anything-cancel">${t("common.cancel")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#add-anything-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelectorAll("[data-add-anything]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        closeSheet();
+        handleAddAnything(btn.dataset.addAnything);
+      });
+    });
+  });
+}
+
+function handleAddAnything(key) {
+  const refresh = () => renderRoute();
+  switch (key) {
+    case "medicine":
+      openMedicineSheet("new", refresh);
+      break;
+    case "report":
+      openAddAnythingReportTypeSheet();
+      break;
+    case "prescription":
+      navigateToRecordsWithPreset("prescription");
+      break;
+    case "bill":
+      navigateToRecordsWithPreset("bill");
+      break;
+    case "booking":
+      openBookingCreateSheet(refresh);
+      break;
+    case "symptom":
+      openAddAnythingSymptomPicker();
+      break;
+    case "water":
+      addAnythingWaterGlass(refresh);
+      break;
+    case "food":
+      openAddAnythingFoodSheet(refresh);
+      break;
+    case "note":
+      openAddAnythingNoteSheet(refresh);
+      break;
+    case "countdown": {
+      const boot = store.getCachedBootstrap();
+      openCountdownSheet("new", (boot && boot.medicines) || [], refresh);
+      break;
+    }
   }
 }
 
-const QUICKADD_AMBIGUOUS_BUTTONS = [
-  { intent: "booking", labelKey: "quickadd.intent.booking" },
-  { intent: "medicine", labelKey: "quickadd.intent.medicine" },
-  { intent: "question", labelKey: "quickadd.intent.question" },
-  { intent: "symptom", labelKey: "quickadd.intent.symptom" },
-  { intent: "note", labelKey: "quickadd.intent.note" }
-];
-
-function quickAddAmbiguousMarkup(draft) {
-  return `
-    <div class="sheet-handle" aria-hidden="true"></div>
-    <h2>${t("quickadd.ambiguous.title")}</h2>
-    <p class="muted">"${escapeHtml(draft.rawText)}"</p>
-    <p>${t("quickadd.ambiguous.hint")}</p>
-    <div class="quickadd-ambiguous-buttons">
-      ${QUICKADD_AMBIGUOUS_BUTTONS.map((b) => `<button type="button" class="btn btn-secondary" data-force-intent="${b.intent}">${t(b.labelKey)}</button>`).join("")}
-    </div>
-    <button type="button" class="btn-link" id="quickadd-ambiguous-cancel">${t("common.cancel")}</button>
-  `;
+// Setting location.hash when already on #/records is a no-op — no
+// hashchange event fires, so renderRoute() never runs and the queued
+// preset would just sit there unconsumed. Forcing a re-render directly
+// covers that case; a real navigation still goes through the hash change
+// as normal everywhere else in the app.
+function navigateToRecordsWithPreset(presetType) {
+  pendingAddPreset = presetType;
+  if (currentPath() === "/records") {
+    renderRoute();
+  } else {
+    location.hash = "#/records";
+  }
 }
 
-function attachQuickAddAmbiguousHandlers(sheetEl, draft, outlet) {
-  sheetEl.querySelector("#quickadd-ambiguous-cancel").addEventListener("click", closeSheet);
-  sheetEl.querySelectorAll("[data-force-intent]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const forced = parseQuickAdd(draft.rawText, new Date(), btn.dataset.forceIntent);
-      openSheet(quickAddConfirmMarkup(forced), (sheetEl2) => attachQuickAddConfirmHandlers(sheetEl2, forced, outlet));
+// "Report" covers both lab and scan documents — one extra tap to say
+// which, since they file into different Records categories.
+function openAddAnythingReportTypeSheet() {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("addAnything.report")}</h2>
+    <div class="add-anything-grid">
+      <button type="button" class="add-anything-tile" data-report-type="lab_report">${icon("folder_open", "icon-lg")}<span>${t("records.type.lab_report")}</span></button>
+      <button type="button" class="add-anything-tile" data-report-type="scan_report">${icon("radiology", "icon-lg")}<span>${t("records.type.scan_report")}</span></button>
+    </div>
+    <button type="button" class="btn-link" id="add-anything-report-cancel">${t("common.cancel")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#add-anything-report-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelectorAll("[data-report-type]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        closeSheet();
+        navigateToRecordsWithPreset(btn.dataset.reportType);
+      });
+    });
+  });
+}
+
+function openAddAnythingSymptomPicker() {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("addAnything.symptom")}</h2>
+    <div class="chip-row">
+      ${SYMPTOM_FIXED_KEYS.map((k) => `<button type="button" class="chip" data-symptom-key="${k}">${t("symptom." + k)}</button>`).join("")}
+    </div>
+    <button type="button" class="btn-link" id="add-anything-symptom-cancel">${t("common.cancel")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#add-anything-symptom-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelectorAll("[data-symptom-key]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        closeSheet();
+        openSymptomSheet(btn.dataset.symptomKey, null);
+      });
+    });
+  });
+}
+
+async function addAnythingWaterGlass(refresh) {
+  try {
+    await store.call("water.add", { date: schedule.formatLocalDate(new Date()), time: formatTimeHHMM(new Date()), glasses: 1 });
+    refresh();
+  } catch (err) {
+    alert(err.message || t("common.error"));
+  }
+}
+
+function openAddAnythingFoodSheet(refresh) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("food.title")}</h2>
+    <form id="add-anything-food-form">
+      ${formField(t("foodlog.meal"), `<select class="field" name="meal">${MEAL_CHIPS.map((m) => `<option value="${m}">${m}</option>`).join("")}</select>`)}
+      ${formField(t("foodlog.items"), `<input class="field" name="items" autofocus />`)}
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="add-anything-food-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#add-anything-food-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#add-anything-food-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const items = fd.get("items").trim();
+      if (!items) return;
+      try {
+        await store.call("foodlog.create", { date: schedule.formatLocalDate(new Date()), meal: fd.get("meal"), items, craving_or_aversion: "", notes: "" });
+        closeSheet();
+        refresh();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+}
+
+// Same instant-save, no-parsing semantics as the Today Quick Note card —
+// she's already told us it's a note by picking this tile, so there's
+// nothing left to ask.
+function openAddAnythingNoteSheet(refresh) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("addAnything.note")}</h2>
+    <textarea class="field" id="add-anything-note-input" rows="3" placeholder="${t("quickadd.placeholder")}"></textarea>
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" id="add-anything-note-cancel">${t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="add-anything-note-save">${t("quickadd.save")}</button>
+    </div>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#add-anything-note-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#add-anything-note-save").addEventListener("click", async () => {
+      const text = sheetEl.querySelector("#add-anything-note-input").value.trim();
+      if (!text) return;
+      try {
+        await store.call("notes.create", { date: schedule.formatLocalDate(new Date()), time: formatTimeHHMM(new Date()), category: "note", text });
+        closeSheet();
+        refresh();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
     });
   });
 }
@@ -1378,7 +1577,6 @@ function quickAddMedicineFieldsMarkup(draft) {
     ${formField(t("quickadd.form.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(f.startDate || "")}" />`)}
     ${formField(t("quickadd.form.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(f.endDate || "")}" />`, t("quickadd.form.endDateHint"))}
     ${formField(t("quickadd.form.times"), `<input class="field" name="times" value="${escapeHtml(f.times || "")}" placeholder="08:00, 20:00" />`, draft.timeIsVague ? t("quickadd.form.timeVagueHint") : t("quickadd.form.timesHint"))}
-    <p class="safety-note">${t("meds.form.safetyNote")}</p>
   `;
 }
 
@@ -1542,11 +1740,55 @@ function attachHomeHandlers(outlet) {
   const quickAddInput = outlet.querySelector("#quickadd-input");
   const quickAddSubmitBtn = outlet.querySelector("#quickadd-submit-btn");
   const quickAddMicBtn = outlet.querySelector("#quickadd-mic-btn");
+  let quickNotePhoto = null; // { base64, mimeType, filename } — uploaded on save, not on pick
 
-  const submitQuickAdd = () => {
+  const photoInput = outlet.querySelector("#quickadd-photo-input");
+  const photoStatus = outlet.querySelector("#quickadd-photo-status");
+  if (photoInput) {
+    photoInput.addEventListener("change", async () => {
+      const file = photoInput.files[0];
+      if (!file) return;
+      photoStatus.textContent = t("quickadd.photoSelected", { name: file.name });
+      try {
+        const dataUrl = await compressImageToBase64(file, 1600, 0.8);
+        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+        quickNotePhoto = { base64: match ? match[2] : "", mimeType: (match && match[1]) || file.type, filename: file.name };
+      } catch {
+        photoStatus.textContent = t("quickadd.addPhoto");
+        quickNotePhoto = null;
+      }
+    });
+  }
+
+  // The default action: save exactly what she typed as one plain timeline
+  // note, right now — no parser, no confirm screen. A photo picked above
+  // (if any) uploads first and links to the note once it has a real id.
+  const submitQuickAdd = async () => {
     const text = quickAddInput.value.trim();
     if (!text) return;
-    openQuickAddConfirmSheet(outlet, text);
+    quickAddSubmitBtn.disabled = true;
+    const todayStr = schedule.formatLocalDate(new Date());
+    const nowTime = formatTimeHHMM(new Date());
+    try {
+      let photoFileId = "";
+      if (quickNotePhoto) {
+        const uploaded = await store.call("files.upload", {
+          title: t("quickadd.photoTitle", { text: text.slice(0, 60) }), type: "document", type_v2: "other",
+          date: todayStr, filename: quickNotePhoto.filename, mimeType: quickNotePhoto.mimeType, base64: quickNotePhoto.base64
+        });
+        photoFileId = uploaded.id;
+      }
+      await store.call("notes.create", { date: todayStr, time: nowTime, category: "note", text, photo_file_id: photoFileId });
+      quickAddInput.value = "";
+      quickNotePhoto = null;
+      if (photoStatus) photoStatus.textContent = t("quickadd.addPhoto");
+      if (photoInput) photoInput.value = "";
+      await refreshHome();
+    } catch (err) {
+      alert(err.message || t("common.error"));
+    } finally {
+      quickAddSubmitBtn.disabled = false;
+    }
   };
   if (quickAddSubmitBtn) quickAddSubmitBtn.addEventListener("click", submitQuickAdd);
   if (quickAddInput) {
@@ -1554,6 +1796,18 @@ function attachHomeHandlers(outlet) {
       if (event.key === "Enter") { event.preventDefault(); submitQuickAdd(); }
     });
   }
+
+  // "Make it: ..." chips — the opt-in path into the rule-based parser,
+  // forcing its intent instead of letting it guess, then the usual
+  // editable confirm card (never auto-saved).
+  outlet.querySelectorAll("[data-quicknote-intent]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const text = quickAddInput.value.trim();
+      if (!text) return;
+      const draft = parseQuickAdd(text, new Date(), btn.dataset.quicknoteIntent);
+      openSheet(quickAddConfirmMarkup(draft), (sheetEl) => attachQuickAddConfirmHandlers(sheetEl, draft, outlet));
+    });
+  });
 
   // Mic is entirely optional — only shown where the browser actually
   // supports speech recognition, feature-detected here rather than assumed.
@@ -1958,11 +2212,13 @@ function stopMedsTimers() {
 
 function renderMedsBody(outlet) {
   stopMedsTimers();
-  outlet.innerHTML = medsListMarkup();
+  outlet.innerHTML = medsListMarkup() + addAnythingFabMarkup();
   attachMedsHandlers(outlet);
+  attachAddAnythingFabHandler(outlet);
   medsState.refreshIntervalId = setInterval(() => {
-    outlet.innerHTML = medsListMarkup();
+    outlet.innerHTML = medsListMarkup() + addAnythingFabMarkup();
     attachMedsHandlers(outlet);
+    attachAddAnythingFabHandler(outlet);
   }, 30000);
 }
 
@@ -2712,8 +2968,7 @@ function medicineSheetMarkup(item, packs, settings, files) {
         ${!isNew ? medicineLinkedFilesMarkup(m, files) : ""}
       </details>
 
-      <p class="safety-note">${t("meds.form.safetyNote")}</p>
-      <p class="sheet-summary" id="med-sheet-summary"></p>
+        <p class="sheet-summary" id="med-sheet-summary"></p>
       <p class="error-text" id="med-sheet-error" hidden></p>
 
       <div class="form-actions">
@@ -4204,6 +4459,7 @@ const recordsState = {
   sortBy: "date", // "date" | "doctor"
   viewMode: "list",
   uploadOpen: false,
+  presetType: "", // set when "+ Add anything" opens the upload sheet with a category already chosen
   pendingFiles: [], // [{ base64, mimeType, filename, size }] — bulk upload, several at once
   viewingFile: null // result of files.get, shown inline
 };
@@ -4213,6 +4469,15 @@ async function renderRecordsView(outlet) {
   recordsState.uploadOpen = false;
   recordsState.pendingFiles = [];
   recordsState.viewingFile = null;
+  recordsState.presetType = "";
+  // "+ Add anything" (Report/Prescription/Bill tiles) navigates here with a
+  // preset category queued — consumed once so a later plain visit to
+  // Records never re-opens the upload sheet unexpectedly.
+  if (pendingAddPreset) {
+    recordsState.uploadOpen = true;
+    recordsState.presetType = pendingAddPreset;
+    pendingAddPreset = null;
+  }
   outlet.innerHTML = genericSkeleton(6);
 
   try {
@@ -4272,8 +4537,9 @@ function renderRecordsBody(outlet) {
     attachUploadHandlers(outlet);
     return;
   }
-  outlet.innerHTML = recordsState.folderFilter ? recordsListMarkup() : recordsFolderTilesMarkup();
+  outlet.innerHTML = (recordsState.folderFilter ? recordsListMarkup() : recordsFolderTilesMarkup()) + addAnythingFabMarkup();
   attachRecordsListHandlers(outlet);
+  attachAddAnythingFabHandler(outlet);
 }
 
 function recordsFolderTilesMarkup() {
@@ -4479,7 +4745,7 @@ function recordRowMarkup(f) {
 
 function attachRecordsListHandlers(outlet) {
   const addBtn = outlet.querySelector("#add-record-btn");
-  if (addBtn) addBtn.addEventListener("click", () => { recordsState.uploadOpen = true; renderRecordsBody(outlet); });
+  if (addBtn) addBtn.addEventListener("click", () => { recordsState.uploadOpen = true; recordsState.presetType = ""; renderRecordsBody(outlet); });
 
   outlet.querySelectorAll("[data-open-folder]").forEach((btn) => {
     btn.addEventListener("click", () => { recordsState.folderFilter = btn.dataset.openFolder; renderRecordsBody(outlet); });
@@ -4673,8 +4939,8 @@ function uploadFormMarkup() {
           ${formField(
             t("records.upload.type"),
             `<select class="field" name="type_v2" required>
-              <option value="" disabled selected>${t("records.upload.typeChoose")}</option>
-              ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
+              ${recordsState.presetType ? "" : `<option value="" disabled selected>${t("records.upload.typeChoose")}</option>`}
+              ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}" ${ty === recordsState.presetType ? "selected" : ""}>${t("records.type." + ty)}</option>`).join("")}
             </select>`,
             pending.length > 1 ? t("records.upload.sharedFieldsHint") : ""
           )}

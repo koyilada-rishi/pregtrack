@@ -1175,6 +1175,7 @@ function notesCreate(payload) {
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     category: category,
     text: sanitizeText(payload.text, 2000),
+    photo_file_id: sanitizeText(payload.photo_file_id, 100),
     created_at: new Date().toISOString()
   });
 }
@@ -2227,7 +2228,10 @@ var SHEET_SCHEMA = {
   // recognized intent (category 'note') plus "question for the doctor"
   // (category 'question') — both just free text, shown in the Timeline so
   // nothing typed is ever silently lost.
-  Notes: ['id', 'date', 'time', 'category', 'text', 'created_at'],
+  // photo_file_id: an optional photo attached when the note was saved — a
+  // Files row id (type_v2: other), same pattern as every other photo
+  // pointer in this schema (medicine photos, etc.).
+  Notes: ['id', 'date', 'time', 'category', 'text', 'photo_file_id', 'created_at'],
 
   // --- Phase 3 (v3): bookings, suggestions, bills -----------------------
   // Bookings replaces the plain Appointments flow for anything booked
