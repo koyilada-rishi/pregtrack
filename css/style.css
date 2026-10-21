@@ -1,112 +1,86 @@
 /* Pregnancy Care Tracker — app styles.
    Mobile-first, one-hand use, calm colors, dark mode via prefers-color-scheme. */
 
+/* MamaCare palette adapter — every --color-, --radius- and --shadow- variable
+   below is what the rest of this file (and every component rule in it)
+   actually uses; this block just points them at the real design tokens in
+   css/tokens.css (the --mc-* variables) instead of carrying its own
+   hardcoded values. Those --mc-* tokens already switch between light and
+   dark on their own (prefers-color-scheme / data-theme), so nothing here
+   needs a separate dark-mode block — it inherits that automatically. This
+   is what retokenizes every existing card/chip/button/badge in the app to
+   the MamaCare palette without having to rewrite each component's rule. */
 :root {
-  --color-bg: #fbf7f5;
-  --color-surface: #ffffff;
-  --color-surface-muted: #f3eceA;
-  --color-text: #2b2420;
-  --color-text-muted: #6b6058;
-  --color-border: #e6dbd6;
-  --color-primary: #d97a7a;
-  --color-primary-dark: #b85f5f;
-  --color-primary-contrast: #ffffff;
-  --color-accent: #8fae8b;
-  --color-emergency: #c23b3b;
-  --color-emergency-contrast: #ffffff;
-  --color-warning-bg: #fdf1dc;
-  --color-warning-text: #7a5a1e;
-  --color-success: #4f8a5e;
-  --color-skeleton: #ece3df;
-  --color-skeleton-shine: #f8f2ef;
-  --color-peach: #f6ddc4;
+  --color-bg: var(--mc-surface);
+  --color-surface: var(--mc-surface-container-lowest);
+  --color-surface-muted: var(--mc-surface-container-low);
+  --color-text: var(--mc-on-surface);
+  --color-text-muted: var(--mc-on-surface-variant);
+  --color-border: var(--mc-outline-variant);
+  --color-primary: var(--mc-primary);
+  --color-primary-dark: var(--mc-on-primary-container);
+  --color-primary-contrast: var(--mc-on-primary);
+  --color-accent: var(--mc-secondary);
+  --color-emergency: var(--mc-error);
+  --color-emergency-contrast: var(--mc-on-error);
+  --color-warning-bg: var(--mc-tertiary-fixed);
+  --color-warning-text: var(--mc-on-tertiary-fixed-variant);
+  --color-success: var(--mc-secondary);
+  --color-skeleton: var(--mc-surface-container-high);
+  --color-skeleton-shine: var(--mc-surface-container-highest);
+  --color-peach: var(--mc-tertiary-fixed);
   /* Shared dose/status state colors: calm (upcoming/on track), amber (due
      soon/late), rose (overdue/missed — not the same as the Emergency red),
      sage (done). Used across Home, Meds and the Coming-up card so the same
      color always means the same thing. */
-  --color-state-calm: var(--color-accent);
-  --color-state-amber: #c9922e;
-  --color-state-amber-bg: var(--color-warning-bg);
-  --color-state-rose: #b85f5f;
-  --color-state-rose-bg: #f7e5e2;
-  --color-state-sage: #4f8a5e;
-  --shadow-card: 0 1px 2px rgba(43, 36, 32, 0.06), 0 2px 8px rgba(43, 36, 32, 0.06);
-  --radius-card: 20px;
-  --radius-control: 12px;
-  --nav-height: 64px;
+  --color-state-calm: var(--mc-secondary);
+  --color-state-amber: var(--mc-on-tertiary-fixed-variant);
+  --color-state-amber-bg: var(--mc-tertiary-fixed);
+  --color-state-rose: var(--mc-on-primary-fixed-variant);
+  --color-state-rose-bg: var(--mc-primary-fixed);
+  --color-state-sage: var(--mc-secondary);
+  --shadow-card: 0 1px 2px rgba(19, 29, 35, 0.06), 0 1px 1px rgba(19, 29, 35, 0.04);
+  --radius-card: var(--radius-xl);
+  --radius-control: var(--radius-full);
+  --nav-height: var(--tabbar-height);
 
   color-scheme: light dark;
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --color-bg: #1b1715;
-    --color-surface: #24201d;
-    --color-surface-muted: #2c2723;
-    --color-text: #f1e9e4;
-    --color-text-muted: #ab9d93;
-    --color-border: #3a332e;
-    --color-primary: #e08f8f;
-    --color-primary-dark: #eaa8a8;
-    --color-primary-contrast: #231111;
-    --color-accent: #a7c8a2;
-    --color-emergency: #e2605a;
-    --color-emergency-contrast: #231111;
-    --color-warning-bg: #3a2f17;
-    --color-warning-text: #e6c988;
-    --color-success: #7fbb8d;
-    --color-skeleton: #332c27;
-    --color-skeleton-shine: #3d352f;
-    --color-peach: #5a4530;
-    --color-state-calm: var(--color-accent);
-    --color-state-amber: #e6c988;
-    --color-state-amber-bg: #3a2f17;
-    --color-state-rose: #e2938e;
-    --color-state-rose-bg: #3a2420;
-    --color-state-sage: #7fbb8d;
-  }
-}
-
-:root[data-theme="dark"] {
-  --color-bg: #1b1715;
-  --color-surface: #24201d;
-  --color-surface-muted: #2c2723;
-  --color-text: #f1e9e4;
-  --color-text-muted: #ab9d93;
-  --color-border: #3a332e;
-  --color-primary: #e08f8f;
-  --color-primary-dark: #eaa8a8;
-  --color-primary-contrast: #231111;
-  --color-accent: #a7c8a2;
-  --color-emergency: #e2605a;
-  --color-emergency-contrast: #231111;
-  --color-warning-bg: #3a2f17;
-  --color-warning-text: #e6c988;
-  --color-success: #7fbb8d;
-  --color-skeleton: #332c27;
-  --color-skeleton-shine: #3d352f;
-  --color-peach: #5a4530;
-  --color-state-calm: var(--color-accent);
-  --color-state-amber: #e6c988;
-  --color-state-amber-bg: #3a2f17;
-  --color-state-rose: #e2938e;
-  --color-state-rose-bg: #3a2420;
-  --color-state-sage: #7fbb8d;
-}
-
 * { box-sizing: border-box; }
+
+/* Form controls don't inherit the page font by default in most browsers'
+   UA stylesheets (a textarea in particular tends to fall back to a
+   monospace font) — without this they'd silently keep using the system
+   font even though everything else switched to Plus Jakarta Sans. */
+input, textarea, select, button {
+  font-family: inherit;
+}
 
 body {
   margin: 0;
   background: var(--color-bg);
   color: var(--color-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.45;
   -webkit-tap-highlight-color: transparent;
 }
+
+.icon {
+  font-family: var(--font-icon);
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+.icon-sm { font-size: 16px; }
+.icon-lg { font-size: 24px; }
 
 img { max-width: 100%; }
 [hidden] { display: none !important; }
@@ -138,44 +112,125 @@ a { color: var(--color-primary-dark); }
   padding-bottom: 24px;
 }
 
-.topbar {
+/* ---------- Header ---------- */
+
+.mc-header {
   position: sticky;
   top: env(safe-area-inset-top, 0px);
   z-index: 5;
+  background: color-mix(in srgb, var(--mc-surface) 85%, transparent);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.03);
+}
+
+.mc-header-row {
+  height: var(--header-height);
+  padding: 0 var(--margin-mobile);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  background: var(--color-bg);
-  border-bottom: 1px solid var(--color-border);
+  justify-content: space-between;
+  gap: var(--gutter-mobile);
 }
 
-.topbar h1 {
-  font-size: 1.1rem;
-  margin: 0;
-  flex: 1;
+.mc-header-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
 }
 
-.topbar .icon-btn {
-  min-width: 44px;
-  min-height: 44px;
+.mc-logo-mark {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--mc-primary-fixed);
+  color: var(--mc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* ---------- Bottom nav ---------- */
+.mc-header-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
 
-.bottom-nav {
+.mc-header-name {
+  font-size: var(--text-title-md-size);
+  font-weight: 700;
+  color: var(--mc-primary);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mc-week-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px var(--space-xs);
+  border-radius: var(--radius-full);
+  background: var(--mc-secondary-fixed);
+  color: var(--mc-on-secondary-fixed-variant);
+  font-size: var(--text-label-sm-size);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mc-week-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mc-secondary);
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mc-week-pill-dot { animation: mc-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes mc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.mc-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.mc-header-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-full);
+  border: none;
+  background: none;
+  color: var(--mc-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.mc-header-btn:hover { background: var(--mc-surface-container-high); }
+
+/* ---------- Bottom tab bar ---------- */
+
+.mc-tabbar {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 10;
   display: flex;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--mc-surface) 90%, transparent);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 -4px 20px rgba(39, 49, 56, 0.06);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-.bottom-nav button {
+.mc-tabbar-item {
   flex: 1;
   background: none;
   border: none;
@@ -184,19 +239,14 @@ a { color: var(--color-primary-dark); }
   align-items: center;
   justify-content: center;
   gap: 2px;
-  min-height: var(--nav-height);
-  font-size: 0.72rem;
-  color: var(--color-text-muted);
+  min-height: var(--tabbar-height);
+  font-size: var(--text-label-sm-size);
+  color: var(--mc-on-surface-variant);
   cursor: pointer;
 }
 
-.bottom-nav button .nav-icon {
-  font-size: 1.3rem;
-  line-height: 1;
-}
-
-.bottom-nav button[aria-current="true"] {
-  color: var(--color-primary-dark);
+.mc-tabbar-item[aria-current="true"] {
+  color: var(--mc-primary);
   font-weight: 600;
 }
 

@@ -13,6 +13,7 @@ import {
 } from "./countdown.js";
 import * as schedule from "./schedule.js";
 import { parseQuickAdd } from "./quickadd.js";
+import { icon } from "./icons.js";
 
 const appRoot = document.getElementById("app");
 
@@ -112,21 +113,27 @@ function showUndoToast(message, { onUndo, onCommit }, seconds) {
   });
 }
 
+// MamaCare's 4 tabs — everything else (Visits/Bookings, Settings, the
+// journal, Water history, Countdowns, Contacts/Emergency, Medicines used,
+// Sign out) lives one tap away behind the header's profile button (/more)
+// instead of competing for tab-bar space. "home" keeps its original route
+// key/hash internally (renaming it "today" everywhere would touch a lot of
+// state/history for zero behavioral gain) — only the nav label changes.
 const NAV_ITEMS = [
-  { key: "home", hash: "#/home", icon: "🏠", label: () => t("nav.home") },
-  { key: "meds", hash: "#/meds", icon: "💊", label: () => t("nav.meds") },
-  { key: "visits", hash: "#/visits", icon: "🩺", label: () => t("nav.visits") },
-  { key: "records", hash: "#/records", icon: "📁", label: () => t("nav.records") },
-  { key: "more", hash: "#/more", icon: "⋯", label: () => t("nav.more") }
+  { key: "home", hash: "#/home", iconName: "calendar_today", label: () => t("nav.today") },
+  { key: "scan", hash: "#/scan", iconName: "document_scanner", label: () => t("nav.scan") },
+  { key: "meds", hash: "#/meds", iconName: "medication", label: () => t("nav.meds") },
+  { key: "records", hash: "#/records", iconName: "folder_shared", label: () => t("nav.records") }
 ];
 
 const ROUTES = {
-  "/home": { render: renderHomeView, navKey: "home", title: () => t("home.title") },
+  "/home": { render: renderHomeView, navKey: "home", title: () => t("nav.today") },
+  "/scan": { render: renderScanView, navKey: "scan", title: () => t("nav.scan") },
   "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
   "/meds/history": { render: renderMedicinesHistoryView, navKey: "meds", title: () => t("meds.history.title") },
-  "/visits": { render: renderAppointmentsView, navKey: "visits", title: () => t("nav.visits") },
+  "/visits": { render: renderAppointmentsView, navKey: null, title: () => t("nav.visits") },
   "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
-  "/more": { render: renderMoreView, navKey: "more", title: () => t("more.title") },
+  "/more": { render: renderMoreView, navKey: null, title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
   "/guide": { render: renderGuideView, navKey: null, title: () => t("guide.title") },
   "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
@@ -384,24 +391,143 @@ function renderShell(route) {
     <div id="offline-banner" class="offline-banner" ${state.online ? "hidden" : ""}>${t("offline.banner")}</div>
     <div id="backend-outdated-banner" class="offline-banner" ${state.backendOutdated ? "" : "hidden"}>${t("backendOutdated.banner")}</div>
     <button id="sw-update-banner" class="offline-banner sw-update-banner" ${state.swUpdateWorker ? "" : "hidden"}>${t("swUpdate.banner")}</button>
-    <header class="topbar">
-      <h1>${route.title()}</h1>
-    </header>
+    ${mcHeaderMarkup(route)}
     <main class="view" id="view-outlet"></main>
-    <nav class="bottom-nav" id="bottom-nav"></nav>
+    <nav class="mc-tabbar" id="bottom-nav"></nav>
   `;
   renderBottomNav(route.navKey);
   updateSwBanner(); // re-attach the click handler the fresh innerHTML above just discarded
+  attachMcHeaderHandlers();
+  refreshHeaderWeekPill();
   const outlet = document.getElementById("view-outlet");
   route.render(outlet);
+}
+
+// The header renders on every route, but on a cold load the bootstrap
+// (which the week pill needs) may not be cached yet — mcHeaderMarkup()
+// above already shows whatever's cached (nothing, the first time), and
+// this fills it in as soon as the load that every route kicks off anyway
+// resolves, without re-rendering the header or racing the route's own data
+// loading.
+function refreshHeaderWeekPill() {
+  store.loadBootstrap().then(() => {
+    const pill = headerWeekPillLabel();
+    const el = document.querySelector(".mc-week-pill");
+    const titles = document.querySelector(".mc-header-titles");
+    if (!pill || !titles) return;
+    if (el) {
+      el.innerHTML = `<span class="mc-week-pill-dot"></span>${escapeHtml(pill)}`;
+    } else {
+      titles.insertAdjacentHTML("beforeend", `<span class="mc-week-pill"><span class="mc-week-pill-dot"></span>${escapeHtml(pill)}</span>`);
+    }
+  }).catch(() => {});
+}
+
+// Week pill text ("Week N (Trimester X)") computed from the due date in
+// Settings — reads the already-cached bootstrap synchronously (no network
+// call), same as every other header-adjacent chrome. Blank before the due
+// date is ever set (first run), same as the rest of the app.
+function headerWeekPillLabel() {
+  const boot = store.getCachedBootstrap();
+  const settings = (boot && boot.settings) || {};
+  const countdown = computeCountdown(settings, new Date());
+  if (!countdown) return "";
+  return t("header.weekPill", { weeks: countdown.weeks, trimester: t(`home.trimester.${countdown.trimester}`) });
+}
+
+function mcHeaderMarkup(route) {
+  const weekPill = headerWeekPillLabel();
+  return `
+    <header class="mc-header">
+      <div class="mc-header-row">
+        <div class="mc-header-brand">
+          <span class="mc-logo-mark" aria-hidden="true">${icon("favorite")}</span>
+          <div class="mc-header-titles">
+            <span class="mc-header-name">${t("app.name")}</span>
+            ${weekPill ? `<span class="mc-week-pill"><span class="mc-week-pill-dot"></span>${escapeHtml(weekPill)}</span>` : ""}
+          </div>
+        </div>
+        <div class="mc-header-actions">
+          <button type="button" class="mc-header-btn" id="header-notifications-btn" aria-label="${t("header.notifications")}">${icon("notifications", "icon-lg")}</button>
+          <button type="button" class="mc-header-btn" id="header-profile-btn" aria-label="${t("header.profile")}">${icon("account_circle", "icon-lg")}</button>
+        </div>
+      </div>
+    </header>
+  `;
+}
+
+function attachMcHeaderHandlers() {
+  const notifBtn = document.getElementById("header-notifications-btn");
+  if (notifBtn) notifBtn.addEventListener("click", openNotificationsSheet);
+  const profileBtn = document.getElementById("header-profile-btn");
+  if (profileBtn) profileBtn.addEventListener("click", () => { location.hash = "#/more"; });
+}
+
+// In-app reminders: due/late medicines today, an appointment within 48h,
+// and any medicine with low stock — all computed from data already loaded
+// for Home, not a separate backend call. Deliberately descriptive only
+// ("Calcium due at 1:00 PM"), never a verdict — see the app-wide copy rule.
+function buildNotificationsList() {
+  const boot = store.getCachedBootstrap();
+  if (!boot) return [];
+  const now = new Date();
+  const items = [];
+
+  const logs = homeState.logs || [];
+  Object.values(todaysMedicineSlots(boot, logs, now)).flat().forEach((it) => {
+    if (it.slot.status === "due_now" || it.slot.status === "late") {
+      items.push({ icon: "medication", text: t("header.notif.doseDue", { name: it.medicine.name, time: formatTimeHHMM(timeStrToDate(it.slot.time)) }) });
+    }
+  });
+
+  (boot.medicines || []).forEach((m) => {
+    const stock = computeStockCountdown(m);
+    if (stock && stock.needsRefill) {
+      items.push({ icon: "warning", text: t("header.notif.lowStock", { name: m.name, days: Math.max(0, Math.floor(stock.daysLeft)) }) });
+    }
+  });
+
+  const dashboard = boot.dashboard || {};
+  if (dashboard.next_appointment) {
+    const dt = new Date(dashboard.next_appointment.datetime);
+    if (!isNaN(dt.getTime()) && dt.getTime() - now.getTime() <= 48 * 3600000 && dt.getTime() >= now.getTime()) {
+      items.push({ icon: "calendar_clock", text: t("header.notif.appointment", { name: dashboard.next_appointment.purpose || dashboard.next_appointment.doctor || "", when: formatApptDateTime(dashboard.next_appointment.datetime) }) });
+    }
+  }
+
+  return items;
+}
+
+function timeStrToDate(timeStr) {
+  const [h, m] = String(timeStr || "0:0").split(":").map(Number);
+  const d = new Date();
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
+}
+
+function openNotificationsSheet() {
+  const items = buildNotificationsList();
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("header.notifications")}</h2>
+    ${items.length
+      ? `<ul class="entity-list">${items.map((n) => `
+          <li class="entity-row"><div class="entity-main">${icon(n.icon)} <span>${escapeHtml(n.text)}</span></div></li>
+        `).join("")}</ul>`
+      : `<p class="empty">${t("header.notif.none")}</p>`
+    }
+    <button type="button" class="btn btn-secondary" id="notif-close">${t("common.back")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#notif-close").addEventListener("click", closeSheet);
+  });
 }
 
 function renderBottomNav(activeKey) {
   const nav = document.getElementById("bottom-nav");
   nav.innerHTML = NAV_ITEMS.map(
     (item) => `
-      <button data-hash="${item.hash}" aria-current="${item.key === activeKey}">
-        <span class="nav-icon" aria-hidden="true">${item.icon}</span>
+      <button class="mc-tabbar-item" data-hash="${item.hash}" aria-current="${item.key === activeKey}">
+        ${icon(item.iconName, "icon-lg")}
         <span>${item.label()}</span>
       </button>
     `
@@ -6418,6 +6544,22 @@ function showCountdownFormError(outlet, message) {
 // More menu
 // ---------------------------------------------------------------------------
 
+// Stage A placeholder — the full scan-and-fill flow (document type tabs,
+// camera/file picker, editable "Extracted information" form, Smart Read
+// opt-in) is Stage D. For now the tab is real and navigable rather than a
+// dead end: it points at Records' existing upload, which already files a
+// photo/PDF into the right category.
+function renderScanView(outlet) {
+  outlet.innerHTML = `
+    <div class="card">
+      <h2>${t("scan.title")}</h2>
+      <p>${t("scan.comingSoon")}</p>
+      <button class="btn btn-primary" data-nav="#/records">${t("scan.openRecords")}</button>
+    </div>
+  `;
+  attachNavButtons(outlet);
+}
+
 function renderMoreView(outlet) {
   outlet.innerHTML = `
     <ul class="menu-list">
@@ -6429,8 +6571,10 @@ function renderMoreView(outlet) {
       <li><button data-nav="#/water">${t("more.water")}</button></li>
       <li><button data-nav="#/food">${t("more.food")}</button></li>
       <li><button data-nav="#/timeline">${t("more.timeline")}</button></li>
+      <li><button data-nav="#/visits">${t("nav.visits")}</button></li>
       <li><button data-nav="#/bookings">${t("more.bookings")}</button></li>
       <li><button data-nav="#/reimbursement">${t("more.reimbursement")}</button></li>
+      <li><button data-nav="#/meds/history">${t("more.medsHistory")}</button></li>
       <li><button data-nav="#/settings">${t("more.settings")}</button></li>
     </ul>
   `;

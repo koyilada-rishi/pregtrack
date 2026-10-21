@@ -5,14 +5,30 @@
 
 const STRINGS = {
   en: {
-    "app.name": "Pregnancy Care Tracker",
+    "app.name": "MamaCare",
     "app.disclaimer": "This app is a helper, not medical advice. Always follow your doctor's guidance.",
 
     "nav.home": "Home",
+    "nav.today": "Today",
+    "nav.scan": "Scan",
     "nav.meds": "Meds",
     "nav.visits": "Visits",
     "nav.records": "Records",
     "nav.more": "More",
+
+    "header.weekPill": "Week {weeks} ({trimester})",
+    "header.notifications": "Notifications",
+    "header.profile": "Profile",
+    "header.notif.none": "Nothing needs your attention right now.",
+    "header.notif.doseDue": "{name} due at {time}",
+    "header.notif.lowStock": "{name}: refill in {days} days",
+    "header.notif.appointment": "{name} — {when}",
+
+    "more.medsHistory": "Medicines used",
+
+    "scan.title": "Scan a document",
+    "scan.comingSoon": "A full scan-and-fill flow for prescriptions, lab reports and bills is coming here next. For now, you can still add a record directly in Records.",
+    "scan.openRecords": "Go to Records",
 
     "firstRun.title": "Enter PIN",
     "firstRun.subtitle": "This PIN protects private medical data. It's saved on this device after your first successful entry — you won't need to enter it again until you sign out.",

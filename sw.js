@@ -27,13 +27,19 @@
 // after being deleted elsewhere) — double-check this list whenever a JS
 // file is added, renamed, or removed.
 
-const CACHE_VERSION = "v9";
+const CACHE_VERSION = "v10";
 const CACHE_NAME = "pct-shell-" + CACHE_VERSION;
 
 const APP_SHELL = [
   "./",
   "./index.html",
+  "./css/tokens.css",
   "./css/style.css",
+  "./css/fonts/plus-jakarta-sans-400.woff2",
+  "./css/fonts/plus-jakarta-sans-500.woff2",
+  "./css/fonts/plus-jakarta-sans-600.woff2",
+  "./css/fonts/plus-jakarta-sans-700.woff2",
+  "./css/fonts/material-symbols-subset.woff2",
   "./js/app.js",
   "./js/api.js",
   "./js/store.js",
@@ -42,6 +48,7 @@ const APP_SHELL = [
   "./js/quickadd.js",
   "./js/defaults.js",
   "./js/i18n.js",
+  "./js/icons.js",
   "./manifest.json",
   "./data/weeks.json",
   "./data/food.json",

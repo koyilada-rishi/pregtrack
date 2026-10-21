@@ -1,14 +1,14 @@
 {
   "id": ".",
-  "name": "Pregnancy Care Tracker",
-  "short_name": "PregCare",
+  "name": "MamaCare",
+  "short_name": "MamaCare",
   "description": "A private, mobile-first PWA for tracking pregnancy care.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#fbf7f5",
-  "theme_color": "#d97a7a",
+  "background_color": "#f5faff",
+  "theme_color": "#96454d",
   "lang": "en",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },

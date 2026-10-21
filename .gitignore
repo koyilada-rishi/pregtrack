@@ -13,6 +13,7 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.claude/
 
 # Node (only used for local dev tooling, no build step for the app itself)
 node_modules/
@@ -21,3 +22,8 @@ npm-debug.log*
 # Local env files, just in case
 .env
 .env.*
+
+# MamaCare design mockups (design/1-today.html etc.) — reference only for
+# the UI restyle, never committed; the mockups themselves may not be ours
+# to publish, and only their design tokens get translated into css/tokens.css.
+design/

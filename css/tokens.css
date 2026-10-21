@@ -1,0 +1,232 @@
+/* MamaCare design tokens — translated from the design/ mockups' Tailwind
+   config into plain CSS custom properties. No Tailwind, no runtime fetch:
+   this is the single source of truth for color/spacing/radius/type, and
+   css/style.css's own --color-* variables are remapped onto these (see the
+   "MamaCare palette adapter" block in style.css) so every existing
+   component repaints without needing its own rules rewritten.
+
+   Self-hosted fonts: Plus Jakarta Sans (400/500/600/700, latin) and a
+   Material Symbols Outlined subset (just the glyphs this app actually
+   uses — see js/icons.js for the name->codepoint map and how markup
+   references them). Both are precached by the service worker; nothing
+   here is fetched at runtime from Google or anywhere else. */
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/plus-jakarta-sans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/plus-jakarta-sans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/plus-jakarta-sans-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/plus-jakarta-sans-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Material Symbols Subset";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./fonts/material-symbols-subset.woff2") format("woff2");
+}
+
+:root {
+  /* --- Type --- */
+  --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-icon: "Material Symbols Subset";
+
+  /* fontSize tokens: [size, line-height, letter-spacing, weight] from the mockup */
+  --text-body-sm-size: 12px;    --text-body-sm-lh: 18px;  --text-body-sm-ls: 0.01em;   --text-body-sm-weight: 400;
+  --text-body-md-size: 14px;    --text-body-md-lh: 20px;  --text-body-md-ls: 0em;      --text-body-md-weight: 400;
+  --text-body-lg-size: 16px;    --text-body-lg-lh: 24px;  --text-body-lg-ls: 0em;      --text-body-lg-weight: 400;
+  --text-label-sm-size: 12px;   --text-label-sm-lh: 14px; --text-label-sm-ls: 0.03em;  --text-label-sm-weight: 600; /* 11px in the mockup, raised to the 12px accessibility floor */
+  --text-label-lg-size: 13px;   --text-label-lg-lh: 16px; --text-label-lg-ls: 0.02em;  --text-label-lg-weight: 600;
+  --text-title-md-size: 16px;   --text-title-md-lh: 22px; --text-title-md-ls: 0em;     --text-title-md-weight: 600;
+  --text-headline-sm-size: 18px; --text-headline-sm-lh: 24px; --text-headline-sm-ls: -0.005em; --text-headline-sm-weight: 600;
+  --text-headline-md-size: 22px; --text-headline-md-lh: 28px; --text-headline-md-ls: -0.01em;  --text-headline-md-weight: 600;
+  --text-headline-lg-mobile-size: 26px; --text-headline-lg-mobile-lh: 34px; --text-headline-lg-mobile-ls: -0.01em; --text-headline-lg-mobile-weight: 700;
+  --text-headline-lg-size: 30px; --text-headline-lg-lh: 38px; --text-headline-lg-ls: -0.015em; --text-headline-lg-weight: 700;
+  --text-display-lg-size: 36px; --text-display-lg-lh: 44px; --text-display-lg-ls: -0.02em; --text-display-lg-weight: 700;
+
+  /* --- Spacing (mockup's "space-*"/"gutter"/"margin" scale) --- */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --gutter-mobile: 0.75rem;
+  --gutter: 1rem;
+  --margin-mobile: 1rem;
+  --margin: 1.25rem;
+
+  /* --- Radius --- */
+  --radius-default: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 9999px;
+
+  /* --- Shell --- */
+  --header-height: 64px;
+  --tabbar-height: 64px;
+
+  /* --- Color: light (verbatim from the mockup's tailwind.config colors) --- */
+  --mc-primary: #96454d;
+  --mc-on-primary: #ffffff;
+  --mc-primary-container: #d97b82;
+  --mc-on-primary-container: #591620;
+  --mc-primary-fixed: #ffdadb;
+  --mc-on-primary-fixed: #3e030e;
+  --mc-primary-fixed-dim: #ffb2b6;
+  --mc-on-primary-fixed-variant: #782e36;
+  --mc-inverse-primary: #ffb2b6;
+  --mc-surface-tint: #96454d;
+
+  --mc-secondary: #416656;
+  --mc-on-secondary: #ffffff;
+  --mc-secondary-container: #c3ecd7;
+  --mc-on-secondary-container: #476c5c;
+  --mc-secondary-fixed: #c3ecd7;
+  --mc-on-secondary-fixed: #002116;
+  --mc-secondary-fixed-dim: #a7cfbc;
+  --mc-on-secondary-fixed-variant: #294e3f;
+
+  --mc-tertiary: #805521;
+  --mc-on-tertiary: #ffffff;
+  --mc-tertiary-container: #bf8c53;
+  --mc-on-tertiary-container: #462800;
+  --mc-tertiary-fixed: #ffddbb;
+  --mc-on-tertiary-fixed: #2b1700;
+  --mc-tertiary-fixed-dim: #f5bc7e;
+  --mc-on-tertiary-fixed-variant: #653e0b;
+
+  --mc-error: #ba1a1a;
+  --mc-on-error: #ffffff;
+  --mc-error-container: #ffdad6;
+  --mc-on-error-container: #93000a;
+
+  --mc-background: #f5faff;
+  --mc-on-background: #131d23;
+  --mc-surface: #f5faff;
+  --mc-on-surface: #131d23;
+  --mc-surface-variant: #d9e4ed;
+  --mc-on-surface-variant: #544243;
+  --mc-surface-dim: #d1dbe5;
+  --mc-surface-bright: #f5faff;
+  --mc-surface-container-lowest: #ffffff;
+  --mc-surface-container-low: #eaf5fe;
+  --mc-surface-container: #e5eff9;
+  --mc-surface-container-high: #dfe9f3;
+  --mc-surface-container-highest: #d9e4ed;
+  --mc-inverse-surface: #283239;
+  --mc-inverse-on-surface: #e8f2fb;
+  --mc-outline: #877273;
+  --mc-outline-variant: #d9c1c1;
+}
+
+/* Dark palette, derived from the light one above in the same warm
+   rose/sage/amber family (no dark mockup was supplied) — follows the usual
+   Material 3 light/dark tonal mapping: primary/secondary/tertiary move to
+   their light tones against dark surfaces, the "fixed" roles stay the same
+   across both themes by definition. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --mc-primary: #ffb2b6;
+    --mc-on-primary: #601420;
+    --mc-primary-container: #782e36;
+    --mc-on-primary-container: #ffdadb;
+    --mc-inverse-primary: #96454d;
+    --mc-surface-tint: #ffb2b6;
+
+    --mc-secondary: #a7cfbc;
+    --mc-on-secondary: #15362a;
+    --mc-secondary-container: #294e3f;
+    --mc-on-secondary-container: #c3ecd7;
+
+    --mc-tertiary: #f5bc7e;
+    --mc-on-tertiary: #452b00;
+    --mc-tertiary-container: #653e0b;
+    --mc-on-tertiary-container: #ffddbb;
+
+    --mc-error: #ffb4ab;
+    --mc-on-error: #690005;
+    --mc-error-container: #93000a;
+    --mc-on-error-container: #ffdad6;
+
+    --mc-background: #15100f;
+    --mc-on-background: #ede0dd;
+    --mc-surface: #15100f;
+    --mc-on-surface: #ede0dd;
+    --mc-surface-variant: #544243;
+    --mc-on-surface-variant: #d6c3c3;
+    --mc-surface-dim: #15100f;
+    --mc-surface-bright: #3c3634;
+    --mc-surface-container-lowest: #100c0b;
+    --mc-surface-container-low: #1d1816;
+    --mc-surface-container: #211c1a;
+    --mc-surface-container-high: #2b2624;
+    --mc-surface-container-highest: #363030;
+    --mc-inverse-surface: #ede0dd;
+    --mc-inverse-on-surface: #362f2d;
+    --mc-outline: #a08d8e;
+    --mc-outline-variant: #544243;
+  }
+}
+
+:root[data-theme="dark"] {
+  --mc-primary: #ffb2b6;
+  --mc-on-primary: #601420;
+  --mc-primary-container: #782e36;
+  --mc-on-primary-container: #ffdadb;
+  --mc-inverse-primary: #96454d;
+  --mc-surface-tint: #ffb2b6;
+
+  --mc-secondary: #a7cfbc;
+  --mc-on-secondary: #15362a;
+  --mc-secondary-container: #294e3f;
+  --mc-on-secondary-container: #c3ecd7;
+
+  --mc-tertiary: #f5bc7e;
+  --mc-on-tertiary: #452b00;
+  --mc-tertiary-container: #653e0b;
+  --mc-on-tertiary-container: #ffddbb;
+
+  --mc-error: #ffb4ab;
+  --mc-on-error: #690005;
+  --mc-error-container: #93000a;
+  --mc-on-error-container: #ffdad6;
+
+  --mc-background: #15100f;
+  --mc-on-background: #ede0dd;
+  --mc-surface: #15100f;
+  --mc-on-surface: #ede0dd;
+  --mc-surface-variant: #544243;
+  --mc-on-surface-variant: #d6c3c3;
+  --mc-surface-dim: #15100f;
+  --mc-surface-bright: #3c3634;
+  --mc-surface-container-lowest: #100c0b;
+  --mc-surface-container-low: #1d1816;
+  --mc-surface-container: #211c1a;
+  --mc-surface-container-high: #2b2624;
+  --mc-surface-container-highest: #363030;
+  --mc-inverse-surface: #ede0dd;
+  --mc-inverse-on-surface: #362f2d;
+  --mc-outline: #a08d8e;
+  --mc-outline-variant: #544243;
+}
