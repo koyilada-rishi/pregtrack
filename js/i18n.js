@@ -6,7 +6,6 @@
 const STRINGS = {
   en: {
     "app.name": "MamaCare",
-    "app.disclaimer": "This app is a helper, not medical advice. Always follow your doctor's guidance.",
 
     "nav.home": "Home",
     "nav.today": "Today",
@@ -35,7 +34,6 @@ const STRINGS = {
     "firstRun.pinPlaceholder": "PIN (6+ digits recommended)",
     "firstRun.submit": "Continue",
     "firstRun.checking": "Checking…",
-    "firstRun.hint": "This app is a helper, not medical advice. Always follow your doctor's guidance.",
     "firstRun.error.wrongPin": "Incorrect PIN. Try again.",
     "firstRun.error.lockout": "Too many incorrect attempts. Try again in 15 minutes.",
     "firstRun.error.network": "Could not reach the server. If this keeps happening, check Settings → Advanced for the server URL (or ask whoever set this app up to check it).",
@@ -279,16 +277,10 @@ const STRINGS = {
 
     "health.title": "Health log",
     "health.add": "+ Log vitals",
-    "health.disclaimer": "These charts are for your own tracking, not a diagnosis. Always discuss readings with her doctor.",
     "health.chart.weight": "Weight (kg)",
     "health.chart.bp": "Blood pressure",
-    "health.chart.bpNote": "Reference only — some doctors look more closely from about {sys}/{dia} mmHg onward.",
     "health.chart.sugar": "Blood sugar (mg/dL)",
-    "health.chart.sugarNote": "Reference only — some doctors look more closely above {fasting} mg/dL fasting or {pp} mg/dL post-meal.",
     "health.chart.loadError": "Couldn't load the chart library — showing the history list below instead.",
-    "health.notice.bp": "Her latest blood pressure reading is on the higher side.",
-    "health.notice.sugar": "Her latest blood sugar reading is on the higher side.",
-    "health.notice.suffix": "Worth mentioning at the next doctor's visit.",
     "health.history.title": "History",
     "health.history.none": "No entries logged yet.",
     "health.confirmDelete": "Delete this entry? This can't be undone.",
@@ -685,7 +677,7 @@ const STRINGS = {
 
     "reimbursement.title": "Reimbursement",
     "reimbursement.none": "Nothing in this range.",
-    "reimbursement.grandTotal": "Total for this range: ₹{amount}",
+    "reimbursement.grandTotal": "Total for this range: {amount}",
     "reimbursement.exportCsv": "Export CSV",
     "reimbursement.print": "Print",
     "reimbursement.flag.noReport": "report not uploaded",

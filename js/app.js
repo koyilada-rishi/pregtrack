@@ -316,7 +316,6 @@ function renderFirstRunScreen(message) {
         <button type="submit" class="btn btn-primary" id="firstrun-submit">${t("firstRun.submit")}</button>
         <p class="error-text" id="firstrun-error" ${message ? "" : "hidden"}>${escapeHtml(message || "")}</p>
       </form>
-      <p class="disclaimer">${t("firstRun.hint")}</p>
     </div>
   `;
 
@@ -1891,8 +1890,6 @@ function emergencyMarkup(settings, contacts) {
           : `<p class="empty">${t("emergency.contacts.none")}</p>`
       }
     </div>
-
-    <p class="disclaimer">${t("app.disclaimer")}</p>
   `;
 }
 
@@ -3908,16 +3905,6 @@ function toDatetimeLocalValue(iso) {
 // Health log + charts
 // ---------------------------------------------------------------------------
 
-// Gentle reference thresholds for the "discuss with your doctor" notice —
-// not a diagnosis, just a nudge to mention a reading at the next visit.
-// Flagged in the README as general guidance that can vary by doctor.
-const HEALTH_THRESHOLDS = {
-  bp_sys: 140,
-  bp_dia: 90,
-  sugar_fasting: 95,
-  sugar_pp: 140
-};
-
 const healthState = { entries: [], loading: true, formOpen: false, editItem: null, charts: {} };
 
 async function renderHealthView(outlet, openFormInitially) {
@@ -3959,13 +3946,10 @@ async function renderHealthBody(outlet) {
 }
 
 function healthListMarkup(sortedAsc) {
-  const latest = sortedAsc[sortedAsc.length - 1];
   const descending = [...sortedAsc].reverse();
 
   return `
     <button class="btn btn-primary" id="add-health-btn">${t("health.add")}</button>
-
-    ${latest ? healthNoticeMarkup(latest) : ""}
 
     <div class="card">
       <h2>${t("health.chart.weight")}</h2>
@@ -3976,13 +3960,11 @@ function healthListMarkup(sortedAsc) {
     <div class="card">
       <h2>${t("health.chart.bp")}</h2>
       <div class="chart-container"><canvas id="chart-bp"></canvas></div>
-      <p class="muted">${t("health.chart.bpNote", { sys: HEALTH_THRESHOLDS.bp_sys, dia: HEALTH_THRESHOLDS.bp_dia })}</p>
     </div>
 
     <div class="card">
       <h2>${t("health.chart.sugar")}</h2>
       <div class="chart-container"><canvas id="chart-sugar"></canvas></div>
-      <p class="muted">${t("health.chart.sugarNote", { fasting: HEALTH_THRESHOLDS.sugar_fasting, pp: HEALTH_THRESHOLDS.sugar_pp })}</p>
     </div>
 
     <div class="card">
@@ -3993,25 +3975,7 @@ function healthListMarkup(sortedAsc) {
           : `<p class="empty">${t("health.history.none")}</p>`
       }
     </div>
-
-    <p class="disclaimer">${t("health.disclaimer")}</p>
   `;
-}
-
-function healthNoticeMarkup(latest) {
-  const flags = [];
-  if (isAboveThreshold(latest.bp_sys, HEALTH_THRESHOLDS.bp_sys) || isAboveThreshold(latest.bp_dia, HEALTH_THRESHOLDS.bp_dia)) {
-    flags.push(t("health.notice.bp"));
-  }
-  if (isAboveThreshold(latest.sugar_fasting, HEALTH_THRESHOLDS.sugar_fasting) || isAboveThreshold(latest.sugar_pp, HEALTH_THRESHOLDS.sugar_pp)) {
-    flags.push(t("health.notice.sugar"));
-  }
-  if (!flags.length) return "";
-  return `<div class="review-note">${flags.join(" ")} ${t("health.notice.suffix")}</div>`;
-}
-
-function isAboveThreshold(value, threshold) {
-  return value !== "" && value !== null && value !== undefined && Number(value) >= threshold;
 }
 
 function healthRowMarkup(e) {
@@ -4966,7 +4930,7 @@ function bookingRowMarkup(b) {
         <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</strong>
         <span class="muted">${escapeHtml(b.provider || "")}${b.provider ? " · " : ""}${escapeHtml(formatApptDateTime(b.datetime))}</span>
         <span class="badge">${t("bookings.status." + b.status)}</span>
-        ${bill ? `<span class="muted">${t("bookings.bill." + bill.status)}${bill.amount ? " · ₹" + escapeHtml(bill.amount) : ""}</span>` : ""}
+        ${bill ? `<span class="muted">${t("bookings.bill." + bill.status)}${bill.amount ? " · " + escapeHtml(formatINR(bill.amount)) : ""}</span>` : ""}
       </div>
     </li>
   `;
@@ -5227,7 +5191,7 @@ function billFormMarkup(bill) {
     <div class="chip-row" id="bill-status-chips">
       ${BILL_STATUSES_LIST.map((s) => `<button type="button" class="chip ${b.status === s ? "chip-selected" : ""}" data-bill-status="${s}">${t("bookings.bill." + s)}</button>`).join("")}
     </div>
-    ${formField(t("bookings.bill.amount"), `<input class="field" type="number" min="0" id="bill-amount-input" value="${escapeHtml(b.amount)}" />`)}
+    ${formField(t("bookings.bill.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" id="bill-amount-input" value="${escapeHtml(b.amount)}" /></div>`)}
     ${formField(t("bookings.bill.paidOn"), `<input class="field" type="date" id="bill-paid-on-input" value="${escapeHtml(b.paid_on)}" />`)}
     <div class="form-actions"><button type="button" class="btn btn-secondary" id="bill-save-btn">${t("common.save")}</button></div>
   `;
@@ -5520,8 +5484,8 @@ function renderReimbursementBody(outlet) {
         <input class="field" type="date" id="reimb-to" value="${escapeHtml(reimbursementState.dateTo)}" />
       </div>
       <div class="chip-row">${["all", ...BOOKING_TYPES_LIST].map((ty) => `<button type="button" class="chip ${reimbursementState.typeFilter === ty ? "chip-selected" : ""}" data-reimb-type="${ty}">${ty === "all" ? t("bookings.filter.all") : t("bookings.type." + ty)}</button>`).join("")}</div>
-      <p><strong>${t("reimbursement.grandTotal", { amount: grandTotal })}</strong></p>
-      ${Object.keys(monthlyTotals).sort().map((m) => `<p class="muted">${escapeHtml(m)}: ₹${monthlyTotals[m]}</p>`).join("")}
+      <p><strong>${t("reimbursement.grandTotal", { amount: escapeHtml(formatINR(grandTotal)) })}</strong></p>
+      ${Object.keys(monthlyTotals).sort().map((m) => `<p class="muted">${escapeHtml(m)}: ${escapeHtml(formatINR(monthlyTotals[m]))}</p>`).join("")}
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="reimb-export-csv">${t("reimbursement.exportCsv")}</button>
         <button type="button" class="btn btn-secondary" id="reimb-print">${t("reimbursement.print")}</button>
@@ -5550,7 +5514,7 @@ function reimbursementRowMarkup(r) {
     <li class="entity-row">
       <div class="entity-main">
         <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)} · ${escapeHtml(formatDisplayDate(dateStrOf(b.datetime)))}</strong>
-        <span class="muted">${escapeHtml(b.provider || "")} ${r.bill ? "· ₹" + escapeHtml(r.bill.amount || 0) + " (" + t("bookings.bill." + r.bill.status) + ")" : ""}</span>
+        <span class="muted">${escapeHtml(b.provider || "")} ${r.bill ? "· " + escapeHtml(formatINR(r.bill.amount || 0)) + " (" + t("bookings.bill." + r.bill.status) + ")" : ""}</span>
         ${flags.length ? `<span class="muted dose-state-calm">${flags.join(" · ")}</span>` : ""}
       </div>
     </li>
@@ -5558,13 +5522,17 @@ function reimbursementRowMarkup(r) {
 }
 
 function exportReimbursementCsv(rows) {
-  const header = ["Date", "Type", "Title", "Provider", "Amount", "Bill status", "Report", "Prescription"];
+  // Amount as a plain number (not "₹1,234.00") plus its own Currency
+  // column — the point of a CSV export is to open cleanly in a
+  // spreadsheet, where a currency symbol baked into the cell would stop
+  // it from being read as a number.
+  const header = ["Date", "Type", "Title", "Provider", "Amount", "Currency", "Bill status", "Report", "Prescription"];
   const lines = [header.join(",")];
   rows.forEach((r) => {
     const b = r.booking;
     lines.push([
       dateStrOf(b.datetime), b.type, csvEscape(b.title), csvEscape(b.provider || ""),
-      r.bill && r.bill.amount ? r.bill.amount : "", r.bill ? r.bill.status : "",
+      r.bill && r.bill.amount ? Number(r.bill.amount).toFixed(2) : "", "INR", r.bill ? r.bill.status : "",
       r.hasReport ? "yes" : "no", r.hasPrescription ? "yes" : "no"
     ].join(","));
   });
@@ -6498,6 +6466,20 @@ function formatDisplayDate(dateStr) {
     return new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", year: "numeric" }).format(new Date(dateStr));
   } catch {
     return dateStr;
+  }
+}
+
+// All money in the app is ₹ via Intl en-IN — e.g. ₹1,25,000.00, Indian
+// digit grouping, never $/USD. Blank/non-numeric amounts show as "" rather
+// than "₹0" or "₹NaN", so an unset amount stays visibly unset.
+function formatINR(amount) {
+  if (amount === "" || amount === null || amount === undefined) return "";
+  const n = Number(amount);
+  if (isNaN(n)) return "";
+  try {
+    return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
+  } catch {
+    return "₹" + n.toFixed(2);
   }
 }
 
