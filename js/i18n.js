@@ -151,6 +151,9 @@ const STRINGS = {
     "meds.history.filter.finished": "Finished",
     "meds.history.filter.stopped": "Stopped",
     "meds.history.dosesTaken": "{n} doses taken",
+    "meds.history.viewLog": "View log",
+    "meds.history.logTitle": "{name} — dose log",
+    "meds.history.logNone": "No doses logged yet.",
     "meds.deletedToast": "Deleted {name}.",
     "meds.stoppedToast": "Stopped {name}.",
 
@@ -699,6 +702,8 @@ const STRINGS = {
     "meds.form.photos": "Photos",
     "meds.form.photoFront": "📷 Front",
     "meds.form.photoBack": "📷 Back",
+    "meds.form.linkedRecords": "Linked prescription / bill",
+    "meds.form.linkedRecordsNone": "Not linked to any record yet.",
     "meds.form.photoSaved": "Saved",
     "meds.form.photoNone": "Not added",
     "meds.form.photoUploading": "Uploading…",

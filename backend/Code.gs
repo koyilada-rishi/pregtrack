@@ -754,6 +754,15 @@ function medicineFields(payload, isCreate) {
   if (isCreate || payload.hasOwnProperty('strength')) fields.strength = sanitizeText(payload.strength, 100);
   if (isCreate || payload.hasOwnProperty('expiry_date')) fields.expiry_date = payload.expiry_date ? sanitizeDate(payload.expiry_date, 'expiry_date') : '';
 
+  // Which Records (prescription that started it, bill for it, etc.) this
+  // medicine is linked to — comma-joined Files ids, same shape as Files'
+  // own linked_file_ids, but one-directional (Medicines -> Files only).
+  // A reverse view ("medicines from this prescription") is computed live by
+  // filtering medicines.list for this file's id rather than mirrored back
+  // onto the Files row, so the two can never drift out of sync with each
+  // other the way a hand-kept two-sided link could.
+  if (isCreate || payload.hasOwnProperty('linked_file_ids')) fields.linked_file_ids = sanitizeText(payload.linked_file_ids, 2000);
+
   if (isCreate) {
     var initialStatus = payload.status || 'active';
     validateEnum(initialStatus, MEDICINE_STATUSES, 'status');
@@ -2164,7 +2173,10 @@ var SHEET_SCHEMA = {
     // Settings. Purpose: identify the same composition when the brand
     // differs. Photos are Files rows (type_v2: medicine_photo); these two
     // columns just point at their ids, same pattern as thumb_file_id.
-    'photo_front_file_id', 'photo_back_file_id', 'composition', 'brand', 'strength', 'expiry_date'
+    'photo_front_file_id', 'photo_back_file_id', 'composition', 'brand', 'strength', 'expiry_date',
+    // Phase 5 (v3) — linked Records (prescription/bill this medicine came
+    // with). See medicineFields()'s comment for why this is one-directional.
+    'linked_file_ids'
   ],
   MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken', 'status', 'taken_at', 'note'],
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],

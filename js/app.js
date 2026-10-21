@@ -2339,6 +2339,13 @@ function attachMedsHistoryResultsHandlers(outlet) {
       openMedicineSheet(m || "new", () => renderMedicinesHistoryView(outlet));
     });
   });
+  outlet.querySelectorAll("[data-view-dose-log]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation(); // sits inside the row's own tap-to-edit area
+      const m = medsHistoryState.medicines.find((x) => x.id === btn.dataset.viewDoseLog);
+      if (m) openMedicineDoseLogSheet(m, medsHistoryState.logsByMedicine[m.id] || []);
+    });
+  });
 }
 
 function medsHistoryRowMarkup(m) {
@@ -2360,8 +2367,47 @@ function medsHistoryRowMarkup(m) {
         ${m.stop_note ? `<span class="muted">${escapeHtml(m.stop_note)}</span>` : ""}
         ${expiryBadgeMarkup(m)}
       </div>
+      <div class="entity-actions"><button type="button" class="btn-link" data-view-dose-log="${escapeHtml(m.id)}">${t("meds.history.viewLog")}</button></div>
     </li>
   `;
+}
+
+const DOSE_LOG_STATUS_LABEL_KEYS = { taken: "home.doseStatus.taken", skipped: "home.doseStatus.skipped", pending: "home.doseStatus.upcoming" };
+
+// "What I took so far, at what time" — every actual logged dose for one
+// medicine, newest first. Deliberately just the real MedicineLog rows, not
+// a synthetic "missed" entry for every unlogged slot since day one — those
+// are already shown live wherever a schedule is rendered (Home, Timeline)
+// via schedule.dueStatus(), and persisting one here for every untaken slot
+// would bloat the sheet for no benefit (nothing reads a "missed" row back).
+function medicineDoseLogMarkup(medicine, logs) {
+  const sorted = [...logs].sort((a, b) => (dateStrOf(b.date) + " " + (b.time || "")).localeCompare(dateStrOf(a.date) + " " + (a.time || "")));
+  return `
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("meds.history.logTitle", { name: medicine.name })}</h2>
+    ${sorted.length
+      ? `<ul class="entity-list">${sorted.map((l) => {
+          const status = l.status || (isTruthy(l.taken) ? "taken" : "pending");
+          return `
+            <li class="entity-row">
+              <div class="entity-main">
+                <strong>${escapeHtml(formatDisplayDate(dateStrOf(l.date)))}${l.time ? " · " + escapeHtml(l.time) : ""}</strong>
+                <span class="badge">${t(DOSE_LOG_STATUS_LABEL_KEYS[status] || "home.doseStatus.upcoming")}</span>
+                ${l.note ? `<span class="muted">${escapeHtml(l.note)}</span>` : ""}
+              </div>
+            </li>
+          `;
+        }).join("")}</ul>`
+      : `<p class="empty">${t("meds.history.logNone")}</p>`
+    }
+    <button type="button" class="btn-link" id="dose-log-close">${t("common.back")}</button>
+  `;
+}
+
+function openMedicineDoseLogSheet(medicine, logs) {
+  openSheet(medicineDoseLogMarkup(medicine, logs), (sheetEl) => {
+    sheetEl.querySelector("#dose-log-close").addEventListener("click", closeSheet);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2485,13 +2531,99 @@ function compressImageToBase64(file, maxDim, quality) {
 async function openMedicineSheet(item, onSaved) {
   let packs = [];
   let settings = {};
+  let files = [];
   try { packs = await store.call("packs.list", {}); } catch { /* packs are optional; sheet works without them */ }
   try { settings = await store.call("settings.get", {}); } catch { /* detail-field toggles just default to off */ }
-  openSheet(medicineSheetMarkup(item, packs, settings), (sheetEl) => attachMedicineSheetHandlers(sheetEl, item, onSaved));
+  try { files = await store.call("files.list", {}); } catch { /* linking is optional; sheet works without it */ }
+  openSheet(medicineSheetMarkup(item, packs, settings, files), (sheetEl) => attachMedicineSheetHandlers(sheetEl, item, onSaved, files));
 }
 
-function medicineSheetMarkup(item, packs, settings) {
+// A medicine links to its paperwork (the prescription it came from, a bill
+// for it) one-directionally — see the matching backend comment on
+// medicineFields(). Reuses Records' recordIcon/recordDateLabel so a linked
+// prescription/bill looks the same here as it does in Records itself.
+function medicineLinkedFilesMarkup(m, files) {
+  const linkedIds = String(m.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const linked = linkedIds.map((id) => files.find((f) => f.id === id)).filter(Boolean);
+  return `
+    <p class="field-label">${t("meds.form.linkedRecords")}</p>
+    ${linked.length
+      ? `<ul class="entity-list">${linked.map((f) => `
+          <li class="entity-row">
+            <div class="entity-main"><strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong></div>
+            <div class="entity-actions"><button type="button" class="btn-link btn-link--danger" data-unlink-med-file="${escapeHtml(f.id)}">${t("common.delete")}</button></div>
+          </li>
+        `).join("")}</ul>`
+      : `<p class="empty">${t("meds.form.linkedRecordsNone")}</p>`
+    }
+    <button type="button" class="btn btn-secondary btn-small" id="link-med-file-btn">${t("records.linked.add")}</button>
+  `;
+}
+
+async function saveMedicineLinkedFileIds(medicine, linkedIds) {
+  await store.call("medicines.update", { id: medicine.id, linked_file_ids: linkedIds.join(",") });
+  medicine.linked_file_ids = linkedIds.join(",");
+}
+
+function attachMedicineLinkedFilesHandlers(sheetEl, medicine, files, onSaved) {
+  sheetEl.querySelectorAll("[data-unlink-med-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const remaining = String(medicine.linked_file_ids || "").split(",").map((s) => s.trim()).filter((id) => id && id !== btn.dataset.unlinkMedFile);
+        await saveMedicineLinkedFileIds(medicine, remaining);
+        closeSheet();
+        await onSaved();
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  const linkBtn = sheetEl.querySelector("#link-med-file-btn");
+  if (linkBtn) linkBtn.addEventListener("click", () => openMedicineLinkPickerSheet(medicine, files, onSaved));
+}
+
+function openMedicineLinkPickerSheet(medicine, files, onSaved) {
+  const linkedIds = String(medicine.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const candidates = files.filter((f) => !linkedIds.includes(f.id));
+
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("records.linked.pickerTitle")}</h2>
+    <input class="field" id="link-picker-search" placeholder="${t("records.linked.searchPlaceholder")}" />
+    <div id="link-picker-results">${linkPickerResultsMarkup(candidates)}</div>
+    <button type="button" class="btn-link" id="link-picker-cancel">${t("common.cancel")}</button>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#link-picker-cancel").addEventListener("click", closeSheet);
+
+    const attachPickHandlers = () => {
+      sheetEl.querySelectorAll("[data-pick-file]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await saveMedicineLinkedFileIds(medicine, [...linkedIds, btn.dataset.pickFile]);
+            closeSheet();
+            await onSaved();
+          } catch (err) {
+            alert(err.message || t("common.error"));
+          }
+        });
+      });
+    };
+    attachPickHandlers();
+
+    sheetEl.querySelector("#link-picker-search").addEventListener("input", (event) => {
+      const search = event.target.value.trim().toLowerCase();
+      const filtered = search
+        ? candidates.filter((f) => f.title.toLowerCase().includes(search) || (f.doctor || "").toLowerCase().includes(search))
+        : candidates;
+      sheetEl.querySelector("#link-picker-results").innerHTML = linkPickerResultsMarkup(filtered);
+      attachPickHandlers();
+    });
+  });
+}
+
+function medicineSheetMarkup(item, packs, settings, files) {
   settings = settings || {};
+  files = files || [];
   const isNew = item === "new" || !item.id;
   const m = item === "new" ? {} : item; // a prefilled object (e.g. from a doctor suggestion) keeps its fields even though it's still "new"
   const type = schedule.effectiveScheduleType(m);
@@ -2617,6 +2749,7 @@ function medicineSheetMarkup(item, packs, settings) {
             ${medicinePhotoPickerMarkup("back", m.photo_back_file_id, t("meds.form.photoBack"))}
           </div>
         ` : ""}
+        ${!isNew ? medicineLinkedFilesMarkup(m, files) : ""}
       </details>
 
       <p class="safety-note">${t("meds.form.safetyNote")}</p>
@@ -2782,9 +2915,11 @@ function attachChipHandler(sheetEl, btn) {
   });
 }
 
-function attachMedicineSheetHandlers(sheetEl, item, onSaved) {
+function attachMedicineSheetHandlers(sheetEl, item, onSaved, files) {
   const isNew = item === "new" || !item.id;
   const form = sheetEl.querySelector("#med-sheet-form");
+
+  if (!isNew) attachMedicineLinkedFilesHandlers(sheetEl, item, files || [], onSaved);
 
   // "times-per-day" chips get their own handler below (they drive the
   // daily-time-chips group rather than writing to a hidden input

@@ -933,5 +933,22 @@ check("severity stays its enum text, not coerced to a number", getRowById("Sympt
 check("version.get reports the backend code version", routeAction("version.get", {}).backend_version === BACKEND_VERSION);
 check("bootstrap() includes the backend code version", bootstrap().backend_version === BACKEND_VERSION);
 
+// --- Medicines <-> Records linking (one-directional: medicine -> files) ---
+
+check("ensureTabs() adds the Medicines linked_file_ids column", fakeSS.sheets.Medicines.rows[0].includes("linked_file_ids"));
+
+const linkedMed = medicinesCreate({ name: "Medicine link test" });
+const linkedPrescription = filesUpload({ title: "Prescription for link test", type: "document", type_v2: "prescription", base64: Buffer.from("x").toString("base64"), filename: "rx.pdf" });
+const linkedMedUpdated = medicinesUpdate({ id: linkedMed.id, linked_file_ids: linkedPrescription.id });
+check("a medicine can be linked to a prescription record", linkedMedUpdated.linked_file_ids === linkedPrescription.id);
+check("the link round-trips through getRowById", getRowById("Medicines", linkedMed.id).linked_file_ids === linkedPrescription.id);
+
+const linkedBill = filesUpload({ title: "Bill for link test", type: "document", type_v2: "bill", base64: Buffer.from("y").toString("base64"), filename: "bill.pdf" });
+const linkedMedTwoLinks = medicinesUpdate({ id: linkedMed.id, linked_file_ids: [linkedPrescription.id, linkedBill.id].join(",") });
+check("a medicine can be linked to more than one record (prescription + bill)", linkedMedTwoLinks.linked_file_ids === [linkedPrescription.id, linkedBill.id].join(","));
+
+const linkedMedUnlinked = medicinesUpdate({ id: linkedMed.id, linked_file_ids: linkedBill.id });
+check("unlinking one record leaves the other intact", linkedMedUnlinked.linked_file_ids === linkedBill.id);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
