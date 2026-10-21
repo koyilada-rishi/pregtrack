@@ -351,6 +351,7 @@ const STRINGS = {
     "records.upload.chooseFile": "📁 Choose file",
     "records.upload.recordTitle": "Title",
     "records.upload.type": "Type",
+    "records.upload.typeChoose": "Choose a category…",
     "records.upload.date": "Date",
     "records.upload.doctor": "Doctor",
     "records.upload.notes": "Notes",

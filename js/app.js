@@ -62,18 +62,34 @@ function openSheet(innerHtml, onMount) {
 }
 
 let undoToastTimeoutId = null;
+// The commit for whichever toast is currently pending — set whenever one is
+// showing, cleared once it's resolved one way or another (committed,
+// undone, or superseded). closeUndoToast() needs this: "opening a new one
+// replaces whatever's already showing" (see comment above) must still
+// finalize the replaced action, or replacing it would silently cancel a
+// delete that already happened in the UI — exactly the kind of local/
+// backend drift this pattern exists to avoid, not cause.
+let pendingUndoCommit = null;
+
 function closeUndoToast() {
   if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
   const el = document.getElementById("active-undo-toast");
   if (el) el.remove();
+  if (pendingUndoCommit) {
+    const commit = pendingUndoCommit;
+    pendingUndoCommit = null;
+    commit();
+  }
 }
 
 // message: shown plain text. onUndo(): called if the person taps Undo
 // within the window — nothing else happens. onCommit(): called once the
-// toast expires untouched — this is where the real store.call() actually
+// toast expires untouched (or gets superseded by another one — see
+// closeUndoToast above) — this is where the real store.call() actually
 // fires.
 function showUndoToast(message, { onUndo, onCommit }, seconds) {
   closeUndoToast();
+  pendingUndoCommit = onCommit;
   const toast = document.createElement("div");
   toast.className = "undo-toast";
   toast.id = "active-undo-toast";
@@ -83,12 +99,14 @@ function showUndoToast(message, { onUndo, onCommit }, seconds) {
 
   undoToastTimeoutId = setTimeout(async () => {
     undoToastTimeoutId = null;
+    pendingUndoCommit = null;
     toast.remove();
     await onCommit();
   }, (seconds || 6) * 1000);
 
   toast.querySelector(".undo-toast-btn").addEventListener("click", () => {
     if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
+    pendingUndoCommit = null;
     toast.remove();
     onUndo();
   });
@@ -4582,6 +4600,7 @@ function uploadFormMarkup() {
           ${formField(
             t("records.upload.type"),
             `<select class="field" name="type_v2" required>
+              <option value="" disabled selected>${t("records.upload.typeChoose")}</option>
               ${RECORD_TYPE_V2_ORDER.map((ty) => `<option value="${ty}">${t("records.type." + ty)}</option>`).join("")}
             </select>`,
             pending.length > 1 ? t("records.upload.sharedFieldsHint") : ""
@@ -4756,6 +4775,11 @@ const BOOKING_TYPES_LIST = ["doctor_visit", "scan", "blood_test", "vaccine", "ot
 const BOOKING_STATUSES_LIST = ["booked", "done", "waiting_for_report", "report_uploaded", "closed"];
 const BOOKING_NEXT_STATUS = { booked: "done", done: "waiting_for_report", waiting_for_report: "report_uploaded", report_uploaded: "closed" };
 const BOOKING_TYPE_ICON = { doctor_visit: "🩺", scan: "🩻", blood_test: "🩸", vaccine: "💉", other: "📋" };
+// Best-guess Records category for a file uploaded straight from a booking's
+// detail view — still just a pre-selected default, never submitted without
+// her seeing it (see the "no blank default" fix in uploadFormMarkup/
+// openLinkedFileUploadSheet: this only picks which option starts selected).
+const BOOKING_TYPE_DEFAULT_RECORD_TYPE = { doctor_visit: "prescription", scan: "scan_report", blood_test: "lab_report", vaccine: "other" };
 const SUGGESTION_TYPES_LIST = ["medicine", "scan", "blood_test", "diet_lifestyle", "follow_up"];
 const BILL_STATUSES_LIST = ["not_applicable", "pay_on_visit", "to_collect", "paid", "unpaid"];
 
@@ -5292,7 +5316,7 @@ function openLinkedFileUploadSheet(booking, onSaved) {
       if (file.size > MAX_UPLOAD_BYTES) { errEl.textContent = t("records.upload.tooLarge"); errEl.hidden = false; return; }
       const dataUrl = await readFileAsDataUrl(file);
       const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
-      const defaultType = booking.type === "doctor_visit" ? "prescription" : "lab_report";
+      const defaultType = BOOKING_TYPE_DEFAULT_RECORD_TYPE[booking.type] || "other";
       sheetEl.querySelector("#linked-file-form-holder").innerHTML = `
         <form id="linked-file-form">
           ${formField(t("records.upload.recordTitle"), `<input class="field" name="title" required value="${escapeHtml(file.name.replace(/\.[^.]+$/, ""))}" />`)}
