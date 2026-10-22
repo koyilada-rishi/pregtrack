@@ -74,6 +74,7 @@ const ROUTES = {
   "/food": { render: renderFoodView, navKey: null, title: () => t("food.title") },
   "/timeline": { render: renderTimelineView, navKey: null, title: () => t("timeline.title") },
   "/bookings": { render: renderBookingsView, navKey: null, title: () => t("bookings.title") },
+  "/episodes": { render: renderEpisodesView, navKey: null, title: () => t("episodes.title") },
   "/reimbursement": { render: renderReimbursementView, navKey: null, title: () => t("reimbursement.title") },
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
@@ -6107,6 +6108,180 @@ function csvEscape(value) {
 // Checklists
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Episodes (Phase 1) — the organizing unit everything else will link to in
+// later phases. This phase only builds the entity itself: create/view/edit.
+// Status is never stored — like dose/stock status elsewhere in this app,
+// it's derived at render time, here from linked bookings once Phase 2
+// wires that up. Until then every episode just shows "No bookings yet".
+// ---------------------------------------------------------------------------
+
+const episodesState = { episodes: [], settings: {}, loading: true, formItem: null };
+
+async function renderEpisodesView(outlet) {
+  episodesState.loading = true;
+  episodesState.formItem = null;
+  outlet.innerHTML = genericSkeleton(5);
+  try {
+    const [episodes, settings] = await Promise.all([store.call("episodes.list", {}), store.call("settings.get", {})]);
+    episodesState.episodes = episodes.slice().sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
+    episodesState.settings = settings;
+    episodesState.loading = false;
+    renderEpisodesBody(outlet);
+  } catch (err) {
+    episodesState.loading = false;
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => renderEpisodesView(outlet));
+  }
+}
+
+function renderEpisodesBody(outlet) {
+  outlet.innerHTML = episodesState.formItem ? episodeFormMarkup(episodesState.formItem) : episodesListMarkup();
+  attachEpisodesHandlers(outlet);
+}
+
+// Gestational week at an arbitrary date (not "now") — reuses the same
+// due_date/lmp_date math Home's countdown uses, just pointed at the
+// episode's own start date instead of today.
+function gestationalWeekAt(dateStr) {
+  if (!dateStr) return null;
+  return computeCountdown(episodesState.settings, new Date(dateStr + "T00:00:00"));
+}
+
+function episodesListMarkup() {
+  return `
+    <button type="button" class="btn btn-primary" id="add-episode-btn">${t("episodes.add")}</button>
+    ${
+      episodesState.episodes.length
+        ? episodesState.episodes.map((ep) => episodeCardListMarkup(ep)).join("")
+        : `<div class="card"><p class="empty">${t("episodes.none")}</p></div>`
+    }
+  `;
+}
+
+function episodeCardListMarkup(ep) {
+  const dateRange = ep.end_date
+    ? `${formatDisplayDate(ep.start_date)} – ${formatDisplayDate(ep.end_date)}`
+    : t("episodes.startedOn", { date: formatDisplayDate(ep.start_date) });
+  return `
+    <button type="button" class="card episode-list-card" data-edit-episode="${escapeHtml(ep.id)}">
+      <div class="card-head">
+        <h2>${escapeHtml(ep.name)}</h2>
+        <span class="chip">${t("home.trimester." + (ep.trimester || "1"))}</span>
+      </div>
+      <p class="muted">${escapeHtml(dateRange)}</p>
+      <p class="muted">${t("episodes.noBookingsYet")}</p>
+    </button>
+  `;
+}
+
+function episodeFormMarkup(item) {
+  const isNew = item === "new";
+  const ep = isNew ? {} : item;
+  return `
+    <button type="button" class="btn-link" id="episode-form-back">${t("common.back")}</button>
+    <div class="card">
+      <h2>${isNew ? t("episodes.new") : t("episodes.edit")}</h2>
+      <form id="episode-form">
+        ${formField(t("episodes.name"), `<input class="field" name="name" required value="${escapeHtml(ep.name)}" />`, t("episodes.nameHint"))}
+        ${formField(t("episodes.startDate"), `<input class="field" type="date" name="start_date" id="episode-start-date" required value="${escapeHtml(ep.start_date)}" />`)}
+        ${formField(t("episodes.endDate"), `<input class="field" type="date" name="end_date" value="${escapeHtml(ep.end_date)}" />`, t("episodes.endDateHint"))}
+        ${formField(t("episodes.trimester"), `
+          <select class="field" name="trimester" id="episode-trimester">
+            <option value="1" ${String(ep.trimester) === "1" ? "selected" : ""}>${t("home.trimester.1")}</option>
+            <option value="2" ${String(ep.trimester) === "2" ? "selected" : ""}>${t("home.trimester.2")}</option>
+            <option value="3" ${String(ep.trimester) === "3" ? "selected" : ""}>${t("home.trimester.3")}</option>
+          </select>
+        `, t("episodes.trimesterHint"))}
+        ${formField(t("episodes.notes"), `<textarea class="field" name="notes" rows="3">${escapeHtml(ep.notes)}</textarea>`)}
+        <p class="error-text" id="episode-form-error" hidden></p>
+        <div class="form-actions">
+          ${isNew ? "" : `<button type="button" class="btn-link btn-link--danger" id="episode-delete-btn">${t("common.delete")}</button>`}
+          <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function attachEpisodesHandlers(outlet) {
+  const addBtn = outlet.querySelector("#add-episode-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      episodesState.formItem = "new";
+      renderEpisodesBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-edit-episode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      episodesState.formItem = episodesState.episodes.find((ep) => ep.id === btn.dataset.editEpisode) || "new";
+      renderEpisodesBody(outlet);
+    });
+  });
+
+  const backBtn = outlet.querySelector("#episode-form-back");
+  if (backBtn) backBtn.addEventListener("click", () => { episodesState.formItem = null; renderEpisodesBody(outlet); });
+
+  // Auto-fills the trimester (and, for a brand-new episode with no name
+  // typed yet, the "Week N – " name prefix) from the chosen start date —
+  // both stay fully editable afterward, this is just a starting point.
+  const startDateInput = outlet.querySelector("#episode-start-date");
+  if (startDateInput) {
+    startDateInput.addEventListener("change", () => {
+      const countdown = gestationalWeekAt(startDateInput.value);
+      if (!countdown) return;
+      const trimesterSelect = outlet.querySelector("#episode-trimester");
+      if (trimesterSelect) trimesterSelect.value = String(countdown.trimester);
+      const nameInput = outlet.querySelector('#episode-form input[name="name"]');
+      if (nameInput && episodesState.formItem === "new" && !nameInput.value.trim()) {
+        nameInput.value = t("episodes.nameSuggestion", { week: countdown.weeks });
+      }
+    });
+  }
+
+  const deleteBtn = outlet.querySelector("#episode-delete-btn");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.confirmDelete"))) return;
+      try {
+        await store.call("episodes.delete", { id: episodesState.formItem.id });
+        await renderEpisodesView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  const form = outlet.querySelector("#episode-form");
+  if (form) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const payload = {
+        name: fd.get("name").trim(),
+        start_date: fd.get("start_date"),
+        end_date: fd.get("end_date") || "",
+        trimester: fd.get("trimester"),
+        notes: fd.get("notes").trim()
+      };
+      const errEl = outlet.querySelector("#episode-form-error");
+      errEl.hidden = true;
+      try {
+        if (episodesState.formItem === "new") {
+          await store.call("episodes.create", payload);
+        } else {
+          await store.call("episodes.update", { id: episodesState.formItem.id, ...payload });
+        }
+        await renderEpisodesView(outlet);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+}
+
 const CHECKLIST_TABS = ["hospital_bag", "documents", "baby_items"];
 const checklistState = { items: [], loading: true, activeList: "hospital_bag" };
 
@@ -6216,16 +6391,20 @@ function checklistItemMarkup(item) {
 // Settings (+ Contacts)
 // ---------------------------------------------------------------------------
 
-const settingsState = { settings: {}, contacts: [], loading: true, contactFormItem: null };
+const settingsState = { settings: {}, contacts: [], doctors: [], loading: true, contactFormItem: null, doctorFormItem: null };
 
 async function renderSettingsView(outlet) {
   settingsState.loading = true;
   settingsState.contactFormItem = null;
+  settingsState.doctorFormItem = null;
   outlet.innerHTML = genericSkeleton(8);
   try {
-    const [settings, contacts] = await Promise.all([store.call("settings.get", {}), store.call("contacts.list", {})]);
+    const [settings, contacts, doctors] = await Promise.all([
+      store.call("settings.get", {}), store.call("contacts.list", {}), store.call("doctors.list", {})
+    ]);
     settingsState.settings = settings;
     settingsState.contacts = contacts;
+    settingsState.doctors = doctors;
     settingsState.loading = false;
     renderSettingsBody(outlet);
   } catch (err) {
@@ -6279,6 +6458,17 @@ function renderSettingsBody(outlet) {
           : `<p class="empty">${t("settings.contacts.none")}</p>`
       }
       ${settingsState.contactFormItem ? contactFormMarkup(settingsState.contactFormItem) : `<button class="btn btn-secondary" id="add-contact-btn">${t("settings.contacts.add")}</button>`}
+    </div>
+
+    <div class="card">
+      <h2>${t("settings.doctors.title")}</h2>
+      <p class="muted">${t("settings.doctors.hint")}</p>
+      ${
+        settingsState.doctors.length
+          ? `<ul class="entity-list">${settingsState.doctors.map((d) => doctorRowMarkup(d)).join("")}</ul>`
+          : `<p class="empty">${t("settings.doctors.none")}</p>`
+      }
+      ${settingsState.doctorFormItem ? doctorFormMarkup(settingsState.doctorFormItem) : `<button class="btn btn-secondary" id="add-doctor-btn">${t("settings.doctors.add")}</button>`}
     </div>
 
     <div class="card">
@@ -6381,6 +6571,40 @@ function contactFormMarkup(item) {
       <p class="error-text" id="contact-form-error" hidden></p>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="contact-form-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
+function doctorRowMarkup(d) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(d.name)}</strong>
+        <span class="muted">${escapeHtml([d.specialty, d.clinic_hospital].filter(Boolean).join(" · "))}</span>
+      </div>
+      <div class="entity-actions">
+        <button class="btn-link" data-edit-doctor="${escapeHtml(d.id)}">${t("common.edit")}</button>
+        <button class="btn-link btn-link--danger" data-delete-doctor="${escapeHtml(d.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function doctorFormMarkup(item) {
+  const isNew = item === "new";
+  const d = isNew ? {} : item;
+  return `
+    <form id="doctor-form">
+      ${formField(t("settings.doctors.name"), `<input class="field" name="name" required value="${escapeHtml(d.name)}" />`)}
+      ${formField(t("settings.doctors.specialty"), `<input class="field" name="specialty" value="${escapeHtml(d.specialty)}" />`)}
+      ${formField(t("settings.doctors.phone"), `<input class="field" type="tel" name="phone" value="${escapeHtml(d.phone)}" />`)}
+      ${formField(t("settings.doctors.clinicHospital"), `<input class="field" name="clinic_hospital" value="${escapeHtml(d.clinic_hospital)}" />`)}
+      ${formField(t("settings.doctors.notes"), `<textarea class="field" name="notes" rows="2">${escapeHtml(d.notes)}</textarea>`)}
+      <p class="error-text" id="doctor-form-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="doctor-form-cancel">${t("common.cancel")}</button>
         <button type="submit" class="btn btn-primary">${t("common.save")}</button>
       </div>
     </form>
@@ -6550,6 +6774,64 @@ function attachSettingsHandlers(outlet) {
         await renderSettingsView(outlet);
       } catch (err) {
         const errEl = outlet.querySelector("#contact-form-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+
+  const addDoctorBtn = outlet.querySelector("#add-doctor-btn");
+  if (addDoctorBtn) {
+    addDoctorBtn.addEventListener("click", () => {
+      settingsState.doctorFormItem = "new";
+      renderSettingsBody(outlet);
+    });
+  }
+
+  outlet.querySelectorAll("[data-edit-doctor]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      settingsState.doctorFormItem = settingsState.doctors.find((d) => d.id === btn.dataset.editDoctor) || "new";
+      renderSettingsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-doctor]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("settings.doctors.confirmDelete"))) return;
+      try {
+        await store.call("doctors.delete", { id: btn.dataset.deleteDoctor });
+        await renderSettingsView(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const doctorForm = outlet.querySelector("#doctor-form");
+  if (doctorForm) {
+    outlet.querySelector("#doctor-form-cancel").addEventListener("click", () => {
+      settingsState.doctorFormItem = null;
+      renderSettingsBody(outlet);
+    });
+    doctorForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(doctorForm);
+      const payload = {
+        name: fd.get("name").trim(),
+        specialty: fd.get("specialty").trim(),
+        phone: fd.get("phone").trim(),
+        clinic_hospital: fd.get("clinic_hospital").trim(),
+        notes: fd.get("notes").trim()
+      };
+      try {
+        if (settingsState.doctorFormItem === "new") {
+          await store.call("doctors.create", payload);
+        } else {
+          await store.call("doctors.update", { id: settingsState.doctorFormItem.id, ...payload });
+        }
+        await renderSettingsView(outlet);
+      } catch (err) {
+        const errEl = outlet.querySelector("#doctor-form-error");
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
       }
@@ -6968,6 +7250,7 @@ function renderScanView(outlet) {
 function renderMoreView(outlet) {
   outlet.innerHTML = `
     <ul class="menu-list">
+      <li><button data-nav="#/episodes">${t("more.episodes")}</button></li>
       <li><button data-nav="#/emergency">${t("more.emergency")}</button></li>
       <li><button data-nav="#/health">${t("more.health")}</button></li>
       <li><button data-nav="#/checklist">${t("more.checklists")}</button></li>

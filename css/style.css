@@ -1033,6 +1033,17 @@ a { color: var(--color-primary-dark); }
 
 /* ---------- Hero countdown card ---------- */
 
+.episode-list-card {
+  display: block;
+  width: 100%;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  margin-bottom: 12px;
+}
+
 .hero-countdown-card {
   display: block;
   width: 100%;

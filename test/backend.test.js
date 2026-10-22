@@ -215,8 +215,8 @@ function throws(label, fn) {
 // --- setup() ---
 setup();
 fakeProps.APP_PIN = "246810";
-check("setup created all 19 tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
-  "Appointments,Checklist,Contacts,FoodLog,HealthLog,MedicineLog,Medicines,Settings,Files,Countdowns,Packs,Checkins,Symptoms,Water,FoodPrefs,Bookings,Suggestions,Bills,Notes".split(",").sort().join(","));
+check("setup created all " + Object.keys(SHEET_SCHEMA).length + " tabs", Object.keys(fakeSS.sheets).sort().join(",") ===
+  Object.keys(SHEET_SCHEMA).sort().join(","));
 check("Settings seeded with " + SETTINGS_KEYS.length + " editable keys + data_version", fakeSS.sheets.Settings.rows.length === SETTINGS_KEYS.length + 2); // header + keys + data_version
 
 // --- PIN check ---

@@ -177,6 +177,24 @@ function routeAction(action, payload) {
     case 'contacts.delete':
       return contactsDelete(payload);
 
+    case 'doctors.list':
+      return listRows('Doctors');
+    case 'doctors.create':
+      return doctorsCreate(payload);
+    case 'doctors.update':
+      return doctorsUpdate(payload);
+    case 'doctors.delete':
+      return doctorsDelete(payload);
+
+    case 'episodes.list':
+      return listRows('Episodes');
+    case 'episodes.create':
+      return episodesCreate(payload);
+    case 'episodes.update':
+      return episodesUpdate(payload);
+    case 'episodes.delete':
+      return episodesDelete(payload);
+
     case 'foodlog.list':
       return listRows('FoodLog');
     case 'foodlog.create':
@@ -1308,6 +1326,66 @@ function contactFields(payload, isCreate) {
 }
 
 // ---------------------------------------------------------------------------
+// Doctors — managed in Settings, offered as a dropdown when booking a visit.
+// ---------------------------------------------------------------------------
+
+function doctorsCreate(payload) {
+  requireFields(payload, ['name']);
+  return createRow('Doctors', doctorFields(payload, true));
+}
+
+function doctorsUpdate(payload) {
+  requireId(payload);
+  return updateRowById('Doctors', payload.id, doctorFields(payload, false));
+}
+
+function doctorsDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Doctors', payload.id);
+}
+
+function doctorFields(payload, isCreate) {
+  var fields = {};
+  if (isCreate || payload.hasOwnProperty('name')) fields.name = sanitizeText(payload.name, 200);
+  if (isCreate || payload.hasOwnProperty('specialty')) fields.specialty = sanitizeText(payload.specialty, 150);
+  if (isCreate || payload.hasOwnProperty('phone')) fields.phone = sanitizeText(payload.phone, 50);
+  if (isCreate || payload.hasOwnProperty('clinic_hospital')) fields.clinic_hospital = sanitizeText(payload.clinic_hospital, 200);
+  if (isCreate || payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
+  if (isCreate) fields.created_at = new Date().toISOString();
+  return fields;
+}
+
+// ---------------------------------------------------------------------------
+// Episodes
+// ---------------------------------------------------------------------------
+
+function episodesCreate(payload) {
+  requireFields(payload, ['name', 'start_date', 'trimester']);
+  return createRow('Episodes', episodeFields(payload, true));
+}
+
+function episodesUpdate(payload) {
+  requireId(payload);
+  return updateRowById('Episodes', payload.id, episodeFields(payload, false));
+}
+
+function episodesDelete(payload) {
+  requireId(payload);
+  return deleteRowById('Episodes', payload.id);
+}
+
+function episodeFields(payload, isCreate) {
+  var fields = {};
+  if (isCreate || payload.hasOwnProperty('name')) fields.name = sanitizeText(payload.name, 200);
+  if (isCreate || payload.hasOwnProperty('start_date')) fields.start_date = sanitizeText(payload.start_date, 20);
+  if (isCreate || payload.hasOwnProperty('end_date')) fields.end_date = sanitizeText(payload.end_date, 20);
+  if (isCreate || payload.hasOwnProperty('trimester')) fields.trimester = sanitizeText(payload.trimester, 5);
+  if (isCreate || payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 2000);
+  if (isCreate) fields.created_at = new Date().toISOString();
+  return fields;
+}
+
+// ---------------------------------------------------------------------------
 // Food log
 // ---------------------------------------------------------------------------
 
@@ -2187,6 +2265,12 @@ var SHEET_SCHEMA = {
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
   HealthLog: ['id', 'date', 'weight_kg', 'bp_sys', 'bp_dia', 'sugar_fasting', 'sugar_pp', 'kicks', 'mood', 'symptoms', 'notes'],
   Contacts: ['id', 'name', 'role', 'phone', 'address', 'maps_link', 'is_emergency'],
+  // Doctors: a separate, small entity from Contacts on purpose — this is
+  // "who to pick from when booking a visit" (name/specialty/clinic), not
+  // "who to call in an emergency" (Contacts' own concern, incl. hospitals/
+  // pharmacies/labs). Managed in Settings; bookings.create suggests the
+  // most recently used one and otherwise offers this list as a dropdown.
+  Doctors: ['id', 'name', 'specialty', 'phone', 'clinic_hospital', 'notes', 'created_at'],
   FoodLog: ['id', 'date', 'meal', 'items', 'craving_or_aversion', 'notes'],
   Checklist: ['id', 'list', 'item', 'done'],
   Files: [
@@ -2261,7 +2345,21 @@ var SHEET_SCHEMA = {
   // Bills: at most one per booking in practice, kept separate (not columns
   // on Bookings) so "pay on visit" / "collect later" / paid-on tracking
   // doesn't clutter the booking's own stage-tracking fields.
-  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes']
+  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes'],
+
+  // --- Episodes rebuild (Phase 1) -----------------------------------------
+  // Episode is the new organizing unit everything else will link to
+  // (bookings/reports/bills/medicines/notes all gain an episode_id in
+  // later phases — see each sheet's own comment when that lands). Phase 1
+  // only builds the Episode entity itself: create/view/edit, nothing links
+  // to it yet. trimester is stored (not purely derived) since the spec
+  // calls it a mandatory field the person can see/edit, even though it's
+  // pre-filled from Settings' due_date/lmp_date at creation time. Status
+  // is deliberately NOT a column — like everywhere else in this schema
+  // (stock status, dose status), it's derived at render time, here from
+  // the episode's linked bookings once Phase 2 wires that up; until then
+  // the frontend just shows "no bookings yet".
+  Episodes: ['id', 'name', 'start_date', 'end_date', 'trimester', 'notes', 'created_at']
 };
 
 // ss is optional — pass it explicitly from setup() (where SHEET_ID may only

@@ -347,6 +347,12 @@ const db = {
     { id: "mock-contact-1", name: "Dr. Rao", role: "OB-GYN", phone: "+91 98765 43210", address: "", maps_link: "", is_emergency: true },
     { id: "mock-contact-2", name: "Apollo Pharmacy", role: "Pharmacy", phone: "+91 98765 00000", address: "", maps_link: "", is_emergency: false }
   ],
+  doctors: [
+    { id: "mock-doctor-1", name: "Dr. Rao", specialty: "OB-GYN", phone: "+91 98765 43210", clinic_hospital: "City Women's Hospital", notes: "", created_at: new Date().toISOString() }
+  ],
+  episodes: [
+    { id: "mock-episode-1", name: "Week 24 – Routine checkup", start_date: todayStr(-21), end_date: "", trimester: "2", notes: "", created_at: new Date().toISOString() }
+  ],
   foodlog: [
     { id: "mock-fl-1", date: todayStr(), meal: "Breakfast", items: "Idli, sambar", craving_or_aversion: "", notes: "" },
     { id: "mock-fl-2", date: todayStr(-1), meal: "Dinner", items: "Dal, rice, curd", craving_or_aversion: "Craving something sweet", notes: "" },
@@ -816,6 +822,36 @@ export async function mockCall(action, payload) {
     case "contacts.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.contacts, payload.id);
+
+    case "doctors.list":
+      return clone(db.doctors);
+    case "doctors.create": {
+      requireFields(payload, ["name"]);
+      const row = { id: payload.id || uid(), specialty: "", phone: "", clinic_hospital: "", notes: "", created_at: new Date().toISOString(), ...payload };
+      db.doctors.push(row);
+      return clone(row);
+    }
+    case "doctors.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.doctors, payload.id, payload);
+    case "doctors.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.doctors, payload.id);
+
+    case "episodes.list":
+      return clone(db.episodes);
+    case "episodes.create": {
+      requireFields(payload, ["name", "start_date", "trimester"]);
+      const row = { id: payload.id || uid(), end_date: "", notes: "", created_at: new Date().toISOString(), ...payload };
+      db.episodes.push(row);
+      return clone(row);
+    }
+    case "episodes.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.episodes, payload.id, payload);
+    case "episodes.delete":
+      requireFields(payload, ["id"]);
+      return removeFrom(db.episodes, payload.id);
 
     case "foodlog.list":
       return clone(db.foodlog);
