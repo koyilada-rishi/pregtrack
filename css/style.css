@@ -108,6 +108,15 @@ a { color: var(--color-primary-dark); }
   margin: 0 auto;
 }
 
+/* Views that render the "+ Add anything" FAB (Today/Meds/Records) need
+   extra bottom clearance beyond the tab bar — the FAB itself (~48px) sits
+   12px above the tab bar, and without this the last card on every one of
+   those screens sits permanently half-covered by it at every scroll
+   position, with no way to scroll it into full view. */
+.view--has-fab {
+  padding-bottom: calc(var(--nav-height) + 24px + 64px);
+}
+
 .view--no-nav {
   padding-bottom: 24px;
 }

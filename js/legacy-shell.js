@@ -315,7 +315,7 @@ function renderShell(route) {
     <div id="backend-outdated-banner" class="offline-banner" ${state.backendOutdated ? "" : "hidden"}>${t("backendOutdated.banner")}</div>
     <button id="sw-update-banner" class="offline-banner sw-update-banner" ${state.swUpdateWorker ? "" : "hidden"}>${t("swUpdate.banner")}</button>
     ${mcHeaderMarkup(route)}
-    <main class="view" id="view-outlet"></main>
+    <main class="view${["/home", "/meds", "/records"].includes(currentPath()) ? " view--has-fab" : ""}" id="view-outlet"></main>
     <nav class="mc-tabbar" id="bottom-nav"></nav>
   `;
   renderBottomNav(route.navKey);
