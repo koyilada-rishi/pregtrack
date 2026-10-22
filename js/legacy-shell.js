@@ -6476,7 +6476,10 @@ const episodesState = {
   medicineEditing: null,
   // Block 3 (Reports): add/edit form toggle, null editing = "new".
   reportFormOpen: false,
-  reportEditing: null
+  reportEditing: null,
+  // Block 4 (Bills and receipts): add/edit form toggle, null editing = "new".
+  billFormOpen: false,
+  billEditing: null
 };
 
 const EPISODE_BOOKING_CATEGORY = { doctor_visit: "visits", scan: "labs", blood_test: "labs", vaccine: "medics", other: "medics" };
@@ -6517,6 +6520,8 @@ async function openEpisodeDetail(outlet, episode) {
   episodesState.medicineEditing = null;
   episodesState.reportFormOpen = false;
   episodesState.reportEditing = null;
+  episodesState.billFormOpen = false;
+  episodesState.billEditing = null;
   if (episodesState.detail && episodesState.detail.id !== episode.id) {
     episodesState.prescriptionNoteFormOpenFor = null;
     episodesState.prescriptionEditingNote = null;
@@ -6592,6 +6597,10 @@ function episodeBookingsStatusSummary(bookings) {
   return parts.join(" · ") || t("episodes.noBookingsYet");
 }
 
+// Block 4: a bill's category now comes from its explicit linked_record_type
+// (booking/report/medicine — set when the bill is created, see
+// episodeBillFormMarkup) rather than guessing from booking_id alone, now
+// that reports and medicines can be billed without any booking at all.
 function episodeFinanceBreakdown(bookings, bills) {
   const bookingsById = indexById(bookings);
   const totals = { visits: 0, labs: 0, medics: 0, unlinked: 0 };
@@ -6600,8 +6609,13 @@ function episodeFinanceBreakdown(bookings, bills) {
     const amount = Number(bill.amount) || 0;
     if (!amount) return;
     grandTotal += amount;
-    const booking = bookingsById[bill.booking_id];
-    const category = booking ? EPISODE_BOOKING_CATEGORY[booking.type] : null;
+    let category = null;
+    if (bill.linked_record_type === "medicine") category = "medics";
+    else if (bill.linked_record_type === "report") category = "labs";
+    else if (bill.linked_record_type === "booking" || bill.booking_id) {
+      const booking = bookingsById[bill.booking_id];
+      category = booking ? EPISODE_BOOKING_CATEGORY[booking.type] : null;
+    }
     totals[category || "unlinked"] += amount;
   });
   return { totals, grandTotal };
@@ -6802,7 +6816,7 @@ function episodeMedicineFormMarkup(editing) {
 // ---------------------------------------------------------------------------
 
 function episodeReportFilesOf() {
-  return episodesState.detailFiles.filter((f) => f.type_v2 !== "prescription");
+  return episodesState.detailFiles.filter((f) => f.type_v2 !== "prescription" && f.type_v2 !== "bill");
 }
 
 function reportsBlockMarkup() {
@@ -6870,6 +6884,101 @@ function episodeReportFormMarkup(editing) {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Episode Detail, Block 4: Bills and receipts — "+ Add bill": photo/file,
+// amount, and what it belongs to (a booking, report or medicine in this
+// episode, or nothing specific). The linkage (linked_record_type +
+// booking_id/linked_medicine_id/linked_report_file_id) is what makes the
+// Finance breakdown (Block 6) categorize correctly.
+// ---------------------------------------------------------------------------
+
+function billsBlockMarkup() {
+  const bills = episodesState.detailBills;
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.bills.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-bill-btn" aria-label="${t("episodes.bills.add")}">+</button>
+      </div>
+      ${
+        bills.length
+          ? `<ul class="entity-list">${bills.map((b) => episodeBillRowMarkup(b)).join("")}</ul>`
+          : `<p class="empty">${t("episodes.bills.none")}</p>`
+      }
+      ${episodesState.billFormOpen ? episodeBillFormMarkup(episodesState.billEditing) : ""}
+    </div>
+  `;
+}
+
+function episodeBillLinkedLabel(b) {
+  if (b.linked_record_type === "medicine" && b.linked_medicine_id) {
+    const med = episodesState.detailMedicines.find((x) => x.id === b.linked_medicine_id);
+    return med ? escapeHtml(med.name) : t("episodes.bills.linked.medicine");
+  }
+  if (b.linked_record_type === "report" && b.linked_report_file_id) {
+    const file = episodesState.detailFiles.find((x) => x.id === b.linked_report_file_id);
+    return file ? escapeHtml(file.title) : t("episodes.bills.linked.report");
+  }
+  if (b.booking_id) {
+    const booking = episodesState.detailBookings.find((x) => x.id === b.booking_id);
+    return booking ? escapeHtml(booking.title) : t("episodes.bills.linked.booking");
+  }
+  return t("episodes.bills.linked.none");
+}
+
+function episodeBillRowMarkup(b) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(formatINR(b.amount))}</strong>
+        <span class="muted">${t("bookings.bill." + b.status)} · ${episodeBillLinkedLabel(b)}</span>
+      </div>
+      <div class="entity-actions">
+        <button type="button" class="btn-link" data-edit-episode-bill="${escapeHtml(b.id)}">${t("common.edit")}</button>
+        <button type="button" class="btn-link btn-link--danger" data-delete-episode-bill="${escapeHtml(b.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function episodeBillFormMarkup(editing) {
+  const b = editing || {};
+  const isNew = !editing;
+  const currentRef = b.linked_record_type === "medicine" ? "medicine:" + b.linked_medicine_id
+    : b.linked_record_type === "report" ? "report:" + b.linked_report_file_id
+    : b.booking_id ? "booking:" + b.booking_id : "";
+  const bookingOpts = episodesState.detailBookings.map((x) => `<option value="booking:${escapeHtml(x.id)}" ${currentRef === "booking:" + x.id ? "selected" : ""}>${escapeHtml(x.title)}</option>`).join("");
+  const reportOpts = episodeReportFilesOf().map((x) => `<option value="report:${escapeHtml(x.id)}" ${currentRef === "report:" + x.id ? "selected" : ""}>${escapeHtml(x.title)}</option>`).join("");
+  const medicineOpts = episodesState.detailMedicines.map((x) => `<option value="medicine:${escapeHtml(x.id)}" ${currentRef === "medicine:" + x.id ? "selected" : ""}>${escapeHtml(x.name)}</option>`).join("");
+
+  return `
+    <form id="episode-bill-form">
+      ${isNew ? `
+        <label class="btn btn-secondary">
+          ${t("episodes.bills.chooseFile")}
+          <input type="file" accept="image/*,application/pdf" id="episode-bill-file-input" hidden />
+        </label>
+        <p class="muted" id="episode-bill-file-name"></p>
+      ` : ""}
+      ${formField(t("episodes.bills.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" required value="${escapeHtml(b.amount || "")}" /></div>`)}
+      ${formField(t("episodes.bills.status"), `<select class="field" name="status">${BILL_STATUSES_LIST.map((s) => `<option value="${s}" ${b.status === s ? "selected" : ""}>${t("bookings.bill." + s)}</option>`).join("")}</select>`)}
+      ${formField(t("episodes.bills.belongsTo"), `
+        <select class="field" name="linked_ref">
+          <option value="">${t("episodes.bills.linked.none")}</option>
+          ${bookingOpts ? `<optgroup label="${t("episodes.bookings.title")}">${bookingOpts}</optgroup>` : ""}
+          ${reportOpts ? `<optgroup label="${t("episodes.reports.title")}">${reportOpts}</optgroup>` : ""}
+          ${medicineOpts ? `<optgroup label="${t("episodes.medicines.title")}">${medicineOpts}</optgroup>` : ""}
+        </select>
+      `)}
+      <p class="error-text" id="episode-bill-form-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="episode-bill-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
 function episodeDetailMarkup() {
   const ep = episodesState.detail;
   const dateRange = ep.end_date
@@ -6915,19 +7024,7 @@ function episodeDetailMarkup() {
 
     ${reportsBlockMarkup()}
 
-    <div class="card">
-      <div class="card-head">
-        <h2>${t("episodes.bills.title")}</h2>
-        <button type="button" class="btn-add" id="episode-add-bill-btn" aria-label="${t("episodes.bills.add")}">+</button>
-      </div>
-      ${
-        episodesState.detailBills.length
-          ? `<ul class="entity-list">${episodesState.detailBills.map((bill) => `
-              <li class="entity-row"><div class="entity-main">${escapeHtml(formatINR(bill.amount))}<span class="muted"> · ${t("bookings.bill." + bill.status)}</span></div></li>
-            `).join("")}</ul>`
-          : `<p class="empty">${t("episodes.bills.none")}</p>`
-      }
-    </div>
+    ${billsBlockMarkup()}
 
     ${medicinesBlockMarkup()}
 
@@ -7249,7 +7346,11 @@ function attachEpisodesHandlers(outlet) {
         }
         const amount = fd.get("amount");
         if (amount) {
-          await store.call("bills.create", { episode_id: episodesState.detail.id, amount, status: "pay_on_visit", notes: t("episodes.medicines.billNoteFor", { name: payload.name }) });
+          await store.call("bills.create", {
+            episode_id: episodesState.detail.id, amount, status: "pay_on_visit",
+            notes: t("episodes.medicines.billNoteFor", { name: payload.name }),
+            linked_record_type: "medicine", linked_medicine_id: medicine.id
+          });
         }
         episodesState.medicineFormOpen = false;
         episodesState.medicineEditing = null;
@@ -7328,14 +7429,17 @@ function attachEpisodesHandlers(outlet) {
           const dataUrl = await readFileAsDataUrl(file);
           const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
           const type_v2 = reportType === "scan" ? "scan_report" : reportType === "blood" || reportType === "urine" ? "lab_report" : "other";
-          await store.call("files.upload", {
+          const uploaded = await store.call("files.upload", {
             title: titleFromFilename(file.name), type: "document", type_v2, report_type: reportType,
             date, episode_id: episodesState.detail.id,
             filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
           });
           const amount = fd.get("amount");
           if (amount) {
-            await store.call("bills.create", { episode_id: episodesState.detail.id, amount, status: "pay_on_visit", notes: titleFromFilename(file.name) });
+            await store.call("bills.create", {
+              episode_id: episodesState.detail.id, amount, status: "pay_on_visit", notes: titleFromFilename(file.name),
+              linked_record_type: "report", linked_report_file_id: uploaded.id
+            });
           }
         }
         episodesState.reportFormOpen = false;
@@ -7349,37 +7453,93 @@ function attachEpisodesHandlers(outlet) {
     });
   }
 
+  // --- Block 4: Bills and receipts ---
   const addBillBtn = outlet.querySelector("#episode-add-bill-btn");
   if (addBillBtn) {
     addBillBtn.addEventListener("click", () => {
-      openSheet(`
-        <div class="sheet-handle" aria-hidden="true"></div>
-        <h2>${t("episodes.bills.add")}</h2>
-        <form id="episode-bill-form">
-          ${formField(t("episodes.form.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" required /></div>`)}
-          ${formField(t("bookings.bill.title"), `<select class="field" name="status">${BILL_STATUSES_LIST.map((s) => `<option value="${s}">${t("bookings.bill." + s)}</option>`).join("")}</select>`)}
-          <p class="error-text" id="episode-bill-error" hidden></p>
-          <div class="form-actions">
-            <button type="button" class="btn btn-secondary" id="episode-bill-cancel">${t("common.cancel")}</button>
-            <button type="submit" class="btn btn-primary">${t("common.save")}</button>
-          </div>
-        </form>
-      `, (sheetEl) => {
-        sheetEl.querySelector("#episode-bill-cancel").addEventListener("click", closeSheet);
-        sheetEl.querySelector("#episode-bill-form").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const fd = new FormData(event.target);
-          try {
-            await store.call("bills.create", { episode_id: episodesState.detail.id, amount: fd.get("amount"), status: fd.get("status") });
-            closeSheet();
-            await openEpisodeDetail(outlet, episodesState.detail);
-          } catch (err) {
-            const errEl = sheetEl.querySelector("#episode-bill-error");
-            errEl.textContent = err.message || t("common.error");
-            errEl.hidden = false;
+      episodesState.billFormOpen = true;
+      episodesState.billEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-edit-episode-bill]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const bill = episodesState.detailBills.find((b) => b.id === btn.dataset.editEpisodeBill);
+      if (!bill) return;
+      episodesState.billFormOpen = true;
+      episodesState.billEditing = bill;
+      renderEpisodesBody(outlet);
+    });
+  });
+  const billCancelBtn = outlet.querySelector("#episode-bill-cancel");
+  if (billCancelBtn) {
+    billCancelBtn.addEventListener("click", () => {
+      episodesState.billFormOpen = false;
+      episodesState.billEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-delete-episode-bill]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.bills.confirmDelete"))) return;
+      try {
+        await store.call("bills.delete", { id: btn.dataset.deleteEpisodeBill });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  const billFileInput = outlet.querySelector("#episode-bill-file-input");
+  if (billFileInput) {
+    billFileInput.addEventListener("change", () => {
+      const file = billFileInput.files[0];
+      const nameEl = outlet.querySelector("#episode-bill-file-name");
+      if (file && nameEl) nameEl.textContent = file.name;
+    });
+  }
+  const billForm = outlet.querySelector("#episode-bill-form");
+  if (billForm) {
+    billForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(billForm);
+      const errEl = billForm.querySelector("#episode-bill-form-error");
+      errEl.hidden = true;
+      try {
+        const [refType, refId] = String(fd.get("linked_ref") || "").split(":");
+        const payload = {
+          episode_id: episodesState.detail.id,
+          amount: fd.get("amount"), status: fd.get("status"),
+          linked_record_type: refType || "",
+          booking_id: refType === "booking" ? refId : "",
+          linked_medicine_id: refType === "medicine" ? refId : "",
+          linked_report_file_id: refType === "report" ? refId : ""
+        };
+        if (episodesState.billEditing) {
+          await store.call("bills.update", { id: episodesState.billEditing.id, ...payload });
+        } else {
+          const fileInput = outlet.querySelector("#episode-bill-file-input");
+          const file = fileInput && fileInput.files[0];
+          if (file) {
+            const dataUrl = await readFileAsDataUrl(file);
+            const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+            const uploaded = await store.call("files.upload", {
+              title: titleFromFilename(file.name), type: "document", type_v2: "bill",
+              episode_id: episodesState.detail.id,
+              filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
+            });
+            payload.receipt_file_id = uploaded.id;
           }
-        });
-      });
+          await store.call("bills.create", payload);
+        }
+        episodesState.billFormOpen = false;
+        episodesState.billEditing = null;
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
     });
   }
 

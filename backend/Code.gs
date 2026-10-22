@@ -1936,9 +1936,12 @@ function billsList(payload) {
   return rows;
 }
 
+var BILL_LINKED_RECORD_TYPES = ['booking', 'report', 'medicine'];
+
 function billsCreate(payload) {
   requireFields(payload, ['status']);
   validateEnum(payload.status, BILL_STATUSES, 'status');
+  if (payload.linked_record_type) validateEnum(payload.linked_record_type, BILL_LINKED_RECORD_TYPES, 'linked_record_type');
   return createRow('Bills', {
     booking_id: sanitizeText(payload.booking_id, 100),
     episode_id: sanitizeText(payload.episode_id, 100),
@@ -1946,7 +1949,10 @@ function billsCreate(payload) {
     status: payload.status,
     paid_on: payload.paid_on ? sanitizeDate(payload.paid_on, 'paid_on') : '',
     receipt_file_id: sanitizeText(payload.receipt_file_id, 100),
-    notes: sanitizeText(payload.notes, 1000)
+    notes: sanitizeText(payload.notes, 1000),
+    linked_record_type: payload.linked_record_type || '',
+    linked_medicine_id: sanitizeText(payload.linked_medicine_id, 100),
+    linked_report_file_id: sanitizeText(payload.linked_report_file_id, 100)
   });
 }
 
@@ -1959,6 +1965,13 @@ function billsUpdate(payload) {
   if (payload.hasOwnProperty('receipt_file_id')) fields.receipt_file_id = sanitizeText(payload.receipt_file_id, 100);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
   if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
+  if (payload.hasOwnProperty('booking_id')) fields.booking_id = sanitizeText(payload.booking_id, 100);
+  if (payload.hasOwnProperty('linked_record_type')) {
+    if (payload.linked_record_type) validateEnum(payload.linked_record_type, BILL_LINKED_RECORD_TYPES, 'linked_record_type');
+    fields.linked_record_type = payload.linked_record_type || '';
+  }
+  if (payload.hasOwnProperty('linked_medicine_id')) fields.linked_medicine_id = sanitizeText(payload.linked_medicine_id, 100);
+  if (payload.hasOwnProperty('linked_report_file_id')) fields.linked_report_file_id = sanitizeText(payload.linked_report_file_id, 100);
   return updateRowById('Bills', payload.id, fields);
 }
 
@@ -2504,7 +2517,16 @@ var SHEET_SCHEMA = {
   // Bills: at most one per booking in practice, kept separate (not columns
   // on Bookings) so "pay on visit" / "collect later" / paid-on tracking
   // doesn't clutter the booking's own stage-tracking fields.
-  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes', 'episode_id'],
+  // linked_record_type/linked_medicine_id (Episode Detail Block 4): what
+  // this bill belongs to — 'booking' (uses the existing booking_id),
+  // 'report' (uses receipt_file_id's own sibling, linked_report_file_id —
+  // kept separate from receipt_file_id since the RECEIPT photo and the
+  // REPORT it's paying for are two different files), 'medicine' (uses
+  // linked_medicine_id), or '' (not linked to anything specific).
+  Bills: [
+    'id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes', 'episode_id',
+    'linked_record_type', 'linked_medicine_id', 'linked_report_file_id'
+  ],
 
   // --- Episodes rebuild (Phase 1) -----------------------------------------
   // Episode is the new organizing unit everything else will link to
