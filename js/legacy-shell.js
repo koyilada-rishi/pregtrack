@@ -6586,6 +6586,7 @@ const episodesState = {
   episodes: [], settings: {}, loading: true, formItem: null,
   // Detail page (Phases 2-5's "blocks inside an episode"):
   detail: null, detailBookings: [], detailFiles: [], detailBills: [], detailNotes: [], detailMedicines: [],
+  detailPrevHandover: null,
   noteFormOpen: false,
   // Block 1 (Prescription): which doctor-visit booking's note form is open,
   // and the note being edited (null means "new note").
@@ -6660,10 +6661,32 @@ async function openEpisodeDetail(outlet, episode) {
     episodesState.detailBills = bills;
     episodesState.detailNotes = notes;
     episodesState.detailMedicines = medicines.filter((m) => m.episode_id === episode.id);
+    episodesState.detailPrevHandover = await findPrevEpisodeHandover(episode);
     renderEpisodesBody(outlet);
   } catch (err) {
     outlet.innerHTML = errorMarkup(err);
     attachRetryHandler(outlet, () => openEpisodeDetail(outlet, episode));
+  }
+}
+
+// Block 6 (Handover): finds the chronologically-previous episode's
+// handover note, so opening an episode actually shows what was carried
+// forward into it — without this, "handover" would just be a second
+// free-text field nobody ever sees again. episodesState.episodes is
+// already sorted newest-first, so the previous episode is the next
+// entry after this one.
+async function findPrevEpisodeHandover(episode) {
+  const sorted = episodesState.episodes;
+  const idx = sorted.findIndex((e) => e.id === episode.id);
+  if (idx === -1 || idx === sorted.length - 1) return null;
+  const prevEpisode = sorted[idx + 1];
+  try {
+    const prevNotes = await store.call("notes.list", { episode_id: prevEpisode.id });
+    const handoverNote = prevNotes.find((n) => n.block === "handover");
+    if (!handoverNote || !handoverNote.text) return null;
+    return { episodeName: prevEpisode.name, text: handoverNote.text };
+  } catch {
+    return null;
   }
 }
 
@@ -7186,6 +7209,12 @@ function episodeDetailMarkup() {
     <div class="card">
       <h2>${t("episodes.handover.title")}</h2>
       <p class="muted">${t("episodes.handover.hint")}</p>
+      ${episodesState.detailPrevHandover ? `
+        <div class="handover-carried-over">
+          <p class="field-label">${t("episodes.handover.carriedOverFrom", { name: episodesState.detailPrevHandover.episodeName })}</p>
+          <p>${escapeHtml(episodesState.detailPrevHandover.text)}</p>
+        </div>
+      ` : ""}
       <textarea class="field" id="episode-handover-input" rows="3">${escapeHtml((episodesState.detailNotes.find((n) => n.block === "handover") || {}).text || "")}</textarea>
       <div class="form-actions"><button type="button" class="btn btn-secondary" id="episode-handover-save">${t("common.save")}</button></div>
     </div>

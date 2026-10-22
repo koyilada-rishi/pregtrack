@@ -754,6 +754,7 @@ const STRINGS = {
     "episodes.finalNote.title": "Final note for this episode",
     "episodes.handover.title": "Handover to next episode",
     "episodes.handover.hint": "Carry-forward or follow-up items for whatever comes next.",
+    "episodes.handover.carriedOverFrom": "Carried over from {name}",
 
     "bookings.title": "Bookings",
     "bookings.add": "+ Add booking",

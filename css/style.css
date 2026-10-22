@@ -1391,6 +1391,17 @@ a { color: var(--color-primary-dark); }
   color: var(--color-text-muted);
 }
 
+.handover-carried-over {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-surface-alt, #f3f1fb);
+}
+
+.handover-carried-over p:last-child {
+  margin: 0;
+}
+
 .custom-time-row {
   display: flex;
   align-items: center;
