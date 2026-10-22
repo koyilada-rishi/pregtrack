@@ -43,7 +43,17 @@ const BANNED_TERMS = [
 const ALLOWLIST = [
   // Plain English "could not" in a network-error message ("Could not reach
   // the server") — a technical status, not a hedge about her or the baby.
-  { key: "firstRun.error.network", term: "could" }
+  { key: "firstRun.error.network", term: "could" },
+  // Episodes rebuild: an OPT-IN per-note alert the person explicitly turns
+  // on for one specific note of their own (never computed automatically
+  // from dose/stock/countdown data — that's still fully banned, see the
+  // Notes schema comment in backend/Code.gs). The brief for this feature
+  // explicitly specifies "red = urgent, orange = watch, green = fine" as
+  // the three levels, so "alert"/"urgent" appear here by deliberate,
+  // reviewed design, not an oversight.
+  { key: "episodes.alertLevel", term: "alert" },
+  { key: "episodes.alert.none", term: "alert" },
+  { key: "episodes.alert.red", term: "urgent" }
 ];
 
 function isAllowed(key, term) {

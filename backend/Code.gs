@@ -143,6 +143,8 @@ function routeAction(action, payload) {
     case 'foodprefs.delete':
       return foodprefsDelete(payload);
 
+    case 'notes.update':
+      return notesUpdate(payload);
     case 'notes.list':
       return notesList(payload);
     case 'notes.create':
@@ -803,6 +805,7 @@ function medicineFields(payload, isCreate) {
     fields.stopped_on = payload.stopped_on ? sanitizeDate(payload.stopped_on, 'stopped_on') : '';
   }
   if (isCreate || payload.hasOwnProperty('stop_note')) fields.stop_note = sanitizeText(payload.stop_note, 2000);
+  if (isCreate || payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
 
   return fields;
 }
@@ -1178,12 +1181,17 @@ function foodprefsDelete(payload) {
 // ---------------------------------------------------------------------------
 
 var NOTE_CATEGORIES = ['note', 'question'];
+// Opt-in only — see the Notes schema comment. Never set by anything other
+// than the person explicitly turning an alert on for one specific note.
+var ALERT_LEVELS = ['red', 'orange', 'green'];
 
 function notesList(payload) {
   var rows = sheetToObjects('Notes');
   if (payload && payload.category) rows = rows.filter(function (r) { return r.category === payload.category; });
   if (payload && payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.date) >= payload.date_from; });
   if (payload && payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.date) <= payload.date_to; });
+  if (payload && payload.episode_id) rows = rows.filter(function (r) { return r.episode_id === payload.episode_id; });
+  if (payload && payload.alert_level) rows = rows.filter(function (r) { return r.alert_level === payload.alert_level; });
   rows.sort(function (a, b) { return (dateStrOf(b.date) + ' ' + b.time).localeCompare(dateStrOf(a.date) + ' ' + a.time); });
   return rows;
 }
@@ -1192,14 +1200,34 @@ function notesCreate(payload) {
   requireFields(payload, ['date', 'text']);
   var category = payload.category || 'note';
   validateEnum(category, NOTE_CATEGORIES, 'category');
+  if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
   return createRow('Notes', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     category: category,
     text: sanitizeText(payload.text, 2000),
     photo_file_id: sanitizeText(payload.photo_file_id, 100),
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    episode_id: sanitizeText(payload.episode_id, 100),
+    block: sanitizeText(payload.block, 30),
+    block_ref_id: sanitizeText(payload.block_ref_id, 100),
+    alert_level: payload.alert_level || ''
   });
+}
+
+function notesUpdate(payload) {
+  requireId(payload);
+  var fields = {};
+  if (payload.hasOwnProperty('text')) fields.text = sanitizeText(payload.text, 2000);
+  if (payload.hasOwnProperty('category')) { validateEnum(payload.category, NOTE_CATEGORIES, 'category'); fields.category = payload.category; }
+  if (payload.hasOwnProperty('alert_level')) {
+    if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
+    fields.alert_level = payload.alert_level || '';
+  }
+  if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
+  if (payload.hasOwnProperty('block')) fields.block = sanitizeText(payload.block, 30);
+  if (payload.hasOwnProperty('block_ref_id')) fields.block_ref_id = sanitizeText(payload.block_ref_id, 100);
+  return updateRowById('Notes', payload.id, fields);
 }
 
 function notesDelete(payload) {
@@ -1468,7 +1496,8 @@ function filesList(payload) {
   var rows = listRows('Files').map(function (r) {
     return {
       id: r.id, title: r.title, type: r.type, date: dateStrOf(r.date), doctor: r.doctor, notes: r.notes,
-      type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || '', linked_file_ids: r.linked_file_ids || ''
+      type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || '', linked_file_ids: r.linked_file_ids || '',
+      episode_id: r.episode_id || ''
     };
   });
   if (payload) {
@@ -1476,6 +1505,7 @@ function filesList(payload) {
     if (payload.type_v2) rows = rows.filter(function (r) { return r.type_v2 === payload.type_v2; });
     if (payload.needs_sorting) rows = rows.filter(function (r) { return !r.type_v2; });
     if (payload.linked_booking_id) rows = rows.filter(function (r) { return r.linked_booking_id === payload.linked_booking_id; });
+    if (payload.episode_id) rows = rows.filter(function (r) { return r.episode_id === payload.episode_id; });
     if (payload.date_from) rows = rows.filter(function (r) { return r.date >= payload.date_from; });
     if (payload.date_to) rows = rows.filter(function (r) { return r.date <= payload.date_to; });
   }
@@ -1494,6 +1524,7 @@ function filesUpdate(payload) {
     fields.type_v2 = payload.type_v2;
   }
   if (payload.hasOwnProperty('linked_booking_id')) fields.linked_booking_id = sanitizeText(payload.linked_booking_id, 100);
+  if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
   if (payload.hasOwnProperty('doctor')) fields.doctor = sanitizeText(payload.doctor, 200);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
   if (payload.hasOwnProperty('date')) fields.date = payload.date ? sanitizeDate(payload.date, 'date') : '';
@@ -1573,7 +1604,8 @@ function filesUpload(payload) {
     doctor: sanitizeText(payload.doctor, 200),
     notes: sanitizeText(payload.notes, 1000),
     type_v2: payload.type_v2 || '',
-    linked_booking_id: sanitizeText(payload.linked_booking_id, 100)
+    linked_booking_id: sanitizeText(payload.linked_booking_id, 100),
+    episode_id: sanitizeText(payload.episode_id, 100)
   });
 }
 
@@ -1670,7 +1702,13 @@ function getOrCreateDriveFolder(propKey, folderName) {
 
 var BOOKING_TYPES = ['doctor_visit', 'scan', 'blood_test', 'vaccine', 'other'];
 var BOOKING_VIA = ['call', 'online', 'in_person', 'walk_in'];
-var BOOKING_STATUSES = ['booked', 'done', 'waiting_for_report', 'report_uploaded', 'closed'];
+// 'cancelled' and 'rescheduled' added for the Episodes rebuild (Phase 2) —
+// both sit alongside the existing stage lifecycle rather than replacing
+// it, since that stage tracking (waiting_for_report etc.) is still real,
+// useful information once a booking IS going ahead.
+var BOOKING_STATUSES = ['booked', 'done', 'waiting_for_report', 'report_uploaded', 'closed', 'cancelled', 'rescheduled'];
+var SUGGESTED_BY_VALUES = ['doctor', 'patient'];
+var MEDIC_KINDS = ['vaccine', 'shot', 'other'];
 // A stage change stamps this timestamp field, same spelling as the status
 // value it corresponds to.
 var BOOKING_STAGE_TIMESTAMP_FIELD = {
@@ -1684,6 +1722,7 @@ function bookingsList(payload) {
     if (payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
     if (payload.date_from) rows = rows.filter(function (r) { return dateStrOf(r.datetime) >= payload.date_from; });
     if (payload.date_to) rows = rows.filter(function (r) { return dateStrOf(r.datetime) <= payload.date_to; });
+    if (payload.episode_id) rows = rows.filter(function (r) { return r.episode_id === payload.episode_id; });
   }
   rows.sort(function (a, b) { return String(b.datetime).localeCompare(String(a.datetime)); });
   return rows;
@@ -1693,8 +1732,11 @@ function bookingsCreate(payload) {
   requireFields(payload, ['type', 'title', 'datetime']);
   validateEnum(payload.type, BOOKING_TYPES, 'type');
   if (payload.booked_via) validateEnum(payload.booked_via, BOOKING_VIA, 'booked_via');
+  if (payload.suggested_by) validateEnum(payload.suggested_by, SUGGESTED_BY_VALUES, 'suggested_by');
+  if (payload.medic_kind) validateEnum(payload.medic_kind, MEDIC_KINDS, 'medic_kind');
   var dt = toDateTime(payload.datetime);
   if (!dt) throw new Error('Invalid datetime: ' + payload.datetime);
+  var bookingDt = payload.booking_datetime ? toDateTime(payload.booking_datetime) : null;
   var now = new Date().toISOString();
   return createRow('Bookings', {
     type: payload.type,
@@ -1710,7 +1752,16 @@ function bookingsCreate(payload) {
     done_at: '', waiting_for_report_at: '', report_uploaded_at: '', closed_at: '',
     closed_without_prescription: false, no_prescription_note: '',
     questions: '',
-    created_at: now
+    created_at: now,
+    episode_id: sanitizeText(payload.episode_id, 100),
+    booking_datetime: bookingDt ? bookingDt.toISOString() : now,
+    reason: sanitizeText(payload.reason, 500),
+    suggested_by: payload.suggested_by || '',
+    tentative_date: payload.tentative_date ? sanitizeDate(payload.tentative_date, 'tentative_date') : '',
+    lab_center_name: sanitizeText(payload.lab_center_name, 200),
+    lab_center_number: sanitizeText(payload.lab_center_number, 50),
+    medic_shop_name: sanitizeText(payload.medic_shop_name, 200),
+    medic_kind: payload.medic_kind || ''
   });
 }
 
@@ -1730,12 +1781,29 @@ function bookingsUpdate(payload) {
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 2000);
   if (payload.hasOwnProperty('approx_report_days')) fields.approx_report_days = sanitizeNumber(payload.approx_report_days, 'approx_report_days');
   if (payload.hasOwnProperty('questions')) fields.questions = sanitizeText(payload.questions, 4000);
+  if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
+  if (payload.hasOwnProperty('reason')) fields.reason = sanitizeText(payload.reason, 500);
+  if (payload.hasOwnProperty('suggested_by')) {
+    if (payload.suggested_by) validateEnum(payload.suggested_by, SUGGESTED_BY_VALUES, 'suggested_by');
+    fields.suggested_by = payload.suggested_by || '';
+  }
+  if (payload.hasOwnProperty('lab_center_name')) fields.lab_center_name = sanitizeText(payload.lab_center_name, 200);
+  if (payload.hasOwnProperty('lab_center_number')) fields.lab_center_number = sanitizeText(payload.lab_center_number, 50);
+  if (payload.hasOwnProperty('medic_shop_name')) fields.medic_shop_name = sanitizeText(payload.medic_shop_name, 200);
+  if (payload.hasOwnProperty('medic_kind')) {
+    if (payload.medic_kind) validateEnum(payload.medic_kind, MEDIC_KINDS, 'medic_kind');
+    fields.medic_kind = payload.medic_kind || '';
+  }
   if (payload.hasOwnProperty('status')) {
     validateEnum(payload.status, BOOKING_STATUSES, 'status');
+    if (payload.status === 'rescheduled' && !payload.tentative_date && !fields.tentative_date) {
+      throw new Error('Rescheduling needs a tentative_date.');
+    }
     fields.status = payload.status;
     var stampField = BOOKING_STAGE_TIMESTAMP_FIELD[payload.status];
     if (stampField) fields[stampField] = new Date().toISOString();
   }
+  if (payload.hasOwnProperty('tentative_date')) fields.tentative_date = payload.tentative_date ? sanitizeDate(payload.tentative_date, 'tentative_date') : '';
   return updateRowById('Bookings', payload.id, fields);
 }
 
@@ -1829,15 +1897,17 @@ var BILL_STATUSES = ['not_applicable', 'pay_on_visit', 'to_collect', 'paid', 'un
 function billsList(payload) {
   var rows = sheetToObjects('Bills');
   if (payload && payload.booking_id) rows = rows.filter(function (r) { return r.booking_id === payload.booking_id; });
+  if (payload && payload.episode_id) rows = rows.filter(function (r) { return r.episode_id === payload.episode_id; });
   if (payload && payload.status) rows = rows.filter(function (r) { return r.status === payload.status; });
   return rows;
 }
 
 function billsCreate(payload) {
-  requireFields(payload, ['booking_id', 'status']);
+  requireFields(payload, ['status']);
   validateEnum(payload.status, BILL_STATUSES, 'status');
   return createRow('Bills', {
-    booking_id: payload.booking_id,
+    booking_id: sanitizeText(payload.booking_id, 100),
+    episode_id: sanitizeText(payload.episode_id, 100),
     amount: payload.amount === undefined || payload.amount === '' ? '' : sanitizeNumber(payload.amount, 'amount'),
     status: payload.status,
     paid_on: payload.paid_on ? sanitizeDate(payload.paid_on, 'paid_on') : '',
@@ -1854,6 +1924,7 @@ function billsUpdate(payload) {
   if (payload.hasOwnProperty('paid_on')) fields.paid_on = payload.paid_on ? sanitizeDate(payload.paid_on, 'paid_on') : '';
   if (payload.hasOwnProperty('receipt_file_id')) fields.receipt_file_id = sanitizeText(payload.receipt_file_id, 100);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
+  if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
   return updateRowById('Bills', payload.id, fields);
 }
 
@@ -2259,7 +2330,11 @@ var SHEET_SCHEMA = {
     'photo_front_file_id', 'photo_back_file_id', 'composition', 'brand', 'strength', 'expiry_date',
     // Phase 5 (v3) — linked Records (prescription/bill this medicine came
     // with). See medicineFields()'s comment for why this is one-directional.
-    'linked_file_ids'
+    'linked_file_ids',
+    // episode_id (Episodes rebuild, Phase 5): which episode this medicine
+    // was prescribed/started in, if any — optional, a long-term prenatal
+    // vitamin started outside any particular visit just has ''.
+    'episode_id'
   ],
   MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken', 'status', 'taken_at', 'note'],
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],
@@ -2285,7 +2360,13 @@ var SHEET_SCHEMA = {
     // to its report, two reports from the same scan, etc.) — comma-joined
     // ids, always kept symmetric by files.link/files.unlink (linking A to
     // B adds B to A's list AND A to B's list in the same call).
-    'linked_file_ids'
+    'linked_file_ids',
+    // episode_id (Phase 3): direct episode link, set alongside
+    // linked_booking_id when a file is added from inside an episode —
+    // kept independent of the booking link since the brief calls for
+    // reports/bills to carry their own episode link, not just an implied
+    // one through whichever booking they happen to be attached to.
+    'episode_id'
   ],
   Countdowns: [
     'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',
@@ -2319,7 +2400,24 @@ var SHEET_SCHEMA = {
   // photo_file_id: an optional photo attached when the note was saved — a
   // Files row id (type_v2: other), same pattern as every other photo
   // pointer in this schema (medicine photos, etc.).
-  Notes: ['id', 'date', 'time', 'category', 'text', 'photo_file_id', 'created_at'],
+  Notes: [
+    'id', 'date', 'time', 'category', 'text', 'photo_file_id', 'created_at',
+    // --- Episodes rebuild (Phase 4) ----------------------------------
+    // episode_id: which episode this note belongs to (blank for a plain
+    // Quick-Add note with no episode context, which is still allowed).
+    // block: which part of the episode this note is attached to —
+    // 'booking' | 'report' | 'bill' | 'medicine' | 'episode' (the one
+    // final note at the end) | '' (a non-episode Quick-Add note).
+    // block_ref_id: the specific booking/report/bill/medicine id, when
+    // block isn't 'episode' or ''.
+    // alert_level: '' by default (no status at all, per the brief) —
+    // only 'red'/'orange'/'green' when the person explicitly turns an
+    // alert on for this specific note. An alerted note is what drives an
+    // in-app notification and can act as a countdown; this column is the
+    // only place alert severity exists anywhere in this schema — it is
+    // never computed automatically from any other data.
+    'episode_id', 'block', 'block_ref_id', 'alert_level'
+  ],
 
   // --- Phase 3 (v3): bookings, suggestions, bills -----------------------
   // Bookings replaces the plain Appointments flow for anything booked
@@ -2335,7 +2433,23 @@ var SHEET_SCHEMA = {
     // questions: her own "questions to ask" checklist for this visit, kept
     // as plain text (one question per line, a leading "[x] " marking it
     // ticked) rather than a separate tab — simple enough not to need one.
-    'questions'
+    'questions',
+    // --- Episodes rebuild (Phase 2) ---------------------------------------
+    // episode_id: which Episode this booking belongs to — every new
+    // booking has one (the frontend always links-to-existing or
+    // creates-new before calling bookings.create); old rows just have ''.
+    // booking_datetime: when the booking/call was actually made, distinct
+    // from `datetime` (when the visit/test/pickup is scheduled for).
+    // reason/suggested_by: the brief's own fields, both optional.
+    // tentative_date: only meaningful once status is 'rescheduled' — the
+    // new candidate date, kept separate from `datetime` so "what was
+    // originally scheduled" isn't lost.
+    'episode_id', 'booking_datetime', 'reason', 'suggested_by', 'tentative_date',
+    // Type-specific extras — only one group is ever filled in per row,
+    // depending on `type`. Flat optional columns rather than a second
+    // sheet: there are only 4 of them and every Bookings row already
+    // tolerates a long tail of blank columns (see approx_report_days etc.)
+    'lab_center_name', 'lab_center_number', 'medic_shop_name', 'medic_kind'
   ],
   // Suggestions: doctor suggestions recorded after a visit (medicine, scan,
   // blood test, diet/lifestyle advice, follow-up date), each actionable
@@ -2345,7 +2459,7 @@ var SHEET_SCHEMA = {
   // Bills: at most one per booking in practice, kept separate (not columns
   // on Bookings) so "pay on visit" / "collect later" / paid-on tracking
   // doesn't clutter the booking's own stage-tracking fields.
-  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes'],
+  Bills: ['id', 'booking_id', 'amount', 'status', 'paid_on', 'receipt_file_id', 'notes', 'episode_id'],
 
   // --- Episodes rebuild (Phase 1) -----------------------------------------
   // Episode is the new organizing unit everything else will link to

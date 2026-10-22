@@ -743,6 +743,14 @@ a { color: var(--color-primary-dark); }
   width: fit-content;
 }
 
+/* Note alert badges — the colors here ARE the content (a person
+   explicitly chose to flag this note red/orange/green), not a system
+   judgment of their data the way the banned amber/red dose/stock alert
+   styling would be. Opt-in per note only — see Notes schema comment. */
+.badge.alert-red { background: var(--color-state-rose-bg); color: var(--color-state-rose); }
+.badge.alert-orange { background: var(--color-state-amber-bg); color: var(--color-state-amber); }
+.badge.alert-green { background: var(--mc-secondary-fixed); color: var(--mc-on-secondary-fixed-variant); }
+
 /* ---------- Medicines: today's checklist ---------- */
 
 .med-list--checkable li { align-items: center; }

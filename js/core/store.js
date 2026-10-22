@@ -766,14 +766,19 @@ export async function mockCall(action, payload) {
       if (payload.category) rows = rows.filter((n) => n.category === payload.category);
       if (payload.date_from) rows = rows.filter((n) => n.date >= payload.date_from);
       if (payload.date_to) rows = rows.filter((n) => n.date <= payload.date_to);
+      if (payload.episode_id) rows = rows.filter((n) => n.episode_id === payload.episode_id);
+      if (payload.alert_level) rows = rows.filter((n) => n.alert_level === payload.alert_level);
       return rows.sort((a, b) => (b.date + " " + b.time).localeCompare(a.date + " " + a.time));
     }
     case "notes.create": {
       requireFields(payload, ["date", "text"]);
-      const row = { id: payload.id || uid(), time: todayTime(), category: "note", ...payload, created_at: new Date().toISOString() };
+      const row = { id: payload.id || uid(), time: todayTime(), category: "note", episode_id: "", block: "", block_ref_id: "", alert_level: "", ...payload, created_at: new Date().toISOString() };
       db.notes.push(row);
       return clone(row);
     }
+    case "notes.update":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.notes, payload.id, payload);
     case "notes.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.notes, payload.id);
@@ -889,6 +894,7 @@ export async function mockCall(action, payload) {
       if (payload.type_v2) rows = rows.filter((f) => f.type_v2 === payload.type_v2);
       if (payload.needs_sorting) rows = rows.filter((f) => !f.type_v2);
       if (payload.linked_booking_id) rows = rows.filter((f) => f.linked_booking_id === payload.linked_booking_id);
+      if (payload.episode_id) rows = rows.filter((f) => f.episode_id === payload.episode_id);
       if (payload.date_from) rows = rows.filter((f) => f.date >= payload.date_from);
       if (payload.date_to) rows = rows.filter((f) => f.date <= payload.date_to);
       return rows.sort((a, b) => b.date.localeCompare(a.date));
@@ -955,6 +961,7 @@ export async function mockCall(action, payload) {
       let rows = clone(db.bookings);
       if (payload.type) rows = rows.filter((b) => b.type === payload.type);
       if (payload.status) rows = rows.filter((b) => b.status === payload.status);
+      if (payload.episode_id) rows = rows.filter((b) => b.episode_id === payload.episode_id);
       return rows.sort((a, b) => b.datetime.localeCompare(a.datetime));
     }
     case "bookings.create": {
@@ -1021,12 +1028,13 @@ export async function mockCall(action, payload) {
     case "bills.list": {
       let rows = clone(db.bills);
       if (payload.booking_id) rows = rows.filter((b) => b.booking_id === payload.booking_id);
+      if (payload.episode_id) rows = rows.filter((b) => b.episode_id === payload.episode_id);
       if (payload.status) rows = rows.filter((b) => b.status === payload.status);
       return rows;
     }
     case "bills.create": {
-      requireFields(payload, ["booking_id", "status"]);
-      const row = { id: payload.id || uid(), amount: "", paid_on: "", receipt_file_id: "", notes: "", ...payload };
+      requireFields(payload, ["status"]);
+      const row = { id: payload.id || uid(), booking_id: "", episode_id: "", amount: "", paid_on: "", receipt_file_id: "", notes: "", ...payload };
       db.bills.push(row);
       return clone(row);
     }

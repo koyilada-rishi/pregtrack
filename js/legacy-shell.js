@@ -5392,7 +5392,7 @@ function formatFileSize(bytes) {
 // ---------------------------------------------------------------------------
 
 const BOOKING_TYPES_LIST = ["doctor_visit", "scan", "blood_test", "vaccine", "other"];
-const BOOKING_STATUSES_LIST = ["booked", "done", "waiting_for_report", "report_uploaded", "closed"];
+const BOOKING_STATUSES_LIST = ["booked", "done", "waiting_for_report", "report_uploaded", "closed", "cancelled", "rescheduled"];
 const BOOKING_NEXT_STATUS = { booked: "done", done: "waiting_for_report", waiting_for_report: "report_uploaded", report_uploaded: "closed" };
 const BOOKING_TYPE_ICON = { doctor_visit: "🩺", scan: "🩻", blood_test: "🩸", vaccine: "💉", other: "📋" };
 // Best-guess Records category for a file uploaded straight from a booking's
@@ -5509,18 +5509,54 @@ function attachBookingsListHandlers(outlet) {
   });
 }
 
-function openBookingCreateSheet(onSaved) {
+// defaultEpisodeId: pre-selects an episode (used when booking is opened
+// from inside an episode's own detail page) — "" means default to the
+// most recently started episode, per the brief ("episode defaults to the
+// latest one, with a simple icon to create a new episode instead").
+async function openBookingCreateSheet(onSaved, defaultEpisodeId) {
+  let episodes = [];
+  try { episodes = await store.call("episodes.list", {}); } catch { /* sheet still opens; episode link becomes optional */ }
+  episodes = episodes.slice().sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
+  const latestEpisodeId = episodes.length ? episodes[0].id : "";
+  const preselect = defaultEpisodeId || latestEpisodeId;
+
   openSheet(`
     <div class="sheet-handle" aria-hidden="true"></div>
     <h2>${t("bookings.form.titleNew")}</h2>
     <form id="booking-create-form">
-      ${formField(t("bookings.form.type"), `<select class="field" name="type">${BOOKING_TYPES_LIST.map((ty) => `<option value="${ty}">${t("bookings.type." + ty)}</option>`).join("")}</select>`)}
+      ${formField(t("bookings.form.type"), `<select class="field" name="type" id="booking-type-select">${BOOKING_TYPES_LIST.map((ty) => `<option value="${ty}">${t("bookings.type." + ty)}</option>`).join("")}</select>`)}
       ${formField(t("bookings.form.title"), `<input class="field" name="title" required />`)}
       ${formField(t("bookings.form.provider"), `<input class="field" name="provider" />`)}
       ${formField(t("bookings.form.datetime"), `<input class="field" type="datetime-local" name="datetime" required />`)}
+
+      ${formField(t("episodes.form.episode"), `
+        <select class="field" name="episode_id" id="booking-episode-select">
+          ${episodes.map((ep) => `<option value="${escapeHtml(ep.id)}" ${ep.id === preselect ? "selected" : ""}>${escapeHtml(ep.name)}</option>`).join("")}
+          <option value="__new__" ${preselect ? "" : "selected"}>${t("episodes.form.createNew")}</option>
+        </select>
+      `)}
+      <div id="booking-new-episode-fields" ${preselect ? "hidden" : ""}>
+        ${formField(t("episodes.name"), `<input class="field" name="new_episode_name" />`, t("episodes.nameHint"))}
+      </div>
+
+      ${formField(t("bookings.form.reason"), `<input class="field" name="reason" />`)}
+      ${formField(t("bookings.form.suggestedBy"), `
+        <select class="field" name="suggested_by"><option value="">—</option><option value="doctor">${t("bookings.form.suggestedBy.doctor")}</option><option value="patient">${t("bookings.form.suggestedBy.patient")}</option></select>
+      `)}
+
+      <div id="booking-type-fields-lab" hidden>
+        ${formField(t("bookings.form.labCenterName"), `<input class="field" name="lab_center_name" />`)}
+        ${formField(t("bookings.form.labCenterNumber"), `<input class="field" name="lab_center_number" />`)}
+      </div>
+      <div id="booking-type-fields-medic" hidden>
+        ${formField(t("bookings.form.medicShopName"), `<input class="field" name="medic_shop_name" />`)}
+        ${formField(t("bookings.form.medicKind"), `<select class="field" name="medic_kind">${MEDIC_KINDS_LIST.map((k) => `<option value="${k}">${t("bookings.form.medicKind." + k)}</option>`).join("")}</select>`)}
+      </div>
+
       ${formField(t("bookings.form.bookedVia"), `<select class="field" name="booked_via"><option value="">—</option>${BOOKING_VIA_LIST.map((v) => `<option value="${v}">${t("bookings.via." + v)}</option>`).join("")}</select>`)}
       ${formField(t("bookings.form.location"), `<input class="field" name="location" />`)}
       ${formField(t("bookings.form.approxReportDays"), `<input class="field" type="number" min="0" name="approx_report_days" />`, t("bookings.form.approxReportDaysHint"))}
+      ${formField(t("episodes.form.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" /></div>`, t("episodes.form.amountHint"))}
       <p class="error-text" id="booking-create-error" hidden></p>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="booking-create-cancel">${t("common.cancel")}</button>
@@ -5528,31 +5564,72 @@ function openBookingCreateSheet(onSaved) {
       </div>
     </form>
   `, (sheetEl) => {
+    const typeSelect = sheetEl.querySelector("#booking-type-select");
+    const labFields = sheetEl.querySelector("#booking-type-fields-lab");
+    const medicFields = sheetEl.querySelector("#booking-type-fields-medic");
+    const applyTypeFields = () => {
+      const ty = typeSelect.value;
+      labFields.hidden = !(ty === "scan" || ty === "blood_test");
+      medicFields.hidden = !(ty === "vaccine" || ty === "other");
+    };
+    typeSelect.addEventListener("change", applyTypeFields);
+    applyTypeFields();
+
+    const episodeSelect = sheetEl.querySelector("#booking-episode-select");
+    const newEpisodeFields = sheetEl.querySelector("#booking-new-episode-fields");
+    episodeSelect.addEventListener("change", () => {
+      newEpisodeFields.hidden = episodeSelect.value !== "__new__";
+    });
+
     sheetEl.querySelector("#booking-create-cancel").addEventListener("click", closeSheet);
     sheetEl.querySelector("#booking-create-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const fd = new FormData(event.target);
-      const payload = {
-        type: fd.get("type"), title: fd.get("title").trim(), provider: fd.get("provider").trim(),
-        datetime: fd.get("datetime") ? new Date(fd.get("datetime")).toISOString() : "",
-        booked_via: fd.get("booked_via") || "", location: fd.get("location").trim(),
-        approx_report_days: fd.get("approx_report_days") || ""
-      };
       const saveBtn = sheetEl.querySelector("#booking-create-save");
+      const errEl = sheetEl.querySelector("#booking-create-error");
       saveBtn.disabled = true;
+      errEl.hidden = true;
       try {
-        await store.call("bookings.create", payload);
+        let episodeId = fd.get("episode_id");
+        if (episodeId === "__new__") {
+          const name = fd.get("new_episode_name").trim();
+          if (!name) throw new Error(t("episodes.form.newEpisodeNameRequired"));
+          const bookingDate = fd.get("datetime") ? dateStrOf(new Date(fd.get("datetime"))) : formatDateInput(new Date());
+          const countdown = gestationalWeekAt(bookingDate);
+          const newEpisode = await store.call("episodes.create", {
+            name, start_date: bookingDate, trimester: countdown ? String(countdown.trimester) : "1"
+          });
+          episodeId = newEpisode.id;
+        }
+        const payload = {
+          type: fd.get("type"), title: fd.get("title").trim(), provider: fd.get("provider").trim(),
+          datetime: fd.get("datetime") ? new Date(fd.get("datetime")).toISOString() : "",
+          booked_via: fd.get("booked_via") || "", location: fd.get("location").trim(),
+          approx_report_days: fd.get("approx_report_days") || "",
+          episode_id: episodeId || "",
+          reason: fd.get("reason").trim(),
+          suggested_by: fd.get("suggested_by") || "",
+          lab_center_name: fd.get("lab_center_name") || "",
+          lab_center_number: fd.get("lab_center_number") || "",
+          medic_shop_name: fd.get("medic_shop_name") || "",
+          medic_kind: (fd.get("type") === "vaccine" || fd.get("type") === "other") ? (fd.get("medic_kind") || "") : ""
+        };
+        const booking = await store.call("bookings.create", payload);
+        const amount = fd.get("amount");
+        if (amount) {
+          await store.call("bills.create", { booking_id: booking.id, episode_id: episodeId || "", amount, status: "pay_on_visit" });
+        }
         closeSheet();
         await onSaved();
       } catch (err) {
         saveBtn.disabled = false;
-        const errEl = sheetEl.querySelector("#booking-create-error");
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
       }
     });
   });
 }
+const MEDIC_KINDS_LIST = ["vaccine", "shot", "other"];
 const BOOKING_VIA_LIST = ["call", "online", "in_person", "walk_in"];
 
 async function openBookingDetail(outlet, booking) {
@@ -5634,12 +5711,20 @@ function bookingDetailMarkup(b) {
       <h2>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</h2>
       <p class="muted">${escapeHtml(b.provider || "")}${b.provider ? " · " : ""}${escapeHtml(formatApptDateTime(b.datetime))}${b.location ? " · " + escapeHtml(b.location) : ""}</p>
       <p><span class="badge">${t("bookings.status." + b.status)}</span></p>
+      ${b.reason ? `<p class="muted">${t("bookings.form.reason")}: ${escapeHtml(b.reason)}</p>` : ""}
+      ${b.status === "rescheduled" && b.tentative_date ? `<p class="muted">${t("bookings.tentativeDate", { date: formatDisplayDate(b.tentative_date) })}</p>` : ""}
       ${reportDue ? `<p class="muted">${t("bookings.reportExpected", { date: formatDisplayDate(formatDateInput(reportDue)) })}</p>` : ""}
       ${bookingStageDurationsMarkup(b)}
       <div class="form-actions">
         ${nextStatus ? `<button type="button" class="btn btn-secondary" id="booking-advance-status" data-next-status="${nextStatus}">${t("bookings.markAs", { status: t("bookings.status." + nextStatus) })}</button>` : ""}
         ${b.status !== "closed" ? `<button type="button" class="btn btn-primary" id="booking-close-btn">${t("bookings.close")}</button>` : ""}
       </div>
+      ${["booked", "rescheduled"].includes(b.status) ? `
+        <div class="form-actions">
+          <button type="button" class="btn-link" id="booking-reschedule-btn">${t("bookings.reschedule")}</button>
+          <button type="button" class="btn-link btn-link--danger" id="booking-cancel-btn">${t("bookings.cancel")}</button>
+        </div>
+      ` : ""}
       <p class="error-text" id="booking-close-error" hidden></p>
       <button type="button" class="btn-link btn-link--danger" id="booking-delete-btn">${t("common.delete")}</button>
     </div>
@@ -5777,6 +5862,52 @@ function attachBookingDetailHandlers(outlet) {
       } catch (err) {
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
+      }
+    });
+  }
+
+  const rescheduleBtn = outlet.querySelector("#booking-reschedule-btn");
+  if (rescheduleBtn) {
+    rescheduleBtn.addEventListener("click", () => {
+      openSheet(`
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h2>${t("bookings.reschedule")}</h2>
+        ${formField(t("bookings.tentativeDateField"), `<input class="field" type="date" id="reschedule-tentative-date" required />`)}
+        <p class="error-text" id="reschedule-error" hidden></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="reschedule-cancel">${t("common.cancel")}</button>
+          <button type="button" class="btn btn-primary" id="reschedule-save">${t("common.save")}</button>
+        </div>
+      `, (sheetEl) => {
+        sheetEl.querySelector("#reschedule-cancel").addEventListener("click", closeSheet);
+        sheetEl.querySelector("#reschedule-save").addEventListener("click", async () => {
+          const tentativeDate = sheetEl.querySelector("#reschedule-tentative-date").value;
+          const errEl = sheetEl.querySelector("#reschedule-error");
+          if (!tentativeDate) { errEl.textContent = t("bookings.tentativeDateRequired"); errEl.hidden = false; return; }
+          try {
+            const updated = await store.call("bookings.update", { id: b.id, status: "rescheduled", tentative_date: tentativeDate });
+            Object.assign(b, updated);
+            closeSheet();
+            await openBookingDetail(outlet, b);
+          } catch (err) {
+            errEl.textContent = err.message || t("common.error");
+            errEl.hidden = false;
+          }
+        });
+      });
+    });
+  }
+
+  const cancelBtn = outlet.querySelector("#booking-cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      if (!confirm(t("bookings.confirmCancel"))) return;
+      try {
+        const updated = await store.call("bookings.update", { id: b.id, status: "cancelled" });
+        Object.assign(b, updated);
+        await openBookingDetail(outlet, b);
+      } catch (err) {
+        alert(err.message || t("common.error"));
       }
     });
   }
@@ -6116,11 +6247,19 @@ function csvEscape(value) {
 // wires that up. Until then every episode just shows "No bookings yet".
 // ---------------------------------------------------------------------------
 
-const episodesState = { episodes: [], settings: {}, loading: true, formItem: null };
+const episodesState = {
+  episodes: [], settings: {}, loading: true, formItem: null,
+  // Detail page (Phases 2-5's "blocks inside an episode"):
+  detail: null, detailBookings: [], detailFiles: [], detailBills: [], detailNotes: [], detailMedicines: [],
+  noteFormOpen: false
+};
+
+const EPISODE_BOOKING_CATEGORY = { doctor_visit: "visits", scan: "labs", blood_test: "labs", vaccine: "medics", other: "medics" };
 
 async function renderEpisodesView(outlet) {
   episodesState.loading = true;
   episodesState.formItem = null;
+  episodesState.detail = null;
   outlet.innerHTML = genericSkeleton(5);
   try {
     const [episodes, settings] = await Promise.all([store.call("episodes.list", {}), store.call("settings.get", {})]);
@@ -6136,8 +6275,38 @@ async function renderEpisodesView(outlet) {
 }
 
 function renderEpisodesBody(outlet) {
-  outlet.innerHTML = episodesState.formItem ? episodeFormMarkup(episodesState.formItem) : episodesListMarkup();
+  if (episodesState.formItem) {
+    outlet.innerHTML = episodeFormMarkup(episodesState.formItem);
+  } else if (episodesState.detail) {
+    outlet.innerHTML = episodeDetailMarkup();
+  } else {
+    outlet.innerHTML = episodesListMarkup();
+  }
   attachEpisodesHandlers(outlet);
+}
+
+async function openEpisodeDetail(outlet, episode) {
+  outlet.innerHTML = genericSkeleton(5);
+  episodesState.noteFormOpen = false;
+  try {
+    const [bookings, files, bills, notes, medicines] = await Promise.all([
+      store.call("bookings.list", { episode_id: episode.id }),
+      store.call("files.list", { episode_id: episode.id }),
+      store.call("bills.list", { episode_id: episode.id }),
+      store.call("notes.list", { episode_id: episode.id }),
+      store.call("medicines.list", {})
+    ]);
+    episodesState.detail = episode;
+    episodesState.detailBookings = bookings;
+    episodesState.detailFiles = files;
+    episodesState.detailBills = bills;
+    episodesState.detailNotes = notes;
+    episodesState.detailMedicines = medicines.filter((m) => m.episode_id === episode.id);
+    renderEpisodesBody(outlet);
+  } catch (err) {
+    outlet.innerHTML = errorMarkup(err);
+    attachRetryHandler(outlet, () => openEpisodeDetail(outlet, episode));
+  }
 }
 
 // Gestational week at an arbitrary date (not "now") — reuses the same
@@ -6164,14 +6333,194 @@ function episodeCardListMarkup(ep) {
     ? `${formatDisplayDate(ep.start_date)} – ${formatDisplayDate(ep.end_date)}`
     : t("episodes.startedOn", { date: formatDisplayDate(ep.start_date) });
   return `
-    <button type="button" class="card episode-list-card" data-edit-episode="${escapeHtml(ep.id)}">
+    <button type="button" class="card episode-list-card" data-open-episode="${escapeHtml(ep.id)}">
       <div class="card-head">
         <h2>${escapeHtml(ep.name)}</h2>
         <span class="chip">${t("home.trimester." + (ep.trimester || "1"))}</span>
       </div>
       <p class="muted">${escapeHtml(dateRange)}</p>
-      <p class="muted">${t("episodes.noBookingsYet")}</p>
     </button>
+  `;
+}
+
+// "Status derived from its linked bookings" — a plain count summary, no
+// single-word verdict (consistent with the rest of this app never judging
+// data on the person's behalf).
+function episodeBookingsStatusSummary(bookings) {
+  if (!bookings.length) return t("episodes.noBookingsYet");
+  const active = ["booked", "rescheduled"].filter((s) => bookings.some((b) => b.status === s)).length
+    ? bookings.filter((b) => b.status === "booked" || b.status === "rescheduled").length : 0;
+  const closed = bookings.filter((b) => b.status === "closed" || b.status === "done").length;
+  const cancelled = bookings.filter((b) => b.status === "cancelled").length;
+  const parts = [];
+  if (active) parts.push(t("episodes.status.active", { n: active }));
+  if (closed) parts.push(t("episodes.status.closed", { n: closed }));
+  if (cancelled) parts.push(t("episodes.status.cancelled", { n: cancelled }));
+  return parts.join(" · ") || t("episodes.noBookingsYet");
+}
+
+function episodeFinanceBreakdown(bookings, bills) {
+  const bookingsById = indexById(bookings);
+  const totals = { visits: 0, labs: 0, medics: 0, unlinked: 0 };
+  let grandTotal = 0;
+  bills.forEach((bill) => {
+    const amount = Number(bill.amount) || 0;
+    if (!amount) return;
+    grandTotal += amount;
+    const booking = bookingsById[bill.booking_id];
+    const category = booking ? EPISODE_BOOKING_CATEGORY[booking.type] : null;
+    totals[category || "unlinked"] += amount;
+  });
+  return { totals, grandTotal };
+}
+
+function episodeDetailMarkup() {
+  const ep = episodesState.detail;
+  const dateRange = ep.end_date
+    ? `${formatDisplayDate(ep.start_date)} – ${formatDisplayDate(ep.end_date)}`
+    : t("episodes.startedOn", { date: formatDisplayDate(ep.start_date) });
+  const { totals, grandTotal } = episodeFinanceBreakdown(episodesState.detailBookings, episodesState.detailBills);
+  const episodeNote = episodesState.detailNotes.find((n) => n.block === "episode");
+
+  return `
+    <button type="button" class="btn-link" id="episode-detail-back">${t("common.back")}</button>
+    <div class="card">
+      <div class="card-head">
+        <h2>${escapeHtml(ep.name)}</h2>
+        <span class="chip">${t("home.trimester." + (ep.trimester || "1"))}</span>
+      </div>
+      <p class="muted">${escapeHtml(dateRange)}</p>
+      <p class="muted">${episodeBookingsStatusSummary(episodesState.detailBookings)}</p>
+      <button type="button" class="btn-link" id="episode-edit-btn">${t("common.edit")}</button>
+    </div>
+
+    <div class="card">
+      <h2>${t("episodes.finance.title")}</h2>
+      <p class="hero-days" style="font-size:1.6rem">${formatINR(grandTotal)}</p>
+      <ul class="entity-list">
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.visits")}</div><span>${formatINR(totals.visits)}</span></li>
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.labs")}</div><span>${formatINR(totals.labs)}</span></li>
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.medics")}</div><span>${formatINR(totals.medics)}</span></li>
+        ${totals.unlinked ? `<li class="entity-row"><div class="entity-main">${t("episodes.finance.other")}</div><span>${formatINR(totals.unlinked)}</span></li>` : ""}
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.bookings.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-booking-btn" aria-label="${t("bookings.add")}">+</button>
+      </div>
+      ${
+        episodesState.detailBookings.length
+          ? `<ul class="entity-list">${episodesState.detailBookings.map((b) => `
+              <li class="entity-row tap-row" data-open-episode-booking="${escapeHtml(b.id)}">
+                <div class="entity-main">
+                  <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</strong>
+                  <span class="muted">${escapeHtml(formatApptDateTime(b.datetime))} · ${t("bookings.status." + b.status)}</span>
+                </div>
+              </li>
+            `).join("")}</ul>`
+          : `<p class="empty">${t("bookings.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.reports.title")}</h2>
+        <label class="btn-add" aria-label="${t("episodes.reports.add")}">+<input type="file" accept="image/*,application/pdf" id="episode-report-input" hidden /></label>
+      </div>
+      ${
+        episodesState.detailFiles.length
+          ? `<ul class="entity-list">${episodesState.detailFiles.map((f) => `
+              <li class="entity-row"><div class="entity-main">${recordIcon(f)} ${escapeHtml(f.title)}</div></li>
+            `).join("")}</ul>`
+          : `<p class="empty">${t("episodes.reports.none")}</p>`
+      }
+      <p class="error-text" id="episode-report-error" hidden></p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.bills.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-bill-btn" aria-label="${t("episodes.bills.add")}">+</button>
+      </div>
+      ${
+        episodesState.detailBills.length
+          ? `<ul class="entity-list">${episodesState.detailBills.map((bill) => `
+              <li class="entity-row"><div class="entity-main">${escapeHtml(formatINR(bill.amount))}<span class="muted"> · ${t("bookings.bill." + bill.status)}</span></div></li>
+            `).join("")}</ul>`
+          : `<p class="empty">${t("episodes.bills.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <h2>${t("episodes.medicines.title")}</h2>
+      ${
+        episodesState.detailMedicines.length
+          ? `<ul class="entity-list">${episodesState.detailMedicines.map((m) => `<li class="entity-row"><div class="entity-main">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</div></li>`).join("")}</ul>`
+          : `<p class="empty">${t("episodes.medicines.none")}</p>`
+      }
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.notesBlock.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-note-btn" aria-label="${t("episodes.notesBlock.add")}">+</button>
+      </div>
+      ${
+        episodesState.detailNotes.filter((n) => n.block !== "episode" && n.block !== "handover").length
+          ? `<ul class="entity-list">${episodesState.detailNotes.filter((n) => n.block !== "episode" && n.block !== "handover").map((n) => episodeNoteRowMarkup(n)).join("")}</ul>`
+          : `<p class="empty">${t("episodes.notesBlock.none")}</p>`
+      }
+      ${episodesState.noteFormOpen ? episodeNoteFormMarkup() : ""}
+    </div>
+
+    <div class="card">
+      <h2>${t("episodes.finalNote.title")}</h2>
+      <textarea class="field" id="episode-final-note-input" rows="3">${escapeHtml(episodeNote ? episodeNote.text : "")}</textarea>
+      <div class="form-actions"><button type="button" class="btn btn-secondary" id="episode-final-note-save">${t("common.save")}</button></div>
+    </div>
+
+    <div class="card">
+      <h2>${t("episodes.handover.title")}</h2>
+      <p class="muted">${t("episodes.handover.hint")}</p>
+      <textarea class="field" id="episode-handover-input" rows="3">${escapeHtml((episodesState.detailNotes.find((n) => n.block === "handover") || {}).text || "")}</textarea>
+      <div class="form-actions"><button type="button" class="btn btn-secondary" id="episode-handover-save">${t("common.save")}</button></div>
+    </div>
+  `;
+}
+
+const ALERT_LEVEL_LIST = ["", "green", "orange", "red"];
+
+function episodeNoteRowMarkup(n) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <span>${escapeHtml(n.text)}</span>
+        ${n.alert_level ? `<span class="badge alert-${n.alert_level}">${t("episodes.alert." + n.alert_level)}</span>` : ""}
+        <span class="muted">${escapeHtml(formatDisplayDate(n.date))}</span>
+      </div>
+    </li>
+  `;
+}
+
+function episodeNoteFormMarkup() {
+  return `
+    <form id="episode-note-form">
+      <textarea class="field" name="text" rows="2" required placeholder="${t("episodes.notesBlock.placeholder")}"></textarea>
+      ${formField(t("episodes.alertLevel"), `
+        <select class="field" name="alert_level">
+          <option value="">${t("episodes.alert.none")}</option>
+          <option value="green">${t("episodes.alert.green")}</option>
+          <option value="orange">${t("episodes.alert.orange")}</option>
+          <option value="red">${t("episodes.alert.red")}</option>
+        </select>
+      `, t("episodes.alertLevelHint"))}
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="episode-note-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
   `;
 }
 
@@ -6213,15 +6562,166 @@ function attachEpisodesHandlers(outlet) {
     });
   }
 
-  outlet.querySelectorAll("[data-edit-episode]").forEach((btn) => {
+  outlet.querySelectorAll("[data-open-episode]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      episodesState.formItem = episodesState.episodes.find((ep) => ep.id === btn.dataset.editEpisode) || "new";
-      renderEpisodesBody(outlet);
+      const ep = episodesState.episodes.find((e) => e.id === btn.dataset.openEpisode);
+      if (ep) openEpisodeDetail(outlet, ep);
     });
   });
 
   const backBtn = outlet.querySelector("#episode-form-back");
-  if (backBtn) backBtn.addEventListener("click", () => { episodesState.formItem = null; renderEpisodesBody(outlet); });
+  if (backBtn) {
+    backBtn.addEventListener("click", () => {
+      const returnToDetail = episodesState.formItem !== "new" && episodesState.detail;
+      episodesState.formItem = null;
+      if (returnToDetail) openEpisodeDetail(outlet, episodesState.detail);
+      else renderEpisodesBody(outlet);
+    });
+  }
+
+  const detailBackBtn = outlet.querySelector("#episode-detail-back");
+  if (detailBackBtn) detailBackBtn.addEventListener("click", () => { episodesState.detail = null; renderEpisodesBody(outlet); });
+
+  const editBtn = outlet.querySelector("#episode-edit-btn");
+  if (editBtn) {
+    editBtn.addEventListener("click", () => {
+      episodesState.formItem = episodesState.detail;
+      renderEpisodesBody(outlet);
+    });
+  }
+
+  const addBookingBtn = outlet.querySelector("#episode-add-booking-btn");
+  if (addBookingBtn) {
+    addBookingBtn.addEventListener("click", () => {
+      openBookingCreateSheet(() => openEpisodeDetail(outlet, episodesState.detail), episodesState.detail.id);
+    });
+  }
+
+  outlet.querySelectorAll("[data-open-episode-booking]").forEach((row) => {
+    row.addEventListener("click", () => {
+      pendingOpenBookingId = row.dataset.openEpisodeBooking;
+      location.hash = "#/bookings";
+    });
+  });
+
+  const reportInput = outlet.querySelector("#episode-report-input");
+  if (reportInput) {
+    reportInput.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const errEl = outlet.querySelector("#episode-report-error");
+      errEl.hidden = true;
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+        await store.call("files.upload", {
+          title: titleFromFilename(file.name), type: "document", type_v2: "other",
+          episode_id: episodesState.detail.id,
+          filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
+        });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+      }
+    });
+  }
+
+  const addBillBtn = outlet.querySelector("#episode-add-bill-btn");
+  if (addBillBtn) {
+    addBillBtn.addEventListener("click", () => {
+      openSheet(`
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h2>${t("episodes.bills.add")}</h2>
+        <form id="episode-bill-form">
+          ${formField(t("episodes.form.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" required /></div>`)}
+          ${formField(t("bookings.bill.title"), `<select class="field" name="status">${BILL_STATUSES_LIST.map((s) => `<option value="${s}">${t("bookings.bill." + s)}</option>`).join("")}</select>`)}
+          <p class="error-text" id="episode-bill-error" hidden></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="episode-bill-cancel">${t("common.cancel")}</button>
+            <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+          </div>
+        </form>
+      `, (sheetEl) => {
+        sheetEl.querySelector("#episode-bill-cancel").addEventListener("click", closeSheet);
+        sheetEl.querySelector("#episode-bill-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const fd = new FormData(event.target);
+          try {
+            await store.call("bills.create", { episode_id: episodesState.detail.id, amount: fd.get("amount"), status: fd.get("status") });
+            closeSheet();
+            await openEpisodeDetail(outlet, episodesState.detail);
+          } catch (err) {
+            const errEl = sheetEl.querySelector("#episode-bill-error");
+            errEl.textContent = err.message || t("common.error");
+            errEl.hidden = false;
+          }
+        });
+      });
+    });
+  }
+
+  const addNoteBtn = outlet.querySelector("#episode-add-note-btn");
+  if (addNoteBtn) {
+    addNoteBtn.addEventListener("click", () => {
+      episodesState.noteFormOpen = true;
+      renderEpisodesBody(outlet);
+    });
+  }
+  const noteCancelBtn = outlet.querySelector("#episode-note-cancel");
+  if (noteCancelBtn) noteCancelBtn.addEventListener("click", () => { episodesState.noteFormOpen = false; renderEpisodesBody(outlet); });
+  const noteForm = outlet.querySelector("#episode-note-form");
+  if (noteForm) {
+    noteForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(noteForm);
+      try {
+        await store.call("notes.create", {
+          date: formatDateInput(new Date()), text: fd.get("text").trim(), category: "note",
+          episode_id: episodesState.detail.id, block: "note", alert_level: fd.get("alert_level") || ""
+        });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  const finalNoteSaveBtn = outlet.querySelector("#episode-final-note-save");
+  if (finalNoteSaveBtn) {
+    finalNoteSaveBtn.addEventListener("click", async () => {
+      const text = outlet.querySelector("#episode-final-note-input").value.trim();
+      const existing = episodesState.detailNotes.find((n) => n.block === "episode");
+      try {
+        if (existing) {
+          await store.call("notes.update", { id: existing.id, text });
+        } else if (text) {
+          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "episode" });
+        }
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  const handoverSaveBtn = outlet.querySelector("#episode-handover-save");
+  if (handoverSaveBtn) {
+    handoverSaveBtn.addEventListener("click", async () => {
+      const text = outlet.querySelector("#episode-handover-input").value.trim();
+      const existing = episodesState.detailNotes.find((n) => n.block === "handover");
+      try {
+        if (existing) {
+          await store.call("notes.update", { id: existing.id, text });
+        } else if (text) {
+          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "handover" });
+        }
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
 
   // Auto-fills the trimester (and, for a brand-new episode with no name
   // typed yet, the "Week N – " name prefix) from the chosen start date —
@@ -6268,12 +6768,19 @@ function attachEpisodesHandlers(outlet) {
       const errEl = outlet.querySelector("#episode-form-error");
       errEl.hidden = true;
       try {
-        if (episodesState.formItem === "new") {
-          await store.call("episodes.create", payload);
+        const wasEditingExisting = episodesState.formItem !== "new";
+        let saved;
+        if (!wasEditingExisting) {
+          saved = await store.call("episodes.create", payload);
         } else {
-          await store.call("episodes.update", { id: episodesState.formItem.id, ...payload });
+          saved = await store.call("episodes.update", { id: episodesState.formItem.id, ...payload });
         }
-        await renderEpisodesView(outlet);
+        episodesState.formItem = null;
+        if (wasEditingExisting && episodesState.detail) {
+          await openEpisodeDetail(outlet, saved);
+        } else {
+          await renderEpisodesView(outlet);
+        }
       } catch (err) {
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
