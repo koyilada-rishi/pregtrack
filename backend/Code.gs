@@ -325,7 +325,11 @@ var SETTINGS_KEYS = [
   // Phase 4 — global on/off switches for the optional medicine-detail
   // fields (photos/ingredients/expiry), and the expiry alert window
   // (defaults to 30 days client-side when blank).
-  'photos_enabled', 'ingredients_enabled', 'expiry_tracking_enabled', 'expiry_alert_days'
+  'photos_enabled', 'ingredients_enabled', 'expiry_tracking_enabled', 'expiry_alert_days',
+  // Stage: MamaCare Today — kick counter is off by default (a plain tap
+  // counter, not a timed-interval kick-count session; she turns it on here
+  // if she wants it at all).
+  'kick_counter_enabled'
 ];
 
 function settingsGet() {

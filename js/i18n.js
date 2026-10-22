@@ -119,6 +119,9 @@ const STRINGS = {
     "home.packs.tickAll": "Tick all",
     "home.packs.allDone": "All done",
 
+    "home.pendingReports.title": "Waiting for reports",
+    "home.pendingReports.waitingDays": "Waiting {n} day(s)",
+
     "home.comingUp.title": "Coming up",
     "home.comingUp.due": "Due {date}",
     "home.comingUp.dueToday": "Due today",
@@ -555,6 +558,11 @@ const STRINGS = {
     "water.addGlass": "+ Add a glass",
     "water.seeHistory": "See water history →",
     "water.addedToast": "Added a glass.",
+
+    "home.kickCounter.title": "Kick counter",
+    "home.kickCounter.count": "{n} today",
+    "home.kickCounter.tapToAdd": "+ Tap to record",
+    "home.kickCounter.addedToast": "Added a kick.",
     "water.totals.title": "Totals",
     "water.totals.today": "Today",
     "water.totals.week": "This week",
@@ -713,6 +721,9 @@ const STRINGS = {
     "meds.form.photoNone": "Not added",
     "meds.form.photoUploading": "Uploading…",
     "meds.form.photoError": "Couldn't upload that photo.",
+
+    "settings.today.title": "Today screen",
+    "settings.today.kickCounter": "Show a kick counter on Today",
 
     "settings.medicineDetails.title": "Medicine details",
     "settings.medicineDetails.hint": "Turn these optional fields on or off for every medicine form.",

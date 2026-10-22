@@ -101,6 +101,15 @@ function setCached(action, payload, data) {
 export async function call(action, payload) {
   const data = isMockMode() ? await callMock(action, payload) : await api.call(action, payload);
   setCached(action, payload, data);
+  // settings.set returns the full fresh settings object — merge it straight
+  // into the cached bootstrap so a view that reads store.getCachedBootstrap()
+  // (or navigates right after a save) sees the change immediately, instead
+  // of whatever was cached before, until the next version-poll cycle
+  // happens to refetch everything.
+  if (action === "settings.set" && data) {
+    const cached = getCachedBootstrap();
+    if (cached) setCachedBootstrap({ ...cached, settings: data });
+  }
   return data;
 }
 
@@ -298,7 +307,8 @@ const db = {
     photos_enabled: "true",
     ingredients_enabled: "true",
     expiry_tracking_enabled: "true",
-    expiry_alert_days: "30"
+    expiry_alert_days: "30",
+    kick_counter_enabled: "false"
   },
   medicines: [
     { id: "mock-med-1", name: "Folic acid", dose: "5mg", frequency: "Once daily", times: "08:00", start_date: todayStr(-60), end_date: "", prescribed_by: "Dr. Rao", notes: "", active: true, stock_count: "", doses_per_day: "", refill_alert_days: 3, schedule_type: "daily", anchor_mode: "fixed", grace_minutes: 60, instructions: "before_food", status: "active", composition: "Folic Acid", brand: "Folvite", strength: "5mg", expiry_date: todayStr(20) },
@@ -375,7 +385,8 @@ const db = {
   ],
   bookings: [
     { id: "mock-booking-1", type: "doctor_visit", title: "Routine checkup", provider: "Dr. Rao", datetime: new Date(Date.now() + 5 * 86400000).toISOString(), booked_via: "call", location: "City Women's Hospital", notes: "", approx_report_days: "", status: "booked", booked_at: new Date(Date.now() - 2 * 86400000).toISOString(), done_at: "", waiting_for_report_at: "", report_uploaded_at: "", closed_at: "", closed_without_prescription: false, no_prescription_note: "", questions: "[ ] Ask about iron levels\n[x] Ask about kicks per day", created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
-    { id: "mock-booking-2", type: "scan", title: "Anomaly scan", provider: "City Imaging", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), booked_via: "online", location: "", notes: "Scan reviewed at the visit.", approx_report_days: 2, status: "closed", booked_at: new Date(Date.now() - 25 * 86400000).toISOString(), done_at: new Date(Date.now() - 20 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 20 * 86400000).toISOString(), report_uploaded_at: new Date(Date.now() - 18 * 86400000).toISOString(), closed_at: new Date(Date.now() - 17 * 86400000).toISOString(), closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 25 * 86400000).toISOString() }
+    { id: "mock-booking-2", type: "scan", title: "Anomaly scan", provider: "City Imaging", datetime: new Date(Date.now() - 20 * 86400000).toISOString(), booked_via: "online", location: "", notes: "Scan reviewed at the visit.", approx_report_days: 2, status: "closed", booked_at: new Date(Date.now() - 25 * 86400000).toISOString(), done_at: new Date(Date.now() - 20 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 20 * 86400000).toISOString(), report_uploaded_at: new Date(Date.now() - 18 * 86400000).toISOString(), closed_at: new Date(Date.now() - 17 * 86400000).toISOString(), closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 25 * 86400000).toISOString() },
+    { id: "mock-booking-3", type: "blood_test", title: "CBC & Ferritin", provider: "Medall Diagnostics", datetime: new Date(Date.now() - 2 * 86400000).toISOString(), booked_via: "walk-in", location: "", notes: "", approx_report_days: 3, status: "waiting_for_report", booked_at: new Date(Date.now() - 2 * 86400000).toISOString(), done_at: new Date(Date.now() - 2 * 86400000).toISOString(), waiting_for_report_at: new Date(Date.now() - 2 * 86400000).toISOString(), report_uploaded_at: "", closed_at: "", closed_without_prescription: false, no_prescription_note: "", questions: "", created_at: new Date(Date.now() - 2 * 86400000).toISOString() }
   ],
   suggestions: [
     { id: "mock-sugg-1", booking_id: "mock-booking-2", type: "diet_lifestyle", text: "More iron-rich foods", follow_up_date: "", status: "pending", created_at: new Date().toISOString() }

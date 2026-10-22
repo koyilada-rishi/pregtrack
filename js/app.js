@@ -591,7 +591,13 @@ async function renderHomeView(outlet) {
       }).catch(() => {}),
       store.call("foodlog.list", {}).then((rows) => {
         homeState.recentFoods = [...new Set(rows.slice().sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date))).map((r) => r.items).filter(Boolean))].slice(0, 6);
-      }).catch(() => {})
+      }).catch(() => {}),
+      isTruthy((boot.settings || {}).kick_counter_enabled)
+        ? store.call("healthlog.list", {}).then((rows) => {
+            homeState.todaysHealthEntry = rows.find((r) => dateStrOf(r.date) === todayStr) || null;
+          }).catch(() => {})
+        : Promise.resolve(),
+      store.call("bookings.list", { status: "waiting_for_report" }).then((rows) => { homeState.pendingReports = rows; }).catch(() => {})
     ]);
     renderHomeBody(outlet);
   };
@@ -718,6 +724,8 @@ function homeMarkup(boot, logs, weekEntry, now) {
 
     ${waterCardMarkup(settings)}
 
+    ${kickCounterCardMarkup(settings)}
+
     ${foodCardMarkup()}
 
     <div class="card">
@@ -736,6 +744,8 @@ function homeMarkup(boot, logs, weekEntry, now) {
     ${packsCardMarkup(boot, logs, now)}
 
     ${comingUpCardMarkup(boot, logs, now)}
+
+    ${pendingReportsCardMarkup(now)}
 
     <div class="card">
       <div class="card-head"><h2>${t("home.nextAppointment.title")}</h2></div>
@@ -968,6 +978,33 @@ function comingUpDueLabel(due) {
   return t("home.comingUp.dueIn", { n: due.daysUntil });
 }
 
+// Bookings sitting in the "waiting for report" stage — a plain fact (how
+// long it's been waiting), never a prompt to call anyone, since we don't
+// hold a phone number for the lab/provider on a Booking row.
+function pendingReportsCardMarkup(now) {
+  const rows = homeState.pendingReports || [];
+  if (!rows.length) return "";
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("home.pendingReports.title")}</h2></div>
+      <ul class="entity-list">
+        ${rows.map((b) => {
+          const waitingSince = b.waiting_for_report_at ? new Date(b.waiting_for_report_at) : null;
+          const days = waitingSince && !isNaN(waitingSince.getTime()) ? Math.max(0, Math.floor((now.getTime() - waitingSince.getTime()) / 86400000)) : null;
+          return `
+            <li class="entity-row tap-row" data-nav="#/bookings">
+              <div class="entity-main">
+                <strong>${escapeHtml(b.title)}</strong>
+                <span class="muted">${escapeHtml(b.provider || "")}${days !== null ? " · " + t("home.pendingReports.waitingDays", { n: days }) : ""}</span>
+              </div>
+            </li>
+          `;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
 function comingUpCardMarkup(boot, logs, now) {
   const rows = upcomingShots(boot, logs, now);
   if (!rows.length) return "";
@@ -1166,6 +1203,22 @@ function waterCardMarkup(settings) {
         <button type="button" class="btn btn-secondary" id="add-water-btn">${t("water.addGlass")}</button>
       </div>
       <a class="card-link" data-nav="#/water">${t("water.seeHistory")}</a>
+    </div>
+  `;
+}
+
+// Off by default (Settings → Today screen) — a plain tap counter, not a
+// timed kick-count session, written straight to today's HealthLog row
+// (creating one if she hasn't logged anything else today) without
+// disturbing any weight/BP/sugar/mood/notes already on it.
+function kickCounterCardMarkup(settings) {
+  if (!isTruthy(settings.kick_counter_enabled)) return "";
+  const count = Number((homeState.todaysHealthEntry || {}).kicks) || 0;
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("home.kickCounter.title")}</h2></div>
+      <p class="muted">${t("home.kickCounter.count", { n: count })}</p>
+      <button type="button" class="btn btn-secondary" id="kick-counter-btn">${t("home.kickCounter.tapToAdd")}</button>
     </div>
   `;
 }
@@ -1990,6 +2043,35 @@ function attachHomeHandlers(outlet) {
           } catch (err) {
             homeState.todaysWater = homeState.todaysWater.filter((w) => w.id !== tempRow.id);
             renderHomeBody(outlet);
+            alert(err.message || t("common.error"));
+          }
+        }
+      });
+    });
+  }
+
+  const kickCounterBtn = outlet.querySelector("#kick-counter-btn");
+  if (kickCounterBtn) {
+    kickCounterBtn.addEventListener("click", () => {
+      const todayStr = schedule.formatLocalDate(new Date());
+      const existing = homeState.todaysHealthEntry;
+      const previousCount = Number((existing || {}).kicks) || 0;
+      const nextCount = previousCount + 1;
+      homeState.todaysHealthEntry = existing ? { ...existing, kicks: nextCount } : { id: "optimistic-" + Date.now(), date: todayStr, kicks: nextCount };
+      renderHomeBody(outlet);
+      const revert = () => { homeState.todaysHealthEntry = existing; renderHomeBody(outlet); };
+      showUndoToast(t("home.kickCounter.addedToast"), {
+        onUndo: revert,
+        onCommit: async () => {
+          try {
+            if (existing) {
+              await store.call("healthlog.update", { id: existing.id, kicks: nextCount });
+            } else {
+              const created = await store.call("healthlog.create", { date: todayStr, kicks: nextCount });
+              homeState.todaysHealthEntry = created;
+            }
+          } catch (err) {
+            revert();
             alert(err.message || t("common.error"));
           }
         }
@@ -6115,6 +6197,17 @@ function renderSettingsBody(outlet) {
     </div>
 
     <div class="card">
+      <h2>${t("settings.today.title")}</h2>
+      <form id="today-features-settings-form">
+        <label class="checkbox-field">
+          <input type="checkbox" name="kick_counter_enabled" ${isTruthy(s.kick_counter_enabled) ? "checked" : ""} />
+          <span>${t("settings.today.kickCounter")}</span>
+        </label>
+        <button type="submit" class="btn btn-secondary">${t("common.save")}</button>
+      </form>
+    </div>
+
+    <div class="card">
       <h2>${t("settings.account.title")}</h2>
       <p class="muted">${t("settings.account.pinInstructions")}</p>
       <button class="btn btn-secondary" id="settings-signout-btn">${t("settings.account.signOut")}</button>
@@ -6239,6 +6332,22 @@ function attachSettingsHandlers(outlet) {
           ingredients_enabled: fd.get("ingredients_enabled") === "on",
           expiry_tracking_enabled: fd.get("expiry_tracking_enabled") === "on",
           expiry_alert_days: fd.get("expiry_alert_days") || 30
+        });
+        renderSettingsBody(outlet);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  }
+
+  const todayFeaturesForm = outlet.querySelector("#today-features-settings-form");
+  if (todayFeaturesForm) {
+    todayFeaturesForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(todayFeaturesForm);
+      try {
+        settingsState.settings = await store.call("settings.set", {
+          kick_counter_enabled: fd.get("kick_counter_enabled") === "on"
         });
         renderSettingsBody(outlet);
       } catch (err) {
