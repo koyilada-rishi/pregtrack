@@ -1112,6 +1112,111 @@ a { color: var(--color-primary-dark); }
 
 .med-slot-list li:last-child { border-bottom: none; }
 
+/* ---------- Meds screen: tiles, schedule tabs, inventory cards ---------- */
+
+.meds-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--gutter-mobile, 10px);
+}
+
+.meds-tile {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meds-tile .muted { font-size: 0.75rem; }
+.meds-tile strong { font-size: 1.3rem; }
+
+.meds-slot-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-full);
+  padding: 4px;
+  margin: 10px 0;
+}
+
+.meds-slot-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-full);
+  padding: 8px 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.meds-slot-tab-active {
+  background: var(--color-surface);
+  color: var(--mc-primary, var(--color-primary));
+  box-shadow: var(--shadow-card);
+}
+
+.meds-inventory-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  border: none;
+}
+
+.meds-inventory-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meds-inventory-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stock-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.stock-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+  overflow: hidden;
+}
+
+.stock-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-state-calm);
+}
+
+.meds-inventory-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+
 .med-slot-info {
   flex: 1;
   min-width: 0;

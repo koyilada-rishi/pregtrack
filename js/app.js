@@ -2176,7 +2176,7 @@ function foodlogRowMarkup(f) {
 // Medicines
 // ---------------------------------------------------------------------------
 
-const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, refreshIntervalId: null, expiryAlertDays: 30 };
+const medsState = { medicines: [], logs: [], countdowns: [], loading: true, error: null, refreshIntervalId: null, expiryAlertDays: 30, selectedSlotTab: null };
 
 async function renderMedicinesView(outlet) {
   medsState.loading = true;
@@ -2227,35 +2227,39 @@ function activeMedicinesOf(medicines) {
   return (medicines || []).filter((m) => (m.status ? m.status === "active" : isTruthy(m.active)));
 }
 
-function medsListMarkup() {
-  const now = new Date();
+// Every fixed-time slot due today, bucketed by time of day (derived from
+// her actual packs/times — never a hardcoded 8am/1pm/8pm) so the schedule
+// tabs only ever show the times of day that actually have something in
+// them, each labeled with the real clock time(s) involved.
+function medsTodaySlotsByBucket(active, now) {
   const todayStr = schedule.formatLocalDate(now);
-  const active = activeMedicinesOf(medsState.medicines);
-
-  const todaySlotItems = [];
+  const buckets = { morning: [], afternoon: [], evening: [], night: [] };
   active.forEach((m) => {
     const type = schedule.effectiveScheduleType(m);
     if (["interval", "prn", "weekly", "monthly"].includes(type)) return;
     schedule.slotsForDay(m, todayStr, logsForMedicine(medsState.logs, m.id), now).forEach((slot) => {
-      todaySlotItems.push({ medicine: m, slot });
+      buckets[schedule.timeOfDayBucket(slot.time)].push({ medicine: m, slot });
     });
   });
-  todaySlotItems.sort((a, b) => a.slot.time.localeCompare(b.slot.time));
+  Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) => a.slot.time.localeCompare(b.slot.time)));
+  return buckets;
+}
 
+function medsListMarkup() {
+  const now = new Date();
+  const active = activeMedicinesOf(medsState.medicines);
   const intervalPrn = active.filter((m) => ["interval", "prn"].includes(schedule.effectiveScheduleType(m)));
-
   const finishedOrStopped = (medsState.medicines || []).filter((m) => m.status === "finished" || m.status === "stopped");
 
   return `
-    <div class="card">
-      <h2>${t("meds.today.title")}</h2>
-      ${
-        todaySlotItems.length
-          ? `<ul class="med-slot-list">${todaySlotItems.map((it) => medicineSlotRowMarkup(it.medicine, it.slot)).join("")}</ul>`
-          : `<p class="empty">${t("meds.today.none")}</p>`
-      }
-      ${intervalPrn.map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(medsState.logs, m.id), now)).join("")}
-    </div>
+    ${medsSummaryTilesMarkup(active, now)}
+    ${medsScheduleSectionMarkup(active, now)}
+    ${intervalPrn.length ? `
+      <div class="card">
+        <h2>${t("meds.today.title")}</h2>
+        ${intervalPrn.map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(medsState.logs, m.id), now)).join("")}
+      </div>
+    ` : ""}
 
     <button class="btn btn-primary" id="add-med-btn">${t("meds.add")}</button>
 
@@ -2265,7 +2269,7 @@ function medsListMarkup() {
       </div>
       ${
         active.length
-          ? `<ul class="entity-list">${active.map((m) => medicineRowMarkup(m, medsState.countdowns, medsState.logs)).join("")}</ul>`
+          ? active.map((m) => medsInventoryCardMarkup(m)).join("")
           : `<p class="empty">${t("meds.all.none")}</p>`
       }
     </div>
@@ -2276,6 +2280,160 @@ function medsListMarkup() {
       <a class="card-link" data-nav="#/meds/history">${t("meds.history.seeAll")}</a>
     </div>
   `;
+}
+
+// Three plain facts, never a judgment: how many medicines are active, the
+// soonest a refill is due (just a day count, not an "alert"), and how many
+// doses were actually taken this week (a count — no percentage, no
+// adherence score).
+function medsSummaryTilesMarkup(active, now) {
+  const weekAgoStr = schedule.formatLocalDate(new Date(now.getTime() - 7 * 86400000));
+  const todayStr = schedule.formatLocalDate(now);
+  const takenThisWeek = (medsState.logs || []).filter((l) => {
+    const taken = l.status === "taken" || (l.status === undefined && isTruthy(l.taken));
+    if (!taken) return false;
+    const d = dateStrOf(l.date);
+    return d >= weekAgoStr && d <= todayStr;
+  }).length;
+
+  const stocked = active
+    .map((m) => ({ m, daysLeft: schedule.stockDaysLeft(m, logsForMedicine(medsState.logs, m.id), now) }))
+    .filter((x) => x.daysLeft !== null)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+  const soonest = stocked[0];
+
+  return `
+    <section class="meds-tiles">
+      <div class="meds-tile">
+        <span class="muted">${t("meds.tile.active")}</span>
+        <strong>${active.length}</strong>
+      </div>
+      <div class="meds-tile">
+        <span class="muted">${t("meds.tile.refillSoonest")}</span>
+        <strong>${soonest ? t("meds.tile.refillDays", { n: Math.max(0, Math.floor(soonest.daysLeft)) }) : t("meds.tile.noneTracked")}</strong>
+      </div>
+      <div class="meds-tile">
+        <span class="muted">${t("meds.tile.takenThisWeek")}</span>
+        <strong>${t("meds.tile.dosesCount", { n: takenThisWeek })}</strong>
+      </div>
+    </section>
+  `;
+}
+
+const MEDS_SLOT_TABS = [
+  { key: "morning", labelKey: "home.bucket.morning", icon: "wb_sunny" },
+  { key: "afternoon", labelKey: "home.bucket.afternoon", icon: "wb_twilight" },
+  { key: "evening", labelKey: "home.bucket.evening", icon: "bedtime" },
+  { key: "night", labelKey: "home.bucket.night", icon: "bedtime" }
+];
+
+function medsScheduleSectionMarkup(active, now) {
+  const buckets = medsTodaySlotsByBucket(active, now);
+  const populatedTabs = MEDS_SLOT_TABS.filter((tab) => buckets[tab.key].length);
+  if (!populatedTabs.length) return "";
+
+  if (!medsState.selectedSlotTab || !buckets[medsState.selectedSlotTab].length) {
+    medsState.selectedSlotTab = populatedTabs[0].key;
+  }
+  const items = buckets[medsState.selectedSlotTab];
+
+  return `
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>${t("meds.schedule.title")}</h2>
+          <p class="muted">${t("meds.schedule.hint")}</p>
+        </div>
+      </div>
+      <div class="meds-slot-tabs">
+        ${populatedTabs.map((tab) => `
+          <button type="button" class="meds-slot-tab ${medsState.selectedSlotTab === tab.key ? "meds-slot-tab-active" : ""}" data-meds-slot-tab="${tab.key}">
+            ${icon(tab.icon, "icon-sm")}<span>${t(tab.labelKey)}</span>
+          </button>
+        `).join("")}
+      </div>
+      <ul class="med-slot-list">
+        ${items.length ? items.map((it) => medicineSlotRowMarkup(it.medicine, it.slot)).join("") : `<li class="empty">${t("meds.schedule.empty")}</li>`}
+      </ul>
+    </section>
+  `;
+}
+
+function medsInventoryCardMarkup(m) {
+  const now = new Date();
+  const logs = logsForMedicine(medsState.logs, m.id);
+  const daysLeft = schedule.stockDaysLeft(m, logs, now);
+  const maxDays = Math.max(1, Number(m.refill_alert_days) || 3, daysLeft || 0) * 3; // visual ceiling only — no "original stock" is tracked to compare against
+  const pct = daysLeft === null ? null : Math.max(0, Math.min(100, Math.round((daysLeft / maxDays) * 100)));
+  const linked = fileLinkedIdsOf(m);
+
+  return `
+    <article class="meds-inventory-card" data-edit-medicine="${escapeHtml(m.id)}">
+      <div class="meds-inventory-head">
+        <div class="meds-inventory-title">
+          <strong>${escapeHtml(m.name)}</strong>
+          <span class="muted">${escapeHtml([m.dose, m.instructions && m.instructions !== "none" ? t("meds.food." + m.instructions) : ""].filter(Boolean).join(" · "))}</span>
+        </div>
+        ${expiryBadgeMarkup(m)}
+      </div>
+
+      ${daysLeft !== null ? `
+        <div class="stock-bar-wrap">
+          <div class="stock-bar"><div class="stock-bar-fill" style="width:${pct}%"></div></div>
+          <span class="muted">${daysLeft <= 0 ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(daysLeft) })}</span>
+        </div>
+      ` : ""}
+
+      ${m.prescribed_by ? `<p class="muted">${t("meds.form.prescribedBy")}: ${escapeHtml(m.prescribed_by)}</p>` : ""}
+      ${linked.length ? `<p class="muted">${icon("folder_shared", "icon-sm")} ${t("meds.linkedRecord")}</p>` : ""}
+      ${m.notes ? `<p class="muted">${escapeHtml(m.notes)}</p>` : ""}
+
+      <div class="meds-inventory-actions">
+        <button type="button" class="btn-link" data-take-now="${escapeHtml(m.id)}" data-stop-propagation="1">${t("meds.logDose")}</button>
+        <button type="button" class="btn-link" data-mark-refilled="${escapeHtml(m.id)}" data-stop-propagation="1">${t("meds.markRefilled")}</button>
+        <button type="button" class="btn-link" data-edit-medicine="${escapeHtml(m.id)}">${t("common.edit")}</button>
+        <button type="button" class="btn-link btn-link--danger" data-delete-med="${escapeHtml(m.id)}" data-stop-propagation="1">${t("common.delete")}</button>
+      </div>
+    </article>
+  `;
+}
+
+function fileLinkedIdsOf(m) {
+  return String(m.linked_file_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function openMarkRefilledSheet(medicine, onSaved) {
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("meds.markRefilled")}</h2>
+    ${formField(t("meds.markRefilledPrompt"), `<input class="field" type="number" min="0" step="1" id="refill-count-input" value="${escapeHtml(medicine.stock_count || "")}" autofocus />`)}
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" id="refill-cancel">${t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="refill-save">${t("common.save")}</button>
+    </div>
+  `, (sheetEl) => {
+    sheetEl.querySelector("#refill-cancel").addEventListener("click", closeSheet);
+    sheetEl.querySelector("#refill-save").addEventListener("click", () => {
+      const value = sheetEl.querySelector("#refill-count-input").value;
+      if (value === "") return;
+      const previousCount = medicine.stock_count;
+      medicine.stock_count = value; // optimistic, same pattern as every other edit in this app
+      closeSheet();
+      onSaved();
+      showUndoToast(t("meds.markRefilledToast", { name: medicine.name }), {
+        onUndo: () => { medicine.stock_count = previousCount; onSaved(); },
+        onCommit: async () => {
+          try {
+            await store.call("medicines.update", { id: medicine.id, stock_count: value });
+          } catch (err) {
+            medicine.stock_count = previousCount;
+            onSaved();
+            alert(err.message || t("common.error"));
+          }
+        }
+      });
+    });
+  });
 }
 
 // "" when the medicine has no expiry_date set at all — "not tracked" is
@@ -2289,83 +2447,6 @@ function expiryBadgeMarkup(m) {
   const alertDays = medsState.expiryAlertDays || 30;
   if (daysLeft <= alertDays) return `<span class="muted dose-state-calm">${t("meds.expiry.expiresIn", { n: daysLeft })}</span>`;
   return "";
-}
-
-function medicineRowMarkup(m, countdowns, logs) {
-  const now = new Date();
-  const extraLines = [];
-
-  if (m.schedule_type) {
-    // v3 medicine — schedule.js is the single source of truth, no need to
-    // look for a separately-managed linked Countdown row at all.
-    const type = schedule.effectiveScheduleType(m);
-    if (type === "interval") {
-      const next = schedule.nextDose(m, logsForMedicine(logs, m.id), now);
-      const msLeft = next ? next.getTime() - now.getTime() : null;
-      extraLines.push(`<span class="muted dose-state-calm">${msLeft === null ? t("home.doseStatus.noDoseYet") : t("meds.nextDoseIn", formatDuration(Math.max(0, msLeft)))}</span>`);
-    } else if (["weekly", "monthly"].includes(type)) {
-      const due = schedule.weeklyMonthlyDueState(m, logsForMedicine(logs, m.id), now);
-      extraLines.push(`<span class="muted dose-state-calm">${comingUpDueLabel(due)}</span>`);
-    }
-    const progress = schedule.courseProgress(m, now);
-    if (progress && progress.totalDays !== null) {
-      extraLines.push(`<span class="muted">${t("meds.dayOfCourse", { day: progress.dayOfCourse, total: progress.totalDays })}</span>`);
-    }
-    const daysLeft = schedule.stockDaysLeft(m, logsForMedicine(logs, m.id), now);
-    if (daysLeft !== null) {
-      extraLines.push(`<span class="muted dose-state-calm">${daysLeft <= 0 ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(daysLeft) })}</span>`);
-    }
-  } else {
-    // Pre-v3 row — fall back to the old linked-Countdown-row display.
-    const linked = (countdowns || []).filter((c) => c.linked_medicine_id === m.id && !isTruthy(c.done));
-    const intervalCd = linked.find((c) => c.kind === "interval");
-    const courseCd = linked.find((c) => c.kind === "course");
-    const stock = computeStockCountdown(m);
-    const lastDoseByMedicine = lastDoseByMedicineFrom(logs);
-    if (intervalCd) {
-      const computed = computeCustomCountdown(intervalCd, { lastDose: lastDoseByMedicine[m.id] }, now);
-      extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.nextDose", { text: computed.msRemaining === null ? t("countdowns.display.noDoseYet") : formatRemainingLabel(computed.msRemaining) })}</span>`);
-    }
-    if (courseCd) {
-      const computed = computeCustomCountdown(courseCd, { dosesPerDay: numOrEmpty(m.doses_per_day) }, now);
-      if (computed.daysLeft !== null) extraLines.push(`<span class="muted countdown-state-${computed.state}">${t("meds.courseEnds", { n: computed.daysLeft })}</span>`);
-    }
-    if (stock) {
-      extraLines.push(`<span class="muted dose-state-calm">${stock.outOfStock ? t("medicines.stock.outOfStock") : t("medicines.stock.daysLeft", { n: Math.floor(stock.daysLeft) })}</span>`);
-    }
-  }
-
-  const expiryLine = expiryBadgeMarkup(m);
-  if (expiryLine) extraLines.push(expiryLine);
-
-  return `
-    <li class="entity-row tap-row" data-edit-medicine="${escapeHtml(m.id)}">
-      <div class="entity-main">
-        <strong>${escapeHtml(m.name)}</strong>
-        <span class="muted">${escapeHtml([m.dose, m.frequency].filter(Boolean).join(" · "))}</span>
-        ${extraLines.join("")}
-      </div>
-      <div class="entity-actions">
-        <button class="btn-link btn-link--danger" data-delete-med="${escapeHtml(m.id)}">${t("common.delete")}</button>
-      </div>
-    </li>
-  `;
-}
-
-// Most recent *taken* MedicineLog entry per medicine — used only by the
-// pre-v3 linked-Countdown fallback display above (v3 rows use schedule.js's
-// own log lookups instead).
-function lastDoseByMedicineFrom(logs) {
-  const latest = {};
-  logs.forEach((l) => {
-    if (!isTruthy(l.taken)) return;
-    const sortKey = dateStrOf(l.date) + " " + String(l.time || "");
-    const current = latest[l.medicine_id];
-    if (!current || sortKey > current._sortKey) {
-      latest[l.medicine_id] = { medicine_id: l.medicine_id, date: dateStrOf(l.date), time: l.time, _sortKey: sortKey };
-    }
-  });
-  return latest;
 }
 
 async function toggleMedsPageDoseTaken(outlet, medicineId, time, status) {
@@ -2396,16 +2477,31 @@ function attachMedsHandlers(outlet) {
 
   outlet.querySelectorAll("[data-edit-medicine]").forEach((el) => {
     el.addEventListener("click", (event) => {
-      if (event.target.closest("[data-delete-med]")) return;
+      if (event.target.closest("[data-delete-med], [data-stop-propagation]")) return;
       const medicine = medsState.medicines.find((m) => m.id === el.dataset.editMedicine);
       openMedicineSheet(medicine || "new", () => renderMedicinesView(outlet));
+    });
+  });
+
+  outlet.querySelectorAll("[data-meds-slot-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      medsState.selectedSlotTab = btn.dataset.medsSlotTab;
+      renderMedsBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-mark-refilled]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const medicine = medsState.medicines.find((m) => m.id === btn.dataset.markRefilled);
+      if (medicine) openMarkRefilledSheet(medicine, () => renderMedsBody(outlet));
     });
   });
 
   outlet.querySelectorAll("[data-delete-med]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
-      deleteMedicineWithUndo(btn.dataset.deleteMed, () => renderMedicinesView(outlet));
+      deleteMedicineWithUndo(btn.dataset.deleteMed, () => renderMedsBody(outlet));
     });
   });
 

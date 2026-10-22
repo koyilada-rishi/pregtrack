@@ -31,4 +31,4 @@ npm-debug.log*
 # extracted from it with firebase-applet-config.json deliberately excluded,
 # per the project's secrets rules).
 design/
-mamacare.zip
+*.zip
