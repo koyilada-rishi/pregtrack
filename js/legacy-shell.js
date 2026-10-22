@@ -4713,9 +4713,23 @@ function renderRecordsBody(outlet) {
 }
 
 function recordsFolderTilesMarkup() {
+  return `
+    <div class="records-search-row">
+      <input class="field records-search-input" id="records-top-search" placeholder="${t("records.filter.search")}" value="${escapeHtml(recordsState.search)}" />
+      <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
+    </div>
+    <div id="records-top-body">${recordsTopBodyMarkup()}</div>
+  `;
+}
+
+// Typing in the top search box searches across every folder at once
+// (recordsFiltered() already does this when folderFilter is "" — it only
+// narrows by type when one's set), replacing the tiles with a flat result
+// list; clearing it brings the tiles back.
+function recordsTopBodyMarkup() {
+  if (recordsState.search.trim()) return recordsResultsMarkup();
   const countOf = (ty) => recordsState.files.filter((f) => ty === "needs_sorting" ? !f.type_v2 : f.type_v2 === ty).length;
   return `
-    <button class="btn btn-primary" id="add-record-btn">${t("records.add")}</button>
     <div class="records-grid">
       ${[...RECORD_TYPE_V2_ORDER, "needs_sorting"].map((ty) => `
         <button class="record-card" data-open-folder="${ty}">
@@ -4726,6 +4740,20 @@ function recordsFolderTilesMarkup() {
       `).join("")}
     </div>
   `;
+}
+
+function renderRecordsTopBody(outlet) {
+  const container = outlet.querySelector("#records-top-body");
+  if (!container) return;
+  container.innerHTML = recordsTopBodyMarkup();
+  attachRecordsTopBodyHandlers(outlet);
+}
+
+function attachRecordsTopBodyHandlers(outlet) {
+  outlet.querySelectorAll("[data-open-folder]").forEach((btn) => {
+    btn.addEventListener("click", () => { recordsState.folderFilter = btn.dataset.openFolder; renderRecordsBody(outlet); });
+  });
+  attachRecordsResultsHandlers(outlet);
 }
 
 function recordsListMarkup() {
@@ -4917,9 +4945,10 @@ function attachRecordsListHandlers(outlet) {
   const addBtn = outlet.querySelector("#add-record-btn");
   if (addBtn) addBtn.addEventListener("click", () => { recordsState.uploadOpen = true; recordsState.presetType = ""; renderRecordsBody(outlet); });
 
-  outlet.querySelectorAll("[data-open-folder]").forEach((btn) => {
-    btn.addEventListener("click", () => { recordsState.folderFilter = btn.dataset.openFolder; renderRecordsBody(outlet); });
-  });
+  const topSearch = outlet.querySelector("#records-top-search");
+  if (topSearch) topSearch.addEventListener("input", (event) => { recordsState.search = event.target.value; renderRecordsTopBody(outlet); });
+  attachRecordsTopBodyHandlers(outlet);
+
   const backBtn = outlet.querySelector("#records-back-to-folders");
   if (backBtn) backBtn.addEventListener("click", () => { recordsState.folderFilter = ""; renderRecordsBody(outlet); });
 
@@ -4955,8 +4984,6 @@ function attachRecordsListHandlers(outlet) {
       renderRecordsResults(outlet);
     });
   });
-
-  attachRecordsResultsHandlers(outlet);
 }
 
 function attachRecordsResultsHandlers(outlet) {

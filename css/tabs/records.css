@@ -1,0 +1,44 @@
+/* Records tab — folder tiles restyled to match the icon-circle visual
+   language used on Today/Scan, plus a top-level search bar that searches
+   across every folder at once (js/legacy-shell.js's recordsTopBodyMarkup).
+   Everything else (list/grid views, filters, upload, viewer) is unchanged. */
+
+.records-search-row {
+  display: flex;
+  gap: var(--gutter-mobile, 10px);
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.records-search-input { flex: 1; margin: 0; }
+
+/* .btn is width:100% by default everywhere else in the app — override it
+   here so it sits at its own content width next to the search input
+   instead of eating the whole row. */
+.records-search-row #add-record-btn { width: auto; flex: 0 0 auto; white-space: nowrap; }
+
+.records-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.record-card {
+  align-items: flex-start;
+  text-align: left;
+  border: none;
+  box-shadow: var(--shadow-card);
+  padding: 16px;
+  gap: 10px;
+}
+
+.record-type-icon {
+  font-size: 1.3rem;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--mc-primary-fixed);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.record-card-title { font-size: 0.9rem; }
