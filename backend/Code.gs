@@ -827,6 +827,11 @@ function medicineFields(payload, isCreate) {
   }
   if (isCreate || payload.hasOwnProperty('stop_note')) fields.stop_note = sanitizeText(payload.stop_note, 2000);
   if (isCreate || payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
+  if (isCreate || payload.hasOwnProperty('shop_name')) fields.shop_name = sanitizeText(payload.shop_name, 200);
+  if (isCreate || payload.hasOwnProperty('medic_kind')) {
+    if (payload.medic_kind) validateEnum(payload.medic_kind, MEDIC_KINDS, 'medic_kind');
+    fields.medic_kind = payload.medic_kind || '';
+  }
 
   return fields;
 }
@@ -2356,7 +2361,10 @@ var SHEET_SCHEMA = {
     // episode_id (Episodes rebuild, Phase 5): which episode this medicine
     // was prescribed/started in, if any — optional, a long-term prenatal
     // vitamin started outside any particular visit just has ''.
-    'episode_id'
+    // shop_name/medic_kind: Episode Detail Block 2's own fields — where it
+    // was bought, and whether this is a vaccine/shot rather than a regular
+    // medicine (both optional, blank for anything added outside an episode).
+    'episode_id', 'shop_name', 'medic_kind'
   ],
   MedicineLog: ['id', 'medicine_id', 'date', 'time', 'taken', 'status', 'taken_at', 'note'],
   Appointments: ['id', 'datetime', 'doctor', 'purpose', 'location', 'status', 'notes_after_visit'],

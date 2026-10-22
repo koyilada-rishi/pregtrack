@@ -6470,7 +6470,10 @@ const episodesState = {
   // Block 1 (Prescription): which doctor-visit booking's note form is open,
   // and the note being edited (null means "new note").
   prescriptionNoteFormOpenFor: null,
-  prescriptionEditingNote: null
+  prescriptionEditingNote: null,
+  // Block 2 (Medicines): add/edit form toggle, null editing = "new".
+  medicineFormOpen: false,
+  medicineEditing: null
 };
 
 const EPISODE_BOOKING_CATEGORY = { doctor_visit: "visits", scan: "labs", blood_test: "labs", vaccine: "medics", other: "medics" };
@@ -6507,6 +6510,8 @@ function renderEpisodesBody(outlet) {
 async function openEpisodeDetail(outlet, episode) {
   outlet.innerHTML = genericSkeleton(5);
   episodesState.noteFormOpen = false;
+  episodesState.medicineFormOpen = false;
+  episodesState.medicineEditing = null;
   if (episodesState.detail && episodesState.detail.id !== episode.id) {
     episodesState.prescriptionNoteFormOpenFor = null;
     episodesState.prescriptionEditingNote = null;
@@ -6703,6 +6708,86 @@ function prescriptionNoteFormMarkup(bookingId, editingNote) {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Episode Detail, Block 2: Medicines — "+ Add medicine" inside the episode
+// (name, dose, schedule/recurrence, shop, optional vaccine/shot flag,
+// amount). Saved medicine gets this episode's id, which is all that's
+// needed for it to show up in Today's medicines/Coming-up/countdowns —
+// those are all already computed live from Medicines + its schedule
+// fields, nothing episode-specific to wire up there.
+// ---------------------------------------------------------------------------
+
+function medicinesBlockMarkup() {
+  const meds = episodesState.detailMedicines;
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.medicines.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-medicine-btn" aria-label="${t("episodes.medicines.add")}">+</button>
+      </div>
+      ${
+        meds.length
+          ? `<ul class="entity-list">${meds.map((m) => episodeMedicineRowMarkup(m)).join("")}</ul>`
+          : `<p class="empty">${t("episodes.medicines.none")}</p>`
+      }
+      ${episodesState.medicineFormOpen ? episodeMedicineFormMarkup(episodesState.medicineEditing) : ""}
+      <a class="card-link" data-nav="#/meds/history">${t("episodes.medicines.seeHistory")}</a>
+    </div>
+  `;
+}
+
+function episodeMedicineRowMarkup(m) {
+  const scheduleLabel = t("episodes.medicines.schedule." + (m.schedule_type || "daily"));
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${escapeHtml(m.name)}</strong>
+        <span class="muted">${escapeHtml(m.dose || "")}${m.dose ? " · " : ""}${scheduleLabel}${m.shop_name ? " · " + escapeHtml(m.shop_name) : ""}</span>
+      </div>
+      <div class="entity-actions">
+        <button type="button" class="btn-link" data-edit-episode-medicine="${escapeHtml(m.id)}">${t("common.edit")}</button>
+        <button type="button" class="btn-link btn-link--danger" data-delete-episode-medicine="${escapeHtml(m.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function episodeMedicineFormMarkup(editing) {
+  const m = editing || {};
+  const scheduleType = m.schedule_type || "daily";
+  return `
+    <form id="episode-medicine-form">
+      ${formField(t("episodes.medicines.name"), `<input class="field" name="name" required value="${escapeHtml(m.name || "")}" />`)}
+      ${formField(t("episodes.medicines.dose"), `<input class="field" name="dose" value="${escapeHtml(m.dose || "")}" />`)}
+      ${formField(t("episodes.medicines.schedule"), `
+        <select class="field" name="schedule_type" id="episode-medicine-schedule-type">
+          <option value="daily" ${scheduleType === "daily" ? "selected" : ""}>${t("episodes.medicines.schedule.daily")}</option>
+          <option value="weekly" ${scheduleType === "weekly" ? "selected" : ""}>${t("episodes.medicines.schedule.weekly")}</option>
+          <option value="prn" ${scheduleType === "prn" ? "selected" : ""}>${t("episodes.medicines.schedule.prn")}</option>
+        </select>
+      `)}
+      ${formField(t("episodes.medicines.startDate"), `<input class="field" type="date" name="start_date" value="${escapeHtml(m.start_date || formatDateInput(new Date()))}" />`)}
+      <div id="episode-medicine-times-field">
+        ${formField(t("episodes.medicines.times"), `<input class="field" name="times" placeholder="08:00, 20:00" value="${escapeHtml(m.times || "")}" />`, t("episodes.medicines.timesHint"))}
+      </div>
+      ${formField(t("episodes.medicines.shopName"), `<input class="field" name="shop_name" value="${escapeHtml(m.shop_name || "")}" />`)}
+      ${formField(t("episodes.medicines.kind"), `
+        <select class="field" name="medic_kind">
+          <option value="" ${!m.medic_kind ? "selected" : ""}>${t("episodes.medicines.kind.none")}</option>
+          <option value="vaccine" ${m.medic_kind === "vaccine" ? "selected" : ""}>${t("bookings.form.medicKind.vaccine")}</option>
+          <option value="shot" ${m.medic_kind === "shot" ? "selected" : ""}>${t("bookings.form.medicKind.shot")}</option>
+        </select>
+      `)}
+      ${formField(t("episodes.form.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" /></div>`, t("episodes.form.amountHint"))}
+      <p class="error-text" id="episode-medicine-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="episode-medicine-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
 function episodeDetailMarkup() {
   const ep = episodesState.detail;
   const dateRange = ep.end_date
@@ -6778,14 +6863,7 @@ function episodeDetailMarkup() {
       }
     </div>
 
-    <div class="card">
-      <h2>${t("episodes.medicines.title")}</h2>
-      ${
-        episodesState.detailMedicines.length
-          ? `<ul class="entity-list">${episodesState.detailMedicines.map((m) => `<li class="entity-row"><div class="entity-main">${escapeHtml(m.name)}${m.dose ? " · " + escapeHtml(m.dose) : ""}</div></li>`).join("")}</ul>`
-          : `<p class="empty">${t("episodes.medicines.none")}</p>`
-      }
-    </div>
+    ${medicinesBlockMarkup()}
 
     <div class="card">
       <div class="card-head">
@@ -7041,6 +7119,82 @@ function attachEpisodesHandlers(outlet) {
       }
     });
   });
+
+  // --- Block 2: Medicines ---
+  const addMedicineBtn = outlet.querySelector("#episode-add-medicine-btn");
+  if (addMedicineBtn) {
+    addMedicineBtn.addEventListener("click", () => {
+      episodesState.medicineFormOpen = true;
+      episodesState.medicineEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-edit-episode-medicine]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const med = episodesState.detailMedicines.find((m) => m.id === btn.dataset.editEpisodeMedicine);
+      if (!med) return;
+      episodesState.medicineFormOpen = true;
+      episodesState.medicineEditing = med;
+      renderEpisodesBody(outlet);
+    });
+  });
+  const medicineCancelBtn = outlet.querySelector("#episode-medicine-cancel");
+  if (medicineCancelBtn) {
+    medicineCancelBtn.addEventListener("click", () => {
+      episodesState.medicineFormOpen = false;
+      episodesState.medicineEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-delete-episode-medicine]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.medicines.confirmDelete"))) return;
+      try {
+        await store.call("medicines.delete", { id: btn.dataset.deleteEpisodeMedicine });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+  const medicineForm = outlet.querySelector("#episode-medicine-form");
+  if (medicineForm) {
+    medicineForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(medicineForm);
+      const errEl = medicineForm.querySelector("#episode-medicine-error");
+      errEl.hidden = true;
+      try {
+        const payload = {
+          name: fd.get("name").trim(),
+          dose: fd.get("dose").trim(),
+          schedule_type: fd.get("schedule_type"),
+          start_date: fd.get("start_date") || formatDateInput(new Date()),
+          times: fd.get("times").trim(),
+          shop_name: fd.get("shop_name").trim(),
+          medic_kind: fd.get("medic_kind") || "",
+          episode_id: episodesState.detail.id
+        };
+        let medicine;
+        if (episodesState.medicineEditing) {
+          medicine = await store.call("medicines.update", { id: episodesState.medicineEditing.id, ...payload });
+        } else {
+          medicine = await store.call("medicines.create", payload);
+        }
+        const amount = fd.get("amount");
+        if (amount) {
+          await store.call("bills.create", { episode_id: episodesState.detail.id, amount, status: "pay_on_visit", notes: t("episodes.medicines.billNoteFor", { name: payload.name }) });
+        }
+        episodesState.medicineFormOpen = false;
+        episodesState.medicineEditing = null;
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  }
 
   const reportInput = outlet.querySelector("#episode-report-input");
   if (reportInput) {

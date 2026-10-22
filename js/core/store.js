@@ -105,7 +105,7 @@ function setCached(action, payload, data) {
 // ~30s by the version poll. Clearing it here forces the next loadBootstrap()
 // call (e.g. navigating back to Home right after saving) to actually refetch
 // instead of silently repainting the stale copy.
-const BOOTSTRAP_INVALIDATING_PREFIXES = ["bookings.", "episodes."];
+const BOOTSTRAP_INVALIDATING_PREFIXES = ["bookings.", "episodes.", "medicines.", "bills."];
 
 export async function call(action, payload) {
   const data = isMockMode() ? await callMock(action, payload) : await api.call(action, payload);
