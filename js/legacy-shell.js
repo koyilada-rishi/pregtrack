@@ -6466,7 +6466,11 @@ const episodesState = {
   episodes: [], settings: {}, loading: true, formItem: null,
   // Detail page (Phases 2-5's "blocks inside an episode"):
   detail: null, detailBookings: [], detailFiles: [], detailBills: [], detailNotes: [], detailMedicines: [],
-  noteFormOpen: false
+  noteFormOpen: false,
+  // Block 1 (Prescription): which doctor-visit booking's note form is open,
+  // and the note being edited (null means "new note").
+  prescriptionNoteFormOpenFor: null,
+  prescriptionEditingNote: null
 };
 
 const EPISODE_BOOKING_CATEGORY = { doctor_visit: "visits", scan: "labs", blood_test: "labs", vaccine: "medics", other: "medics" };
@@ -6503,6 +6507,10 @@ function renderEpisodesBody(outlet) {
 async function openEpisodeDetail(outlet, episode) {
   outlet.innerHTML = genericSkeleton(5);
   episodesState.noteFormOpen = false;
+  if (episodesState.detail && episodesState.detail.id !== episode.id) {
+    episodesState.prescriptionNoteFormOpenFor = null;
+    episodesState.prescriptionEditingNote = null;
+  }
   try {
     const [bookings, files, bills, notes, medicines] = await Promise.all([
       store.call("bookings.list", { episode_id: episode.id }),
@@ -6589,6 +6597,112 @@ function episodeFinanceBreakdown(bookings, bills) {
   return { totals, grandTotal };
 }
 
+// ---------------------------------------------------------------------------
+// Episode Detail, Block 1: Prescription (per doctor-visit booking) — before-
+// visit notes (what to discuss/check), after-visit notes (handwritten
+// prescription read out as text) and/or an uploaded prescription photo/PDF.
+// Several notes allowed per visit; alert is opt-in per note, same pattern
+// as everywhere else. The manual text note IS this visit's notes block —
+// there's no separate "notes" card for a booking.
+// ---------------------------------------------------------------------------
+
+function prescriptionVisitNotesOf(bookingId) {
+  return episodesState.detailNotes.filter((n) => n.block === "booking" && n.block_ref_id === bookingId);
+}
+
+function prescriptionVisitFilesOf(bookingId) {
+  return episodesState.detailFiles.filter((f) => f.linked_booking_id === bookingId && f.type_v2 === "prescription");
+}
+
+function prescriptionBlockMarkup() {
+  const visits = episodesState.detailBookings.filter((b) => b.type === "doctor_visit");
+  if (!visits.length) {
+    return `
+      <div class="card">
+        <h2>${t("episodes.prescription.title")}</h2>
+        <p class="empty">${t("episodes.prescription.noVisit")}</p>
+      </div>
+    `;
+  }
+  return visits.map((v) => prescriptionVisitCardMarkup(v)).join("");
+}
+
+function prescriptionVisitCardMarkup(booking) {
+  const notes = prescriptionVisitNotesOf(booking.id);
+  const files = prescriptionVisitFilesOf(booking.id);
+  const formOpenForThis = episodesState.prescriptionNoteFormOpenFor === booking.id;
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${t("episodes.prescription.title")}</h2></div>
+      <p class="muted">${escapeHtml(booking.title)} · ${escapeHtml(formatApptDateTime(booking.datetime))}</p>
+
+      <p class="field-label">${t("episodes.prescription.filesLabel")}</p>
+      ${files.length ? `<ul class="entity-list">${files.map((f) => prescriptionFileRowMarkup(f)).join("")}</ul>` : `<p class="empty">${t("episodes.prescription.noFiles")}</p>`}
+      <label class="btn btn-secondary">
+        ${t("episodes.prescription.addFile")}
+        <input type="file" accept="image/*,application/pdf" class="prescription-file-input" data-booking-id="${escapeHtml(booking.id)}" hidden />
+      </label>
+      <p class="error-text" id="prescription-file-error-${escapeHtml(booking.id)}" hidden></p>
+
+      <p class="field-label">${t("episodes.prescription.notesLabel")}</p>
+      ${notes.length ? `<ul class="entity-list">${notes.map((n) => prescriptionNoteRowMarkup(n)).join("")}</ul>` : `<p class="empty">${t("episodes.prescription.noNotes")}</p>`}
+      ${
+        formOpenForThis
+          ? prescriptionNoteFormMarkup(booking.id, episodesState.prescriptionEditingNote)
+          : `<button type="button" class="btn-link" data-prescription-add-note="${escapeHtml(booking.id)}">+ ${t("episodes.prescription.addNote")}</button>`
+      }
+    </div>
+  `;
+}
+
+function prescriptionFileRowMarkup(f) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">${recordIcon(f)} ${escapeHtml(f.title)}</div>
+      <div class="entity-actions"><button type="button" class="btn-link btn-link--danger" data-delete-prescription-file="${escapeHtml(f.id)}">${t("common.delete")}</button></div>
+    </li>
+  `;
+}
+
+function prescriptionNoteRowMarkup(n) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <span>${escapeHtml(n.text)}</span>
+        ${n.alert_level ? `<span class="badge alert-${n.alert_level}">${t("episodes.alert." + n.alert_level)}</span>` : ""}
+        <span class="muted">${escapeHtml(formatDisplayDate(n.date))}</span>
+      </div>
+      <div class="entity-actions">
+        <button type="button" class="btn-link" data-edit-prescription-note="${escapeHtml(n.id)}">${t("common.edit")}</button>
+        <button type="button" class="btn-link btn-link--danger" data-delete-prescription-note="${escapeHtml(n.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function prescriptionNoteFormMarkup(bookingId, editingNote) {
+  const n = editingNote || {};
+  return `
+    <form class="prescription-note-form" data-booking-id="${escapeHtml(bookingId)}">
+      <textarea class="field" name="text" rows="2" required placeholder="${t("episodes.prescription.notePlaceholder")}">${escapeHtml(n.text || "")}</textarea>
+      ${formField(t("episodes.alertLevel"), `
+        <select class="field" name="alert_level">
+          <option value="" ${!n.alert_level ? "selected" : ""}>${t("episodes.alert.none")}</option>
+          <option value="green" ${n.alert_level === "green" ? "selected" : ""}>${t("episodes.alert.green")}</option>
+          <option value="orange" ${n.alert_level === "orange" ? "selected" : ""}>${t("episodes.alert.orange")}</option>
+          <option value="red" ${n.alert_level === "red" ? "selected" : ""}>${t("episodes.alert.red")}</option>
+        </select>
+      `)}
+      <p class="error-text" id="prescription-note-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" data-prescription-note-cancel="1">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
 function episodeDetailMarkup() {
   const ep = episodesState.detail;
   const dateRange = ep.end_date
@@ -6606,19 +6720,12 @@ function episodeDetailMarkup() {
       </div>
       <p class="muted">${escapeHtml(dateRange)}</p>
       <p class="muted">${episodeBookingsStatusSummary(episodesState.detailBookings)}</p>
+      <p class="hero-days" style="font-size:1.8rem">${formatINR(grandTotal)}</p>
+      <p class="muted">${t("episodes.finance.title")}</p>
       <button type="button" class="btn-link" id="episode-edit-btn">${t("common.edit")}</button>
     </div>
 
-    <div class="card">
-      <h2>${t("episodes.finance.title")}</h2>
-      <p class="hero-days" style="font-size:1.6rem">${formatINR(grandTotal)}</p>
-      <ul class="entity-list">
-        <li class="entity-row"><div class="entity-main">${t("episodes.finance.visits")}</div><span>${formatINR(totals.visits)}</span></li>
-        <li class="entity-row"><div class="entity-main">${t("episodes.finance.labs")}</div><span>${formatINR(totals.labs)}</span></li>
-        <li class="entity-row"><div class="entity-main">${t("episodes.finance.medics")}</div><span>${formatINR(totals.medics)}</span></li>
-        ${totals.unlinked ? `<li class="entity-row"><div class="entity-main">${t("episodes.finance.other")}</div><span>${formatINR(totals.unlinked)}</span></li>` : ""}
-      </ul>
-    </div>
+    ${prescriptionBlockMarkup()}
 
     <div class="card">
       <div class="card-head">
@@ -6644,13 +6751,16 @@ function episodeDetailMarkup() {
         <h2>${t("episodes.reports.title")}</h2>
         <label class="btn-add" aria-label="${t("episodes.reports.add")}">+<input type="file" accept="image/*,application/pdf" id="episode-report-input" hidden /></label>
       </div>
-      ${
-        episodesState.detailFiles.length
-          ? `<ul class="entity-list">${episodesState.detailFiles.map((f) => `
+      ${(() => {
+        // Prescription files belong to Block 1 above, not here — exclude
+        // them so the same file never shows twice.
+        const reportFiles = episodesState.detailFiles.filter((f) => f.type_v2 !== "prescription");
+        return reportFiles.length
+          ? `<ul class="entity-list">${reportFiles.map((f) => `
               <li class="entity-row"><div class="entity-main">${recordIcon(f)} ${escapeHtml(f.title)}</div></li>
             `).join("")}</ul>`
-          : `<p class="empty">${t("episodes.reports.none")}</p>`
-      }
+          : `<p class="empty">${t("episodes.reports.none")}</p>`;
+      })()}
       <p class="error-text" id="episode-report-error" hidden></p>
     </div>
 
@@ -6683,11 +6793,21 @@ function episodeDetailMarkup() {
         <button type="button" class="btn-add" id="episode-add-note-btn" aria-label="${t("episodes.notesBlock.add")}">+</button>
       </div>
       ${
-        episodesState.detailNotes.filter((n) => n.block !== "episode" && n.block !== "handover").length
-          ? `<ul class="entity-list">${episodesState.detailNotes.filter((n) => n.block !== "episode" && n.block !== "handover").map((n) => episodeNoteRowMarkup(n)).join("")}</ul>`
+        episodesState.detailNotes.filter((n) => !["episode", "handover", "booking"].includes(n.block)).length
+          ? `<ul class="entity-list">${episodesState.detailNotes.filter((n) => !["episode", "handover", "booking"].includes(n.block)).map((n) => episodeNoteRowMarkup(n)).join("")}</ul>`
           : `<p class="empty">${t("episodes.notesBlock.none")}</p>`
       }
       ${episodesState.noteFormOpen ? episodeNoteFormMarkup() : ""}
+    </div>
+
+    <div class="card">
+      <h2>${t("episodes.finance.breakdown")}</h2>
+      <ul class="entity-list">
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.visits")}</div><span>${formatINR(totals.visits)}</span></li>
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.labs")}</div><span>${formatINR(totals.labs)}</span></li>
+        <li class="entity-row"><div class="entity-main">${t("episodes.finance.medics")}</div><span>${formatINR(totals.medics)}</span></li>
+        ${totals.unlinked ? `<li class="entity-row"><div class="entity-main">${t("episodes.finance.other")}</div><span>${formatINR(totals.unlinked)}</span></li>` : ""}
+      </ul>
     </div>
 
     <div class="card">
@@ -6816,6 +6936,109 @@ function attachEpisodesHandlers(outlet) {
     row.addEventListener("click", () => {
       pendingOpenBookingId = row.dataset.openEpisodeBooking;
       location.hash = "#/bookings";
+    });
+  });
+
+  // --- Block 1: Prescription (per doctor-visit booking) ---
+  outlet.querySelectorAll("[data-prescription-add-note]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      episodesState.prescriptionNoteFormOpenFor = btn.dataset.prescriptionAddNote;
+      episodesState.prescriptionEditingNote = null;
+      renderEpisodesBody(outlet);
+    });
+  });
+  outlet.querySelectorAll("[data-edit-prescription-note]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const note = episodesState.detailNotes.find((n) => n.id === btn.dataset.editPrescriptionNote);
+      if (!note) return;
+      episodesState.prescriptionNoteFormOpenFor = note.block_ref_id;
+      episodesState.prescriptionEditingNote = note;
+      renderEpisodesBody(outlet);
+    });
+  });
+  outlet.querySelectorAll("[data-prescription-note-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      episodesState.prescriptionNoteFormOpenFor = null;
+      episodesState.prescriptionEditingNote = null;
+      renderEpisodesBody(outlet);
+    });
+  });
+  outlet.querySelectorAll(".prescription-note-form").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(form);
+      const bookingId = form.dataset.bookingId;
+      const errEl = form.querySelector("#prescription-note-error");
+      errEl.hidden = true;
+      try {
+        const editing = episodesState.prescriptionEditingNote;
+        if (editing) {
+          await store.call("notes.update", { id: editing.id, text: fd.get("text").trim(), alert_level: fd.get("alert_level") || "" });
+        } else {
+          await store.call("notes.create", {
+            date: formatDateInput(new Date()), text: fd.get("text").trim(), category: "note",
+            episode_id: episodesState.detail.id, block: "booking", block_ref_id: bookingId,
+            alert_level: fd.get("alert_level") || ""
+          });
+        }
+        episodesState.prescriptionNoteFormOpenFor = null;
+        episodesState.prescriptionEditingNote = null;
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  });
+  outlet.querySelectorAll("[data-delete-prescription-note]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.prescription.confirmDeleteNote"))) return;
+      try {
+        await store.call("notes.delete", { id: btn.dataset.deletePrescriptionNote });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  outlet.querySelectorAll(".prescription-file-input").forEach((input) => {
+    input.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const bookingId = input.dataset.bookingId;
+      const errEl = outlet.querySelector("#prescription-file-error-" + cssEscape(bookingId));
+      if (errEl) errEl.hidden = true;
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+        await store.call("files.upload", {
+          title: titleFromFilename(file.name), type: "document", type_v2: "prescription",
+          episode_id: episodesState.detail.id, linked_booking_id: bookingId,
+          filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
+        });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || t("common.error");
+          errEl.hidden = false;
+          errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else {
+          alert(err.message || t("common.error"));
+        }
+      }
+    });
+  });
+  outlet.querySelectorAll("[data-delete-prescription-file]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.prescription.confirmDeleteFile"))) return;
+      try {
+        await store.call("files.delete", { id: btn.dataset.deletePrescriptionFile });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
     });
   });
 

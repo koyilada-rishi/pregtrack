@@ -943,6 +943,7 @@ export async function mockCall(action, payload) {
         notes: payload.notes || "",
         type_v2: payload.type_v2 || "",
         linked_booking_id: payload.linked_booking_id || "",
+        episode_id: payload.episode_id || "",
         linked_file_ids: "",
         _base64: payload.base64,
         _mimeType: payload.mimeType || "application/octet-stream",
