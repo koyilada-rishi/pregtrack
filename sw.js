@@ -36,6 +36,7 @@ const APP_SHELL = [
   "./css/tokens.css",
   "./css/style.css",
   "./css/tabs/today.css",
+  "./css/tabs/scan.css",
   "./css/fonts/plus-jakarta-sans-400.woff2",
   "./css/fonts/plus-jakarta-sans-500.woff2",
   "./css/fonts/plus-jakarta-sans-600.woff2",

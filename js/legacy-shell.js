@@ -6816,15 +6816,38 @@ function showCountdownFormError(outlet, message) {
 // opt-in) is Stage D. For now the tab is real and navigable rather than a
 // dead end: it points at Records' existing upload, which already files a
 // photo/PDF into the right category.
+// Scan is a front door into the same Records upload flow — one tap to say
+// what kind of document this is, then straight into the existing
+// camera/file picker (uploadFormMarkup/attachUploadHandlers), pre-filed
+// into that category. No OCR/AI parsing: fields are always typed in by
+// hand, same as adding a record directly from Records.
+const SCAN_TYPE_TILES = [
+  { type: "prescription", icon: "prescriptions" },
+  { type: "lab_report", icon: "folder_open" },
+  { type: "scan_report", icon: "radiology" },
+  { type: "bill", icon: "receipt_long" },
+  { type: "medicine_photo", icon: "photo_camera" },
+  { type: "other", icon: "folder_shared" }
+];
+
 function renderScanView(outlet) {
   outlet.innerHTML = `
-    <div class="card">
+    <div class="card scan-intro-card">
       <h2>${t("scan.title")}</h2>
-      <p>${t("scan.comingSoon")}</p>
-      <button class="btn btn-primary" data-nav="#/records">${t("scan.openRecords")}</button>
+      <p class="muted">${t("scan.subtitle")}</p>
+    </div>
+    <div class="scan-type-grid">
+      ${SCAN_TYPE_TILES.map((it) => `
+        <button type="button" class="scan-type-tile" data-scan-type="${it.type}">
+          <span class="scan-type-icon">${icon(it.icon, "icon-lg")}</span>
+          <span class="scan-type-label">${t("records.type." + it.type)}</span>
+        </button>
+      `).join("")}
     </div>
   `;
-  attachNavButtons(outlet);
+  outlet.querySelectorAll("[data-scan-type]").forEach((btn) => {
+    btn.addEventListener("click", () => navigateToRecordsWithPreset(btn.dataset.scanType));
+  });
 }
 
 function renderMoreView(outlet) {

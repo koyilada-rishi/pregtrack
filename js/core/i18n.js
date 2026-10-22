@@ -28,6 +28,7 @@ const STRINGS = {
     "scan.title": "Scan a document",
     "scan.comingSoon": "A full scan-and-fill flow for prescriptions, lab reports and bills is coming here next. For now, you can still add a record directly in Records.",
     "scan.openRecords": "Go to Records",
+    "scan.subtitle": "Pick what you're adding, then take a photo or choose a file.",
 
     "firstRun.title": "Enter PIN",
     "firstRun.subtitle": "This PIN protects private medical data. It's saved on this device after your first successful entry — you won't need to enter it again until you sign out.",

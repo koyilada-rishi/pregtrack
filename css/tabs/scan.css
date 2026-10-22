@@ -1,0 +1,48 @@
+/* Scan tab — a type picker that hands straight into the existing Records
+   camera/file upload flow (see js/legacy-shell.js's renderScanView and
+   navigateToRecordsWithPreset). No OCR/AI parsing lives here: picking a
+   tile just pre-selects that category on the same upload form used from
+   Records directly. */
+
+.scan-intro-card { padding: 16px; }
+.scan-intro-card h2 { margin: 0 0 4px; }
+.scan-intro-card p { margin: 0; }
+
+.scan-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--gutter-mobile, 12px);
+}
+
+.scan-type-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--color-surface);
+  border: none;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px;
+  min-height: 92px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.scan-type-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--mc-primary-fixed);
+  color: var(--mc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scan-type-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
