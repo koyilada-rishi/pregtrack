@@ -429,12 +429,16 @@ function buildNotificationsList() {
 
   // Fix #4's "alert toggle that sends an in-app notification" — surfaces
   // here, in the same bell list, for any of today's symptom entries where
-  // she explicitly turned notify on. Purely descriptive, same as every
+  // she explicitly picked an alert level. Purely descriptive, same as every
   // other notification here — never a verdict on the symptom itself.
   (homeState.todaysSymptoms || []).forEach((s) => {
-    if (!isTruthy(s.notify)) return;
+    if (!s.alert_level) return;
     const label = s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key);
     items.push({ icon: "vital_signs", text: t("header.notif.symptom", { name: label, time: s.time }) });
+  });
+  (homeState.todaysCheckins || []).forEach((c) => {
+    if (!c.alert_level) return;
+    items.push({ icon: "vital_signs", text: t("header.notif.checkin", { time: c.time }) });
   });
 
   return items;
@@ -508,7 +512,7 @@ const homeState = {
   selectedSymptomKey: null,
   selectedSymptomCustomName: "",
   selectedIntensity: "",
-  notifyDraft: false,
+  alertLevelDraft: "",
   recentFoods: [],
   selectedMood: null,
   selectedMeal: null,
@@ -1171,8 +1175,8 @@ function symptomsNotesCardMarkup() {
   const todaysCheckins = homeState.todaysCheckins || [];
   const todaysSymptoms = homeState.todaysSymptoms || [];
   const combined = [
-    ...todaysCheckins.map((c) => ({ time: c.time, text: `${MOOD_FACES[c.mood - 1] || ""}${c.note ? " " + c.note : ""}` })),
-    ...todaysSymptoms.map((s) => ({ time: s.time, text: `${s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key)}${s.note ? " — " + s.note : ""}` }))
+    ...todaysCheckins.map((c) => ({ time: c.time, text: `${MOOD_FACES[c.mood - 1] || ""}${c.note ? " " + c.note : ""}`, alert_level: c.alert_level })),
+    ...todaysSymptoms.map((s) => ({ time: s.time, text: `${s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key)}${s.note ? " — " + s.note : ""}`, alert_level: s.alert_level }))
   ].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
   const canSave = homeState.selectedMood || homeState.selectedSymptomKey;
 
@@ -1196,11 +1200,16 @@ function symptomsNotesCardMarkup() {
         <div class="chip-row intensity-bar">
           ${SYMPTOM_SEVERITY_CHIPS.map((s) => `<button type="button" class="chip ${homeState.selectedIntensity === s ? "chip-selected" : ""}" data-intensity-select="${s}">${t("severity." + s)}</button>`).join("")}
         </div>
-        <label class="checkbox-field">
-          <input type="checkbox" id="notify-toggle" ${homeState.notifyDraft ? "checked" : ""} />
-          <span>${t("checkin.notifyMe")}</span>
-        </label>
       ` : ""}
+
+      ${canSave ? formField(t("episodes.alertLevel"), `
+        <select class="field" id="checkin-alert-level-select">
+          <option value="" ${!homeState.alertLevelDraft ? "selected" : ""}>${t("episodes.alert.none")}</option>
+          <option value="green" ${homeState.alertLevelDraft === "green" ? "selected" : ""}>${t("episodes.alert.green")}</option>
+          <option value="orange" ${homeState.alertLevelDraft === "orange" ? "selected" : ""}>${t("episodes.alert.orange")}</option>
+          <option value="red" ${homeState.alertLevelDraft === "red" ? "selected" : ""}>${t("episodes.alert.red")}</option>
+        </select>
+      `, t("episodes.alertLevelHint")) : ""}
 
       <div class="form-actions">
         <button type="button" class="btn btn-secondary btn-small" id="save-checkin-btn" ${canSave ? "" : "disabled"}>${t("checkin.save")}</button>
@@ -1211,7 +1220,7 @@ function symptomsNotesCardMarkup() {
         <ul class="med-slot-list">
           ${combined.map((c) => `
             <li class="med-slot-row">
-              <span>${escapeHtml(c.text)}</span>
+              <span>${escapeHtml(c.text)} ${c.alert_level ? `<span class="badge alert-${c.alert_level}">${t("episodes.alert." + c.alert_level)}</span>` : ""}</span>
               <span class="muted">${escapeHtml(c.time)}</span>
             </li>
           `).join("")}
@@ -2112,8 +2121,8 @@ function attachHomeHandlers(outlet) {
   const captureDraft = () => {
     const noteInput = outlet.querySelector("#checkin-note-input");
     homeState.checkinNoteDraft = noteInput ? noteInput.value : "";
-    const notifyInput = outlet.querySelector("#notify-toggle");
-    if (notifyInput) homeState.notifyDraft = notifyInput.checked;
+    const alertSelect = outlet.querySelector("#checkin-alert-level-select");
+    if (alertSelect) homeState.alertLevelDraft = alertSelect.value;
   };
 
   outlet.querySelectorAll("[data-mood]").forEach((btn) => {
@@ -2150,8 +2159,8 @@ function attachHomeHandlers(outlet) {
     });
   });
 
-  const notifyToggle = outlet.querySelector("#notify-toggle");
-  if (notifyToggle) notifyToggle.addEventListener("change", () => { homeState.notifyDraft = notifyToggle.checked; });
+  const alertLevelSelect = outlet.querySelector("#checkin-alert-level-select");
+  if (alertLevelSelect) alertLevelSelect.addEventListener("change", () => { homeState.alertLevelDraft = alertLevelSelect.value; });
 
   const addCustomSymptomBtn = outlet.querySelector("#add-custom-symptom-btn");
   if (addCustomSymptomBtn) {
@@ -2177,7 +2186,8 @@ function attachHomeHandlers(outlet) {
     saveCheckinBtn.addEventListener("click", async () => {
       if (!homeState.selectedMood && !homeState.selectedSymptomKey) return;
       const note = outlet.querySelector("#checkin-note-input").value.trim();
-      const notify = (outlet.querySelector("#notify-toggle") || {}).checked || false;
+      const alertLevelInput = outlet.querySelector("#checkin-alert-level-select");
+      const alertLevel = alertLevelInput ? alertLevelInput.value : "";
       saveCheckinBtn.disabled = true;
       try {
         if (homeState.selectedSymptomKey) {
@@ -2185,16 +2195,16 @@ function attachHomeHandlers(outlet) {
             date: schedule.formatLocalDate(new Date()),
             symptom_key: homeState.selectedSymptomKey,
             custom_name: homeState.selectedSymptomKey === "custom" ? homeState.selectedSymptomCustomName : "",
-            severity: homeState.selectedIntensity, note, notify
+            severity: homeState.selectedIntensity, note, alert_level: alertLevel
           });
         } else {
-          await store.call("checkins.create", { date: schedule.formatLocalDate(new Date()), mood: homeState.selectedMood, note });
+          await store.call("checkins.create", { date: schedule.formatLocalDate(new Date()), mood: homeState.selectedMood, note, alert_level: alertLevel });
         }
         homeState.selectedMood = null;
         homeState.selectedSymptomKey = null;
         homeState.selectedSymptomCustomName = "";
         homeState.selectedIntensity = "";
-        homeState.notifyDraft = false;
+        homeState.alertLevelDraft = "";
         homeState.checkinNoteDraft = "";
         await refreshHome();
       } catch (err) {

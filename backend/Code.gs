@@ -1055,12 +1055,14 @@ function checkinsCreate(payload) {
   requireFields(payload, ['date', 'mood']);
   var mood = sanitizeNumber(payload.mood, 'mood');
   if (mood < 1 || mood > 5) throw new Error('mood must be between 1 and 5');
+  if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
   return createRow('Checkins', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     mood: mood,
     note: sanitizeText(payload.note, 2000),
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    alert_level: payload.alert_level || ''
   });
 }
 
@@ -1101,6 +1103,7 @@ function symptomsCreate(payload) {
   }
   if (payload.severity) validateEnum(payload.severity, SYMPTOM_SEVERITIES, 'severity');
   if (payload.bleeding_scale) validateEnum(payload.bleeding_scale, BLEEDING_SCALE_VALUES, 'bleeding_scale');
+  if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
   return createRow('Symptoms', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
@@ -1110,7 +1113,8 @@ function symptomsCreate(payload) {
     bleeding_scale: payload.bleeding_scale || '',
     note: sanitizeText(payload.note, 2000),
     created_at: new Date().toISOString(),
-    notify: sanitizeBoolean(payload.notify)
+    notify: sanitizeBoolean(payload.notify),
+    alert_level: payload.alert_level || ''
   });
 }
 
@@ -2434,16 +2438,20 @@ var SHEET_SCHEMA = {
   // --- Phase 2 (v3): daily check-in, symptoms, water, food ---------------
   // Checkins: "how are you feeling" — mood + a quick note. Multiple per day
   // are expected and each is its own row/timeline entry, never overwritten.
-  Checkins: ['id', 'date', 'time', 'mood', 'note', 'created_at'],
+  // alert_level (Today notes block, Part 1/2 of the alerts rework):
+  // '' / 'green' / 'orange' / 'red', same enum and meaning as
+  // Notes.alert_level — off by default, only set when she explicitly picks
+  // a level for this one entry. A non-blank row feeds the shared
+  // notification system (bell + toast), same as every other alert source.
+  Checkins: ['id', 'date', 'time', 'mood', 'note', 'created_at', 'alert_level'],
   // Symptoms: symptom_key is one of SYMPTOM_KEYS below, or 'custom' (with
   // custom_name filled in) for anything she adds herself. bleeding_scale is
   // only meaningful for the bleeding/spotting symptom keys.
-  // notify (dashboard rebuild, fix #4): opt-in per entry, same pattern as
-  // Notes.alert_level — '' / false by default, only set when the person
-  // explicitly turns it on for this one entry. A true row shows up in the
-  // notification bell's list; never computed automatically from severity
-  // or any other field.
-  Symptoms: ['id', 'date', 'time', 'symptom_key', 'custom_name', 'severity', 'bleeding_scale', 'note', 'created_at', 'notify'],
+  // notify: the old boolean-only alert flag (dashboard rebuild, fix #4),
+  // kept (never written to by new rows) so historical rows aren't silently
+  // reinterpreted — superseded by alert_level, which is what the shared
+  // notification system (Part 2) actually reads.
+  Symptoms: ['id', 'date', 'time', 'symptom_key', 'custom_name', 'severity', 'bleeding_scale', 'note', 'created_at', 'notify', 'alert_level'],
   // Water: each row is one "add a glass" tap (glasses is usually 1, but
   // left numeric in case a future UI lets her log more than one at once).
   Water: ['id', 'date', 'time', 'glasses', 'created_at'],

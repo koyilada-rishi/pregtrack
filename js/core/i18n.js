@@ -25,6 +25,7 @@ const STRINGS = {
     "header.notif.lowStock": "{name}: refill in {days} days",
     "header.notif.appointment": "{name} — {when}",
     "header.notif.symptom": "{name} — logged at {time}",
+    "header.notif.checkin": "Check-in note — logged at {time}",
 
     "more.medsHistory": "Medicines used",
 
@@ -557,7 +558,6 @@ const STRINGS = {
     "checkin.severity": "How bad is it?",
     "checkin.bleedingScale": "Compared to a pad",
     "checkin.logSymptom": "Log symptom",
-    "checkin.notifyMe": "Notify me about this",
     "checkin.todaysEntries": "Today's entries",
     "checkin.seeAllOverTime": "See all over time →",
     "checkin.mood.1": "Very low",
