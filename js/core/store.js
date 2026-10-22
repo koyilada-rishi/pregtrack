@@ -98,6 +98,15 @@ function setCached(action, payload, data) {
   }
 }
 
+// Actions that change something the bootstrap's own `dashboard` block is
+// derived from (next_appointment, today_medicines, etc.) — found as a real
+// bug: creating a booking never appeared under Home's "Next appointment"
+// because the cached bootstrap was never invalidated, only refreshed every
+// ~30s by the version poll. Clearing it here forces the next loadBootstrap()
+// call (e.g. navigating back to Home right after saving) to actually refetch
+// instead of silently repainting the stale copy.
+const BOOTSTRAP_INVALIDATING_PREFIXES = ["bookings.", "episodes."];
+
 export async function call(action, payload) {
   const data = isMockMode() ? await callMock(action, payload) : await api.call(action, payload);
   setCached(action, payload, data);
@@ -109,6 +118,8 @@ export async function call(action, payload) {
   if (action === "settings.set" && data) {
     const cached = getCachedBootstrap();
     if (cached) setCachedBootstrap({ ...cached, settings: data });
+  } else if (BOOTSTRAP_INVALIDATING_PREFIXES.some((p) => action.startsWith(p))) {
+    clearCachedBootstrap();
   }
   return data;
 }
@@ -150,6 +161,15 @@ function setCachedBootstrap(data) {
   inMemoryBootstrap = data;
   try {
     localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+}
+
+function clearCachedBootstrap() {
+  inMemoryBootstrap = null;
+  try {
+    localStorage.removeItem(BOOTSTRAP_CACHE_KEY);
   } catch {
     // ignore
   }
@@ -507,9 +527,21 @@ function mockDashboard() {
   });
   pending.sort((a, b) => a.time.localeCompare(b.time));
 
-  const upcoming = db.appointments
+  // Bug fix: this used to only check db.appointments (the legacy quick-add
+  // flow), so a booking made through the real Bookings flow never showed up
+  // as "Next appointment" at all. Merge both, same as the real backend.
+  const upcomingAppointments = db.appointments
     .filter((a) => a.status === "upcoming" && new Date(a.datetime) >= new Date())
-    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    .map((a) => ({ id: a.id, datetime: a.datetime, doctor: a.doctor, purpose: a.purpose, location: a.location }));
+
+  const bookingDoneStatuses = ["done", "waiting_for_report", "report_uploaded", "closed", "cancelled"];
+  const upcomingBookings = db.bookings
+    .filter((b) => !bookingDoneStatuses.includes(b.status))
+    .map((b) => ({ ...b, effectiveDatetime: (b.status === "rescheduled" && b.tentative_date) ? b.tentative_date : b.datetime }))
+    .filter((b) => b.effectiveDatetime && new Date(b.effectiveDatetime) >= new Date())
+    .map((b) => ({ id: b.id, datetime: b.effectiveDatetime, doctor: b.provider || "", purpose: b.title || "", location: b.location || "" }));
+
+  const upcoming = [...upcomingAppointments, ...upcomingBookings].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 
   const sortedVitals = [...db.healthlog].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -517,9 +549,7 @@ function mockDashboard() {
     due_date: db.settings.due_date,
     lmp_date: db.settings.lmp_date,
     gestational_age: computeGestationalAge(),
-    next_appointment: upcoming[0]
-      ? { id: upcoming[0].id, datetime: upcoming[0].datetime, doctor: upcoming[0].doctor, purpose: upcoming[0].purpose, location: upcoming[0].location }
-      : null,
+    next_appointment: upcoming[0] || null,
     today_medicines: pending,
     latest_vitals: sortedVitals[0] || null
   };

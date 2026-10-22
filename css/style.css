@@ -100,10 +100,17 @@ a { color: var(--color-primary-dark); }
   flex-direction: column;
 }
 
+/* App-wide max width (fix #7) — every fixed/sticky chrome piece below
+   (header row, tab bar, FAB) uses this same value so the whole app reads
+   as one centered phone-width column on a wide screen instead of a
+   full-width header/tab bar wrapped around a narrow centered content
+   column. */
+:root { --app-max-width: 430px; }
+
 .view {
   flex: 1;
   padding: 16px 16px calc(var(--nav-height) + 24px);
-  max-width: 560px;
+  max-width: var(--app-max-width);
   width: 100%;
   margin: 0 auto;
 }
@@ -127,9 +134,15 @@ a { color: var(--color-primary-dark); }
   position: sticky;
   top: env(safe-area-inset-top, 0px);
   z-index: 5;
+  max-width: var(--app-max-width);
+  margin: 0 auto;
   background: color-mix(in srgb, var(--mc-surface) 85%, transparent);
   backdrop-filter: blur(20px);
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.03);
+}
+
+@media (min-width: 480px) {
+  .mc-header { border-left: 1px solid var(--mc-outline-variant); border-right: 1px solid var(--mc-outline-variant); }
 }
 
 .mc-header-row {
@@ -139,6 +152,9 @@ a { color: var(--color-primary-dark); }
   align-items: center;
   justify-content: space-between;
   gap: var(--gutter-mobile);
+  max-width: var(--app-max-width);
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
 .mc-header-brand {
@@ -233,10 +249,19 @@ a { color: var(--color-primary-dark); }
   bottom: 0;
   z-index: 10;
   display: flex;
+  max-width: var(--app-max-width);
+  margin: 0 auto;
   background: color-mix(in srgb, var(--mc-surface) 90%, transparent);
   backdrop-filter: blur(20px);
   box-shadow: 0 -4px 20px rgba(39, 49, 56, 0.06);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* On an actually-wide screen the tab bar no longer touches the window's
+   side edges, so give it its own left/right borders there to read as a
+   distinct panel rather than appearing to float with no boundary. */
+@media (min-width: 480px) {
+  .mc-tabbar { border-left: 1px solid var(--mc-outline-variant); border-right: 1px solid var(--mc-outline-variant); }
 }
 
 .mc-tabbar-item {
@@ -263,8 +288,11 @@ a { color: var(--color-primary-dark); }
 
 .mc-fab {
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: var(--app-max-width);
+  margin: 0 auto;
   bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom, 0px) + 12px);
   z-index: 20;
   display: flex;
@@ -416,10 +444,15 @@ a { color: var(--color-primary-dark); }
 }
 
 .error-text {
-  color: var(--color-emergency);
+  color: var(--color-emergency-contrast);
+  background: var(--color-emergency);
   font-size: 0.9rem;
+  font-weight: 600;
   margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
 }
+.error-text:empty, .error-text[hidden] { display: none; }
 
 /* ---------- Skeletons ---------- */
 
@@ -1080,6 +1113,15 @@ a { color: var(--color-primary-dark); }
   margin: 0 0 10px;
   font-size: 0.95rem;
   opacity: 0.9;
+}
+
+/* Fix #2: "days so far" is gone, so the week/trimester line is now the
+   hero card's main headline — sized to match where .hero-days used to be. */
+.hero-week-line--lg {
+  font-size: 1.7rem;
+  font-weight: 700;
+  opacity: 1;
+  margin-bottom: 10px;
 }
 
 .hero-progress {

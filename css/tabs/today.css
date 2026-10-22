@@ -195,34 +195,37 @@
 }
 .calendar-header h2 { margin: 0; font-size: 1rem; }
 
-.calendar-weekdays {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  text-align: center;
-  font-size: 0.72rem;
-  color: var(--color-text-muted);
-  margin-bottom: 4px;
-}
-
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
+  gap: 4px;
 }
 
+/* Compact week strip (fix #3) — one row, small cells, stays well under the
+   ~25%-of-screen-height ceiling regardless of viewport. */
+.calendar-grid--week .calendar-cell { aspect-ratio: auto; height: 52px; }
+
 .calendar-cell {
-  aspect-ratio: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
   background: none;
   border: none;
   border-radius: var(--radius-lg);
-  font-size: 0.85rem;
   color: var(--color-text);
   cursor: pointer;
+}
+
+.calendar-cell-weekday {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.calendar-cell-day {
+  font-size: 0.9rem;
 }
 
 .calendar-cell-empty { cursor: default; }
@@ -232,10 +235,67 @@
   color: var(--mc-on-primary-fixed);
   font-weight: 700;
 }
+.calendar-cell-today .calendar-cell-weekday { color: var(--mc-on-primary-fixed); opacity: 0.8; }
 
 .calendar-dot {
   width: 4px;
   height: 4px;
   border-radius: 50%;
   background: var(--mc-primary);
+}
+
+/* ---------- Water: icon-only controls, tap card body for history ------- */
+
+.water-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.water-tap-area {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.water-icon-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.icon-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: var(--color-surface-muted);
+  color: var(--mc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+.icon-btn-sign {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--mc-primary);
+  color: var(--mc-on-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }

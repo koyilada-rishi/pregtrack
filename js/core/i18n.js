@@ -13,6 +13,8 @@ const STRINGS = {
     "nav.meds": "Meds",
     "nav.visits": "Visits",
     "nav.records": "Records",
+    "nav.episodes": "Episodes",
+    "nav.bookings": "Bookings",
     "nav.more": "More",
 
     "header.weekPill": "Week {weeks} ({trimester})",
@@ -22,6 +24,7 @@ const STRINGS = {
     "header.notif.doseDue": "{name} due at {time}",
     "header.notif.lowStock": "{name}: refill in {days} days",
     "header.notif.appointment": "{name} — {when}",
+    "header.notif.symptom": "{name} — logged at {time}",
 
     "more.medsHistory": "Medicines used",
 
@@ -554,6 +557,9 @@ const STRINGS = {
     "checkin.severity": "How bad is it?",
     "checkin.bleedingScale": "Compared to a pad",
     "checkin.logSymptom": "Log symptom",
+    "checkin.notifyMe": "Notify me about this",
+    "checkin.todaysEntries": "Today's entries",
+    "checkin.seeAllOverTime": "See all over time →",
     "checkin.mood.1": "Very low",
     "checkin.mood.2": "Low",
     "checkin.mood.3": "Okay",

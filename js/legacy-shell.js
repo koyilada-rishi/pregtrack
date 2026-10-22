@@ -52,18 +52,17 @@ let pendingOpenBookingId = null;
 // state/history for zero behavioral gain) — only the nav label changes.
 const NAV_ITEMS = [
   { key: "home", hash: "#/home", iconName: "calendar_today", label: () => t("nav.today") },
-  { key: "scan", hash: "#/scan", iconName: "document_scanner", label: () => t("nav.scan") },
-  { key: "meds", hash: "#/meds", iconName: "medication", label: () => t("nav.meds") },
-  { key: "records", hash: "#/records", iconName: "folder_shared", label: () => t("nav.records") }
+  { key: "episodes", hash: "#/episodes", iconName: "folder_shared", label: () => t("nav.episodes") },
+  { key: "bookings", hash: "#/bookings", iconName: "calendar_clock", label: () => t("nav.bookings") },
+  { key: "meds", hash: "#/meds", iconName: "medication", label: () => t("nav.meds") }
 ];
 
 const ROUTES = {
   "/home": { render: renderHomeView, navKey: "home", title: () => t("nav.today") },
-  "/scan": { render: renderScanView, navKey: "scan", title: () => t("nav.scan") },
   "/meds": { render: renderMedicinesView, navKey: "meds", title: () => t("nav.meds") },
   "/meds/history": { render: renderMedicinesHistoryView, navKey: "meds", title: () => t("meds.history.title") },
   "/visits": { render: renderAppointmentsView, navKey: null, title: () => t("nav.visits") },
-  "/records": { render: renderRecordsView, navKey: "records", title: () => t("nav.records") },
+  "/records": { render: renderRecordsView, navKey: null, title: () => t("nav.records") },
   "/more": { render: renderMoreView, navKey: null, title: () => t("more.title") },
   "/emergency": { render: renderEmergencyView, navKey: null, title: () => t("emergency.title") },
   "/health": { render: (outlet) => renderHealthView(outlet, false), navKey: null, title: () => t("health.title") },
@@ -73,8 +72,8 @@ const ROUTES = {
   "/water": { render: renderWaterView, navKey: null, title: () => t("water.title") },
   "/food": { render: renderFoodView, navKey: null, title: () => t("food.title") },
   "/timeline": { render: renderTimelineView, navKey: null, title: () => t("timeline.title") },
-  "/bookings": { render: renderBookingsView, navKey: null, title: () => t("bookings.title") },
-  "/episodes": { render: renderEpisodesView, navKey: null, title: () => t("episodes.title") },
+  "/bookings": { render: renderBookingsView, navKey: "bookings", title: () => t("bookings.title") },
+  "/episodes": { render: renderEpisodesView, navKey: "episodes", title: () => t("episodes.title") },
   "/reimbursement": { render: renderReimbursementView, navKey: null, title: () => t("reimbursement.title") },
   "/settings": { render: renderSettingsView, navKey: null, title: () => t("settings.title") }
 };
@@ -428,6 +427,16 @@ function buildNotificationsList() {
     }
   }
 
+  // Fix #4's "alert toggle that sends an in-app notification" — surfaces
+  // here, in the same bell list, for any of today's symptom entries where
+  // she explicitly turned notify on. Purely descriptive, same as every
+  // other notification here — never a verdict on the symptom itself.
+  (homeState.todaysSymptoms || []).forEach((s) => {
+    if (!isTruthy(s.notify)) return;
+    const label = s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key);
+    items.push({ icon: "vital_signs", text: t("header.notif.symptom", { name: label, time: s.time }) });
+  });
+
   return items;
 }
 
@@ -486,15 +495,20 @@ const homeState = {
   outlet: null,
   bootstrap: null,
   logs: [], // ~40 days of MedicineLog — enough history for weekly/monthly due-state and PRN averages
-  weekEntry: null,
-  countdownExpanded: false,
   refreshIntervalId: null,
   midnightTimeoutId: null,
   // Phase 2: daily check-in, water, food — all "today only" on Home (the
   // dedicated Timeline/Water/Food views pull their own wider history).
   todaysCheckins: [],
+  todaysSymptoms: [],
   todaysWater: [],
   customSymptomNames: [],
+  // Merged symptoms/notes card (fix #4) — all local draft state, cleared
+  // on save.
+  selectedSymptomKey: null,
+  selectedSymptomCustomName: "",
+  selectedIntensity: "",
+  notifyDraft: false,
   recentFoods: [],
   selectedMood: null,
   selectedMeal: null,
@@ -502,7 +516,7 @@ const homeState = {
   // it's currently showing (defaults to the current month on every fresh
   // Home load — not persisted across visits).
   allBookings: [],
-  calendarMonthOffset: 0
+  calendarWeekOffset: 0
 };
 
 async function renderHomeView(outlet) {
@@ -511,7 +525,6 @@ async function renderHomeView(outlet) {
 
   const paint = async (boot) => {
     homeState.bootstrap = boot;
-    homeState.weekEntry = await weekEntryFor(computeCountdown(boot.settings || {}, new Date())).catch(() => null);
     const todayStr = schedule.formatLocalDate(new Date());
     try {
       homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs);
@@ -523,6 +536,7 @@ async function renderHomeView(outlet) {
       store.call("water.list", { date_from: todayStr, date_to: todayStr }).then((r) => { homeState.todaysWater = r; }).catch(() => {}),
       store.call("symptoms.list", {}).then((rows) => {
         homeState.customSymptomNames = [...new Set(rows.filter((r) => r.symptom_key === "custom" && r.custom_name).map((r) => r.custom_name))];
+        homeState.todaysSymptoms = rows.filter((r) => dateStrOf(r.date) === todayStr);
       }).catch(() => {}),
       store.call("foodlog.list", {}).then((rows) => {
         homeState.recentFoods = [...new Set(rows.slice().sort((a, b) => dateStrOf(b.date).localeCompare(dateStrOf(a.date))).map((r) => r.items).filter(Boolean))].slice(0, 6);
@@ -553,7 +567,7 @@ async function renderHomeView(outlet) {
 }
 
 function renderHomeBody(outlet) {
-  outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.logs, homeState.weekEntry, new Date()) + addAnythingFabMarkup();
+  outlet.innerHTML = homeMarkup(homeState.bootstrap, homeState.logs, new Date()) + addAnythingFabMarkup();
   attachNavButtons(outlet);
   attachHomeHandlers(outlet);
   attachAddAnythingFabHandler(outlet);
@@ -568,6 +582,7 @@ async function refreshHome() {
     homeState.bootstrap = boot;
     homeState.logs = await store.call("medicines.history", { days: 40 }).then((h) => h.logs).catch(() => homeState.logs);
     homeState.todaysCheckins = await store.call("checkins.list", { date_from: todayStr, date_to: todayStr }).catch(() => homeState.todaysCheckins);
+    homeState.todaysSymptoms = await store.call("symptoms.list", { date_from: todayStr, date_to: todayStr }).catch(() => homeState.todaysSymptoms);
     homeState.todaysWater = await store.call("water.list", { date_from: todayStr, date_to: todayStr }).catch(() => homeState.todaysWater);
   } catch {
     // Keep showing the last-known state rather than erroring the whole page.
@@ -575,15 +590,6 @@ async function refreshHome() {
   renderHomeBody(homeState.outlet);
 }
 
-// Looks up the matching data/weeks.json entry for the current gestational
-// age (computed locally via countdown.js), clamped to the 4-40 range the
-// content file covers.
-async function weekEntryFor(age) {
-  if (!age) return null;
-  const weeksData = await loadJson("./data/weeks.json");
-  const weekNum = Math.min(40, Math.max(4, age.weeks));
-  return weeksData.weeks.find((w) => w.week === weekNum) || null;
-}
 
 function greetingKey(now) {
   const h = now.getHours();
@@ -640,7 +646,7 @@ function pinnedCountdownsOf(boot) {
     .sort((a, b) => Number(a.pinned_order || 0) - Number(b.pinned_order || 0));
 }
 
-function homeMarkup(boot, logs, weekEntry, now) {
+function homeMarkup(boot, logs, now) {
   const settings = boot.settings || {};
   const dashboard = boot.dashboard || {};
   const countdown = computeCountdown(settings, now);
@@ -651,38 +657,20 @@ function homeMarkup(boot, logs, weekEntry, now) {
   ];
   const hasAnyDose = Object.values(buckets).some((b) => b.length);
 
+  // Order per the dashboard rebuild brief: greeting+trimester/weeks, LMP/USG
+  // banners, symptoms/notes (top priority), compact calendar, status (next
+  // appointment + waiting for reports + coming-up shots), today's
+  // medicines, water, countdowns.
   return `
-    ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
+    ${heroCountdownCardMarkup(countdown, settings, now)}
 
     ${datingBannersMarkup(settings, now)}
 
+    ${symptomsNotesCardMarkup()}
+
     ${calendarCardMarkup(boot, now)}
 
-    ${babySizeCardMarkup(weekEntry)}
-
-    <div class="stat-grid">
-      ${todaysRegimenTileMarkup(boot, logs, now)}
-      ${isTruthy(settings.kick_counter_enabled) ? kickCounterCardMarkup(settings) : waterCardMarkup(settings)}
-    </div>
-
     ${quickActionsGridMarkup()}
-
-    <div class="card">
-      <div class="card-head">
-        <h2>${t("home.medicines.title")}</h2>
-        <button type="button" class="btn-add" data-add-medicine aria-label="${t("meds.add")}">+</button>
-      </div>
-      ${
-        hasAnyDose
-          ? bucketOrder.map(([key, labelKey]) => bucketOf(buckets[key], key, labelKey)).filter(Boolean).join("")
-          : `<p class="empty">${t("home.medicines.none")}</p>`
-      }
-      ${intervalAndPrnMedicines(boot).map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(logs, m.id), now)).join("")}
-    </div>
-
-    ${packsCardMarkup(boot, logs, now)}
-
-    ${comingUpCardMarkup(boot, logs, now)}
 
     ${pendingReportsCardMarkup(now)}
 
@@ -699,6 +687,27 @@ function homeMarkup(boot, logs, weekEntry, now) {
           : `<p class="empty">${t("home.nextAppointment.none")}</p>`
       }
     </div>
+
+    ${comingUpCardMarkup(boot, logs, now)}
+
+    ${todaysRegimenTileMarkup(boot, logs, now)}
+
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("home.medicines.title")}</h2>
+        <button type="button" class="btn-add" data-add-medicine aria-label="${t("meds.add")}">+</button>
+      </div>
+      ${
+        hasAnyDose
+          ? bucketOrder.map(([key, labelKey]) => bucketOf(buckets[key], key, labelKey)).filter(Boolean).join("")
+          : `<p class="empty">${t("home.medicines.none")}</p>`
+      }
+      ${intervalAndPrnMedicines(boot).map((m) => intervalOrPrnRowMarkup(m, logsForMedicine(logs, m.id), now)).join("")}
+    </div>
+
+    ${packsCardMarkup(boot, logs, now)}
+
+    ${isTruthy(settings.kick_counter_enabled) ? kickCounterCardMarkup(settings) : waterCardMarkup(settings)}
 
     <div class="card">
       <div class="card-head">
@@ -727,12 +736,6 @@ function homeMarkup(boot, logs, weekEntry, now) {
       }
       <a class="card-link" data-nav="#/countdowns">${t("countdowns.seeAll")}</a>
     </div>
-
-    ${quickAddCardMarkup()}
-
-    ${checkinCardMarkup()}
-
-    ${foodCardMarkup()}
 
     <div class="dashboard-actions">
       <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
@@ -1016,7 +1019,7 @@ function datingBannersMarkup(settings, now) {
   `;
 }
 
-function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
+function heroCountdownCardMarkup(countdown, settings, now) {
   if (!countdown) {
     return `
       <div class="card hero-countdown-card">
@@ -1026,51 +1029,18 @@ function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
     `;
   }
 
-  // Dashboard rebuild (Phase 6): "days so far" (how far along, an elapsed
-  // count) replaces "days to go"/due-date countdown as the big headline
-  // number — the brief calls for trimester + days-so-far + week/day, and
-  // explicitly NO calendar dates anywhere in the greeting. The due-date
-  // line is gone entirely (it's a calendar date); LMP/USG-dated banners
-  // elsewhere on the page cover that need separately.
-  const daysSoFar = countdown.weeks * 7 + countdown.days;
+  // Dashboard rebuild follow-up fix #2: greeting shows ONLY trimester +
+  // week/day — no "days so far", no due-date-derived anything (that's a
+  // calendar date by another name). LMP/USG banners elsewhere on the page
+  // cover absolute dating; this card is deliberately just the elapsed
+  // week/day count plus a progress bar.
   const weekPct = Math.min(100, Math.max(0, (countdown.weeks / 40) * 100));
 
   return `
-    <button type="button" class="card hero-countdown-card" id="hero-countdown-card" data-expanded="${homeState.countdownExpanded ? "1" : "0"}">
+    <div class="card hero-countdown-card">
       <p class="hero-greeting">${heroGreetingMarkup(now, settings)}</p>
-      <div class="hero-days" id="hero-days">${t("home.daysSoFar", { n: daysSoFar })}</div>
-      <p class="hero-week-line">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
+      <p class="hero-week-line hero-week-line--lg">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${weekPct}%"></div></div>
-      <div class="hero-detail" id="hero-detail" ${homeState.countdownExpanded ? "" : "hidden"}></div>
-    </button>
-  `;
-}
-
-// Separate "growth comparison" card below the hero — gives the baby-size
-// content its own visual weight instead of a single line buried in the
-// countdown card.
-function babySizeCardMarkup(weekEntry) {
-  if (!weekEntry) {
-    return `
-      <div class="card baby-size-card">
-        <h2>${t("home.babySize.title")}</h2>
-        <p class="empty">${t("home.babySize.comingSoon")}</p>
-      </div>
-    `;
-  }
-  return `
-    <div class="card baby-size-card">
-      <div class="baby-size-row">
-        <span class="baby-size-icon" aria-hidden="true">${icon("spa", "icon-lg")}</span>
-        <div class="baby-size-text">
-          <div class="baby-size-head">
-            <h2>${t("home.babySize.title")}</h2>
-            <span class="muted baby-size-measure">${t("home.babySize.lengthWeight", { length: weekEntry.length_cm, weight: weekEntry.weight_g })}</span>
-          </div>
-          <p class="baby-size-comparison">${t("home.babySize", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
-          ${weekEntry.development ? `<p class="muted baby-size-development">${escapeHtml(weekEntry.development)}</p>` : ""}
-        </div>
-      </div>
     </div>
   `;
 }
@@ -1091,9 +1061,7 @@ function todaysRegimenTileMarkup(boot, logs, now) {
 }
 
 const QUICK_ACTION_TILES = [
-  { nav: "#/scan", icon: "document_scanner", labelKey: "home.scanDocument" },
   { nav: "#/health/new", icon: "vital_signs", labelKey: "home.logVitals" },
-  { nav: "#/food", icon: "restaurant", labelKey: "home.quickActions.food" },
   { nav: "#/bookings", icon: "calendar_clock", labelKey: "home.quickActions.bookings" }
 ];
 
@@ -1110,17 +1078,6 @@ function quickActionsGridMarkup() {
   `;
 }
 
-function tickHeroDetail(now) {
-  if (!homeState.countdownExpanded) return;
-  const settings = (homeState.bootstrap && homeState.bootstrap.settings) || {};
-  const countdown = computeCountdown(settings, now);
-  const el = document.getElementById("hero-detail");
-  if (!el || !countdown || countdown.msToDueDate === null) return;
-  const dur = formatDuration(countdown.msToDueDate);
-  el.textContent = countdown.isOverdue
-    ? t("home.ticker", { h: String(dur.hours).padStart(2, "0"), m: String(dur.minutes).padStart(2, "0"), s: "" }).replace(/\s*0?s$/, "")
-    : t("home.hoursMinutesToGo", { h: dur.hours, m: dur.minutes });
-}
 
 function tickPinnedCountdowns(outlet, now) {
   const boot = homeState.bootstrap;
@@ -1151,14 +1108,11 @@ function cssEscape(value) {
 // Deliberately no 1-second ticker any more (problem #1 — a ticking seconds
 // display read as confusing, not reassuring). The day count only needs to
 // change once a day; a 30s refresh plus an explicit midnight rollover and
-// an on-focus refresh are what the spec actually asked for. The expanded
-// hours/minutes detail (tap-to-toggle) still updates every 30s while shown.
+// an on-focus refresh are what the spec actually asked for.
 function startHomeTimers(outlet) {
   tickPinnedCountdowns(outlet, new Date());
-  tickHeroDetail(new Date());
   homeState.refreshIntervalId = setInterval(() => {
     tickPinnedCountdowns(outlet, new Date());
-    tickHeroDetail(new Date());
   }, 30000);
   scheduleMidnightRefresh();
   document.addEventListener("visibilitychange", onHomeVisibilityChange);
@@ -1206,8 +1160,22 @@ const SYMPTOM_SEVERITY_CHIPS = ["mild", "moderate", "severe"];
 const BLEEDING_SCALE_CHIPS = ["spotting", "light", "one_pad", "more_than_one_pad"];
 const MEAL_CHIPS = ["Breakfast", "Lunch", "Snack", "Dinner"];
 
-function checkinCardMarkup() {
+// Fix #4: merges the old separate "Quick note" and "How are you feeling?"
+// cards into one block — free-text note, symptom chips, an intensity bar
+// (reuses the existing severity chips), and an opt-in notify toggle. The
+// photo/mic/multi-intent "Quick note" capability is retired from the
+// dashboard (still reachable via "+ Add anything"); this block always
+// saves as either a Symptom row (if a symptom chip is picked — severity/
+// notify/note all go on that row) or a Checkin row (just mood/note).
+function symptomsNotesCardMarkup() {
   const todaysCheckins = homeState.todaysCheckins || [];
+  const todaysSymptoms = homeState.todaysSymptoms || [];
+  const combined = [
+    ...todaysCheckins.map((c) => ({ time: c.time, text: `${MOOD_FACES[c.mood - 1] || ""}${c.note ? " " + c.note : ""}` })),
+    ...todaysSymptoms.map((s) => ({ time: s.time, text: `${s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key)}${s.note ? " — " + s.note : ""}` }))
+  ].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+  const canSave = homeState.selectedMood || homeState.selectedSymptomKey;
+
   return `
     <div class="card checkin-card">
       <h2>${t("checkin.title")}</h2>
@@ -1215,46 +1183,64 @@ function checkinCardMarkup() {
         ${MOOD_FACES.map((face, i) => `<button type="button" class="mood-face ${homeState.selectedMood === i + 1 ? "mood-face-selected" : ""}" data-mood="${i + 1}" aria-label="${t("checkin.mood." + (i + 1))}">${face}</button>`).join("")}
       </div>
       <textarea class="field" id="checkin-note-input" placeholder="${t("checkin.notePlaceholder")}" rows="2">${escapeHtml(homeState.checkinNoteDraft || "")}</textarea>
-      <div class="form-actions">
-        <button type="button" class="btn btn-secondary btn-small" id="save-checkin-btn" ${homeState.selectedMood ? "" : "disabled"}>${t("checkin.save")}</button>
-      </div>
 
       <p class="field-label">${t("checkin.symptomsLabel")}</p>
       <div class="chip-row">
-        ${SYMPTOM_FIXED_KEYS.map((k) => `<button type="button" class="chip" data-symptom-key="${k}">${t("symptom." + k)}</button>`).join("")}
-        ${(homeState.customSymptomNames || []).map((name) => `<button type="button" class="chip" data-symptom-key="custom" data-symptom-custom-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}
+        ${SYMPTOM_FIXED_KEYS.map((k) => `<button type="button" class="chip ${homeState.selectedSymptomKey === k ? "chip-selected" : ""}" data-symptom-select="${k}">${t("symptom." + k)}</button>`).join("")}
+        ${(homeState.customSymptomNames || []).map((name) => `<button type="button" class="chip ${homeState.selectedSymptomKey === "custom" && homeState.selectedSymptomCustomName === name ? "chip-selected" : ""}" data-symptom-select="custom" data-symptom-custom-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}
         <button type="button" class="chip" id="add-custom-symptom-btn">+ ${t("checkin.addCustomSymptom")}</button>
       </div>
 
-      ${todaysCheckins.length ? `
+      ${homeState.selectedSymptomKey ? `
+        <p class="field-label">${t("checkin.severity")}</p>
+        <div class="chip-row intensity-bar">
+          ${SYMPTOM_SEVERITY_CHIPS.map((s) => `<button type="button" class="chip ${homeState.selectedIntensity === s ? "chip-selected" : ""}" data-intensity-select="${s}">${t("severity." + s)}</button>`).join("")}
+        </div>
+        <label class="checkbox-field">
+          <input type="checkbox" id="notify-toggle" ${homeState.notifyDraft ? "checked" : ""} />
+          <span>${t("checkin.notifyMe")}</span>
+        </label>
+      ` : ""}
+
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary btn-small" id="save-checkin-btn" ${canSave ? "" : "disabled"}>${t("checkin.save")}</button>
+      </div>
+
+      ${combined.length ? `
+        <p class="field-label">${t("checkin.todaysEntries")}</p>
         <ul class="med-slot-list">
-          ${todaysCheckins.map((c) => `
+          ${combined.map((c) => `
             <li class="med-slot-row">
-              <span>${MOOD_FACES[c.mood - 1] || ""}${c.note ? " " + escapeHtml(c.note) : ""}</span>
+              <span>${escapeHtml(c.text)}</span>
               <span class="muted">${escapeHtml(c.time)}</span>
             </li>
           `).join("")}
         </ul>
       ` : ""}
+      <a class="card-link" data-nav="#/timeline">${t("checkin.seeAllOverTime")}</a>
     </div>
   `;
 }
 
+// Fix #5: icon-only +/- (no text labels), tapping the card body (not the
+// controls) opens history — the tap area and the icon buttons are
+// physically separate elements so a button press never also triggers nav.
 function waterCardMarkup(settings) {
   const goal = Number(settings.water_goal_glasses) || 8;
   const todayGlasses = (homeState.todaysWater || []).reduce((sum, w) => sum + Number(w.glasses || 1), 0);
   return `
-    <div class="card">
-      <div class="card-head"><h2>${t("water.title")}</h2></div>
-      <div class="water-row">
-        ${Array.from({ length: goal }, (_, i) => `<span class="water-glass ${i < todayGlasses ? "water-glass-filled" : ""}">💧</span>`).join("")}
+    <div class="card water-card">
+      <button type="button" class="water-tap-area" data-nav="#/water" aria-label="${t("water.seeHistory")}">
+        <div class="card-head"><h2>${t("water.title")}</h2></div>
+        <div class="water-row">
+          ${Array.from({ length: goal }, (_, i) => `<span class="water-glass ${i < todayGlasses ? "water-glass-filled" : ""}">💧</span>`).join("")}
+        </div>
+        <p class="muted">${t("water.progress", { n: todayGlasses, goal })}</p>
+      </button>
+      <div class="water-icon-controls">
+        <button type="button" class="icon-btn" id="remove-water-btn" aria-label="${t("water.removeGlass")}" ${todayGlasses ? "" : "disabled"}>${icon("local_drink", "icon-lg")}<span class="icon-btn-sign">−</span></button>
+        <button type="button" class="icon-btn" id="add-water-btn" aria-label="${t("water.addGlass")}">${icon("local_drink", "icon-lg")}<span class="icon-btn-sign">+</span></button>
       </div>
-      <p class="muted">${t("water.progress", { n: todayGlasses, goal })}</p>
-      <div class="form-actions">
-        <button type="button" class="btn btn-secondary" id="remove-water-btn" ${todayGlasses ? "" : "disabled"}>${t("water.removeGlass")}</button>
-        <button type="button" class="btn btn-secondary" id="add-water-btn">${t("water.addGlass")}</button>
-      </div>
-      <a class="card-link" data-nav="#/water">${t("water.seeHistory")}</a>
     </div>
   `;
 }
@@ -1842,54 +1828,61 @@ function attachQuickAddConfirmHandlers(sheetEl, draft, outlet) {
   });
 }
 
-// Dashboard rebuild (Phase 6): "the most important visual element" — a
-// month calendar marking days with a booking (any non-cancelled one).
-// Tapping a marked day opens a small sheet listing that day's bookings;
-// tapping one jumps to its detail (same pendingOpenBookingId pattern the
-// Episode Chain cards use). Navigable month-to-month via calendarMonthOffset.
+// Dashboard rebuild, compacted (fix #3): a single-week strip instead of a
+// full month grid — the month grid measured out to ~40% of screen height,
+// well over the ~25% ceiling. A week strip is one row, always small,
+// regardless of how many weeks the month has. Marks any day with a
+// booking (any non-cancelled one); tapping a marked day opens a small
+// sheet listing that day's bookings, tapping one jumps to its detail
+// (same pendingOpenBookingId pattern the Episode Chain cards use).
+// Navigable week-to-week via calendarWeekOffset.
 function calendarCardMarkup(boot, now) {
-  const base = new Date(now.getFullYear(), now.getMonth() + homeState.calendarMonthOffset, 1);
-  const year = base.getFullYear();
-  const month = base.getMonth();
-  const firstWeekday = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
   const todayStr = schedule.formatLocalDate(now);
+  const base = new Date(now);
+  base.setDate(base.getDate() - base.getDay() + homeState.calendarWeekOffset * 7); // this week's Sunday
   const activeBookings = (homeState.allBookings || []).filter((b) => b.status !== "cancelled");
   const bookingDatesSet = new Set(activeBookings.map((b) => dateStrOf(b.datetime)));
-  const monthLabel = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(base);
+  const weekdayLabels = ["S", "M", "T", "W", "T", "F", "S"];
 
   const cells = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push(`<div class="calendar-cell calendar-cell-empty"></div>`);
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  let weekLabelStart = null;
+  let weekLabelEnd = null;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    const dateStr = schedule.formatLocalDate(d);
+    if (i === 0) weekLabelStart = d;
+    if (i === 6) weekLabelEnd = d;
     const isToday = dateStr === todayStr;
     const hasBooking = bookingDatesSet.has(dateStr);
     cells.push(`
       <button type="button" class="calendar-cell ${isToday ? "calendar-cell-today" : ""}" data-calendar-date="${dateStr}">
-        <span>${d}</span>
+        <span class="calendar-cell-weekday">${weekdayLabels[i]}</span>
+        <span class="calendar-cell-day">${d.getDate()}</span>
         ${hasBooking ? `<span class="calendar-dot"></span>` : ""}
       </button>
     `);
   }
+  const fmt = new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric" });
+  const weekLabel = `${fmt.format(weekLabelStart)} – ${fmt.format(weekLabelEnd)}`;
 
   return `
     <div class="card calendar-card">
       <div class="calendar-header">
         <button type="button" class="btn-link" id="calendar-prev-month" aria-label="${t("calendar.prevMonth")}">‹</button>
-        <h2>${escapeHtml(monthLabel)}</h2>
+        <h2>${escapeHtml(weekLabel)}</h2>
         <button type="button" class="btn-link" id="calendar-next-month" aria-label="${t("calendar.nextMonth")}">›</button>
       </div>
-      <div class="calendar-weekdays">${["S", "M", "T", "W", "T", "F", "S"].map((d) => `<span>${d}</span>`).join("")}</div>
-      <div class="calendar-grid">${cells.join("")}</div>
+      <div class="calendar-grid calendar-grid--week">${cells.join("")}</div>
     </div>
   `;
 }
 
 function attachHomeHandlers(outlet) {
-  const prevMonthBtn = outlet.querySelector("#calendar-prev-month");
-  if (prevMonthBtn) prevMonthBtn.addEventListener("click", () => { homeState.calendarMonthOffset -= 1; renderHomeBody(outlet); });
-  const nextMonthBtn = outlet.querySelector("#calendar-next-month");
-  if (nextMonthBtn) nextMonthBtn.addEventListener("click", () => { homeState.calendarMonthOffset += 1; renderHomeBody(outlet); });
+  const prevWeekBtn = outlet.querySelector("#calendar-prev-month");
+  if (prevWeekBtn) prevWeekBtn.addEventListener("click", () => { homeState.calendarWeekOffset -= 1; renderHomeBody(outlet); });
+  const nextWeekBtn = outlet.querySelector("#calendar-next-month");
+  if (nextWeekBtn) nextWeekBtn.addEventListener("click", () => { homeState.calendarWeekOffset += 1; renderHomeBody(outlet); });
 
   outlet.querySelectorAll("[data-calendar-date]").forEach((cell) => {
     cell.addEventListener("click", () => {
@@ -2014,14 +2007,6 @@ function attachHomeHandlers(outlet) {
   }
 
 
-  const heroCard = outlet.querySelector("#hero-countdown-card");
-  if (heroCard) {
-    heroCard.addEventListener("click", () => {
-      homeState.countdownExpanded = !homeState.countdownExpanded;
-      renderHomeBody(outlet);
-    });
-  }
-
   outlet.querySelectorAll("[data-tick-med]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -2123,24 +2108,93 @@ function attachHomeHandlers(outlet) {
     });
   });
 
-  // --- Daily check-in ---
+  // --- Merged symptoms/notes block (fix #4) ---
+  const captureDraft = () => {
+    const noteInput = outlet.querySelector("#checkin-note-input");
+    homeState.checkinNoteDraft = noteInput ? noteInput.value : "";
+    const notifyInput = outlet.querySelector("#notify-toggle");
+    if (notifyInput) homeState.notifyDraft = notifyInput.checked;
+  };
+
   outlet.querySelectorAll("[data-mood]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const noteInput = outlet.querySelector("#checkin-note-input");
-      homeState.checkinNoteDraft = noteInput ? noteInput.value : "";
+      captureDraft();
       homeState.selectedMood = Number(btn.dataset.mood);
       renderHomeBody(outlet);
     });
   });
+
+  outlet.querySelectorAll("[data-symptom-select]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      captureDraft();
+      const key = btn.dataset.symptomSelect;
+      const customName = btn.dataset.symptomCustomName || "";
+      // Tapping the already-selected chip again deselects it.
+      if (homeState.selectedSymptomKey === key && homeState.selectedSymptomCustomName === customName) {
+        homeState.selectedSymptomKey = null;
+        homeState.selectedSymptomCustomName = "";
+        homeState.selectedIntensity = "";
+      } else {
+        homeState.selectedSymptomKey = key;
+        homeState.selectedSymptomCustomName = customName;
+      }
+      renderHomeBody(outlet);
+    });
+  });
+
+  outlet.querySelectorAll("[data-intensity-select]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      captureDraft();
+      homeState.selectedIntensity = homeState.selectedIntensity === btn.dataset.intensitySelect ? "" : btn.dataset.intensitySelect;
+      renderHomeBody(outlet);
+    });
+  });
+
+  const notifyToggle = outlet.querySelector("#notify-toggle");
+  if (notifyToggle) notifyToggle.addEventListener("change", () => { homeState.notifyDraft = notifyToggle.checked; });
+
+  const addCustomSymptomBtn = outlet.querySelector("#add-custom-symptom-btn");
+  if (addCustomSymptomBtn) {
+    addCustomSymptomBtn.addEventListener("click", () => {
+      captureDraft();
+      openSheet(customSymptomNameSheetMarkup(), (sheetEl) => {
+        sheetEl.querySelector("#custom-symptom-cancel").addEventListener("click", closeSheet);
+        sheetEl.querySelector("#custom-symptom-next").addEventListener("click", () => {
+          const name = sheetEl.querySelector("#custom-symptom-name-input").value.trim();
+          if (!name) return;
+          if (!homeState.customSymptomNames.includes(name)) homeState.customSymptomNames = [...homeState.customSymptomNames, name];
+          homeState.selectedSymptomKey = "custom";
+          homeState.selectedSymptomCustomName = name;
+          closeSheet();
+          renderHomeBody(outlet);
+        });
+      });
+    });
+  }
+
   const saveCheckinBtn = outlet.querySelector("#save-checkin-btn");
   if (saveCheckinBtn) {
     saveCheckinBtn.addEventListener("click", async () => {
-      if (!homeState.selectedMood) return;
+      if (!homeState.selectedMood && !homeState.selectedSymptomKey) return;
       const note = outlet.querySelector("#checkin-note-input").value.trim();
+      const notify = (outlet.querySelector("#notify-toggle") || {}).checked || false;
       saveCheckinBtn.disabled = true;
       try {
-        await store.call("checkins.create", { date: schedule.formatLocalDate(new Date()), mood: homeState.selectedMood, note });
+        if (homeState.selectedSymptomKey) {
+          await store.call("symptoms.create", {
+            date: schedule.formatLocalDate(new Date()),
+            symptom_key: homeState.selectedSymptomKey,
+            custom_name: homeState.selectedSymptomKey === "custom" ? homeState.selectedSymptomCustomName : "",
+            severity: homeState.selectedIntensity, note, notify
+          });
+        } else {
+          await store.call("checkins.create", { date: schedule.formatLocalDate(new Date()), mood: homeState.selectedMood, note });
+        }
         homeState.selectedMood = null;
+        homeState.selectedSymptomKey = null;
+        homeState.selectedSymptomCustomName = "";
+        homeState.selectedIntensity = "";
+        homeState.notifyDraft = false;
         homeState.checkinNoteDraft = "";
         await refreshHome();
       } catch (err) {
@@ -2149,11 +2203,6 @@ function attachHomeHandlers(outlet) {
       }
     });
   }
-  outlet.querySelectorAll("[data-symptom-key]").forEach((btn) => {
-    btn.addEventListener("click", () => openSymptomSheet(btn.dataset.symptomKey, btn.dataset.symptomCustomName));
-  });
-  const addCustomSymptomBtn = outlet.querySelector("#add-custom-symptom-btn");
-  if (addCustomSymptomBtn) addCustomSymptomBtn.addEventListener("click", () => openSymptomSheet("custom", null));
 
   // --- Water: remove the most recent glass logged today. If it's still an
   // unconfirmed optimistic add (undo window not yet expired), this just
@@ -5790,6 +5839,7 @@ async function openBookingCreateSheet(onSaved, defaultEpisodeId) {
         saveBtn.disabled = false;
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     });
   });
@@ -6949,6 +6999,7 @@ function attachEpisodesHandlers(outlet) {
       } catch (err) {
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     });
   }

@@ -584,24 +584,45 @@ function computeGestationalAge(settings, today) {
   };
 }
 
+// Bug fix (dashboard rebuild follow-up): this used to only look at the
+// legacy Appointments sheet, so a booking made through the Bookings flow
+// (the one actually used everywhere now — Episodes, the booking form,
+// etc.) never showed up here at all. Now checks both and returns
+// whichever is soonest. A 'rescheduled' booking's own datetime is stale
+// by definition — its tentative_date is what actually matters now.
 function getNextAppointment(today) {
-  var upcoming = sheetToObjects('Appointments').filter(function (row) {
-    var status = String(row.status || '').toLowerCase();
-    if (status === 'done' || status === 'missed') return false;
-    var dt = toDateTime(row.datetime);
-    return dt && dt.getTime() >= today.getTime();
-  });
-  upcoming.sort(function (a, b) { return toDateTime(a.datetime) - toDateTime(b.datetime); });
-  if (upcoming.length === 0) return null;
+  var fromAppointments = sheetToObjects('Appointments')
+    .filter(function (row) {
+      var status = String(row.status || '').toLowerCase();
+      if (status === 'done' || status === 'missed') return false;
+      var dt = toDateTime(row.datetime);
+      return dt && dt.getTime() >= today.getTime();
+    })
+    .map(function (row) {
+      return {
+        id: row.id, datetime: toDateTime(row.datetime).toISOString(),
+        doctor: row.doctor || '', purpose: row.purpose || '', location: row.location || ''
+      };
+    });
 
-  var next = upcoming[0];
-  return {
-    id: next.id,
-    datetime: toDateTime(next.datetime).toISOString(),
-    doctor: next.doctor || '',
-    purpose: next.purpose || '',
-    location: next.location || ''
-  };
+  var bookingDoneStatuses = ['done', 'waiting_for_report', 'report_uploaded', 'closed', 'cancelled'];
+  var fromBookings = sheetToObjects('Bookings')
+    .filter(function (row) { return bookingDoneStatuses.indexOf(row.status) === -1; })
+    .map(function (row) {
+      var effectiveDt = (row.status === 'rescheduled' && row.tentative_date) ? row.tentative_date : row.datetime;
+      return { id: row.id, datetime: toDateTime(effectiveDt), raw: row };
+    })
+    .filter(function (row) { return row.datetime && row.datetime.getTime() >= today.getTime(); })
+    .map(function (row) {
+      return {
+        id: row.id, datetime: row.datetime.toISOString(),
+        doctor: row.raw.provider || '', purpose: row.raw.title || '', location: row.raw.location || ''
+      };
+    });
+
+  var upcoming = fromAppointments.concat(fromBookings);
+  upcoming.sort(function (a, b) { return new Date(a.datetime) - new Date(b.datetime); });
+  return upcoming.length ? upcoming[0] : null;
 }
 
 function getTodayPendingMedicines(today) {
@@ -1083,7 +1104,8 @@ function symptomsCreate(payload) {
     severity: payload.severity || '',
     bleeding_scale: payload.bleeding_scale || '',
     note: sanitizeText(payload.note, 2000),
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    notify: sanitizeBoolean(payload.notify)
   });
 }
 
@@ -2385,7 +2407,12 @@ var SHEET_SCHEMA = {
   // Symptoms: symptom_key is one of SYMPTOM_KEYS below, or 'custom' (with
   // custom_name filled in) for anything she adds herself. bleeding_scale is
   // only meaningful for the bleeding/spotting symptom keys.
-  Symptoms: ['id', 'date', 'time', 'symptom_key', 'custom_name', 'severity', 'bleeding_scale', 'note', 'created_at'],
+  // notify (dashboard rebuild, fix #4): opt-in per entry, same pattern as
+  // Notes.alert_level — '' / false by default, only set when the person
+  // explicitly turns it on for this one entry. A true row shows up in the
+  // notification bell's list; never computed automatically from severity
+  // or any other field.
+  Symptoms: ['id', 'date', 'time', 'symptom_key', 'custom_name', 'severity', 'bleeding_scale', 'note', 'created_at', 'notify'],
   // Water: each row is one "add a glass" tap (glasses is usually 1, but
   // left numeric in case a future UI lets her log more than one at once).
   Water: ['id', 'date', 'time', 'glasses', 'created_at'],
