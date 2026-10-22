@@ -77,7 +77,7 @@ function scanStrings(label, entries) {
 
 // --- js/i18n.js: every "key": "value" pair in the STRINGS.en table -------
 
-const i18nSrc = fs.readFileSync(path.join(root, "js/i18n.js"), "utf8");
+const i18nSrc = fs.readFileSync(path.join(root, "js/core/i18n.js"), "utf8");
 // Deliberately simple and strict rather than a full JS parser: matches
 // exactly the `"some.key": "some value"` shape every real string in this
 // file uses (confirmed by the sibling i18n-coverage check this project
@@ -89,7 +89,7 @@ const i18nEntries = [...i18nSrc.matchAll(/"([a-zA-Z0-9_.]+)":\s*"((?:[^"\\]|\\.)
   value: m[2].replace(/\\"/g, '"')
 }));
 check("i18n.js: parsed a sane number of string entries", i18nEntries.length > 400);
-scanStrings("js/i18n.js", i18nEntries);
+scanStrings("js/core/i18n.js", i18nEntries);
 
 // --- data/weeks.json: size_comparison + development text only ------------
 
@@ -104,7 +104,7 @@ scanStrings("data/weeks.json", weeksData.weeks.flatMap((w) => [
 
 // --- js/store.js: mock fixture display text (names/notes/labels) ---------
 
-const storeSrc = fs.readFileSync(path.join(root, "js/store.js"), "utf8");
+const storeSrc = fs.readFileSync(path.join(root, "js/core/store.js"), "utf8");
 const mockStringEntries = [...storeSrc.matchAll(/(name|notes|title|text|symptom|note|items|craving_or_aversion|reason|instructions|stop_note)\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
   .map((m, i) => ({ key: `store.js mock ${m[1]} #${i}`, value: m[2].replace(/\\"/g, '"') }));
 scanStrings("js/store.js mock data", mockStringEntries);

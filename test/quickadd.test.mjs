@@ -1,7 +1,7 @@
 // Standalone Node test for js/quickadd.js — the Quick Add natural-language
 // parser. No DOM, no network. Run with: node test/quickadd.test.mjs
-import { parseQuickAdd, parseRelativeDate, parseClockTime, parseVagueTime, parseDuration } from "../js/quickadd.js";
-import { formatLocalDate } from "../js/schedule.js";
+import { parseQuickAdd, parseRelativeDate, parseClockTime, parseVagueTime, parseDuration } from "../js/core/quickadd.js";
+import { formatLocalDate } from "../js/core/schedule.js";
 
 let pass = 0, fail = 0;
 function check(label, cond) {

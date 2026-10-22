@@ -5,15 +5,20 @@
 // response caching, the bootstrap batch load, and data_version polling.
 // See DEVELOPMENT.md for the full architecture.
 
-import { t, setLanguage } from "./i18n.js";
-import * as store from "./store.js";
+import { t, setLanguage } from "./core/i18n.js";
+import * as store from "./core/store.js";
 import {
   computeCountdown, formatDuration, msUntil, isTimePastToday,
   computeCustomCountdown, computeStockCountdown, classifyCountdownState
-} from "./countdown.js";
-import * as schedule from "./schedule.js";
-import { parseQuickAdd } from "./quickadd.js";
-import { icon } from "./icons.js";
+} from "./core/countdown.js";
+import * as schedule from "./core/schedule.js";
+import { parseQuickAdd } from "./core/quickadd.js";
+import { icon } from "./core/icons.js";
+import { openSheet, closeSheet, showUndoToast } from "./ui/sheet.js";
+import {
+  escapeHtml, genericSkeleton, errorMarkup, attachRetryHandler, attachNavButtons,
+  formField, formatDateInput, dateStrOf, formatDisplayDate, formatINR
+} from "./ui/format.js";
 
 const appRoot = document.getElementById("app");
 
@@ -29,94 +34,9 @@ const state = {
 // so the upload sheet opens immediately with that category already chosen.
 let pendingAddPreset = null;
 
-// ---------------------------------------------------------------------------
-// Shared UI: bottom sheets + 6-second undo toasts.
-//
-// Both are appended to document.body (not the router outlet) so they work
-// identically whether opened from Home, the Meds page, or anywhere else,
-// and survive a route change underneath them (closed explicitly on
-// navigation — see attachNavButtons/renderRoute). Only one of each at a
-// time; opening a new one replaces whatever's already showing.
-//
-// The undo pattern used everywhere a delete/stop happens: apply the change
-// to local state and re-render immediately (optimistic), show a toast with
-// Undo, and only fire the real network call once the toast's 6s expire
-// without Undo being pressed. Pressing Undo this restores local state and
-// never touches the network at all — there's nothing to roll back server-
-// side because nothing was ever sent. This is what "no scary confirm
-// dialogs" means in practice: the action already happened, reversibly.
-// ---------------------------------------------------------------------------
-
-function closeSheet() {
-  const el = document.getElementById("active-sheet-overlay");
-  if (el) el.remove();
-}
-
-// innerHtml is the sheet's own content (its own heading + body + actions);
-// onMount(sheetEl) runs right after it's in the DOM, for attaching handlers.
-function openSheet(innerHtml, onMount) {
-  closeSheet();
-  const overlay = document.createElement("div");
-  overlay.className = "sheet-overlay";
-  overlay.id = "active-sheet-overlay";
-  overlay.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${innerHtml}</div>`;
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeSheet(); });
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add("sheet-open"));
-  if (onMount) onMount(overlay.querySelector(".sheet"));
-  return overlay;
-}
-
-let undoToastTimeoutId = null;
-// The commit for whichever toast is currently pending — set whenever one is
-// showing, cleared once it's resolved one way or another (committed,
-// undone, or superseded). closeUndoToast() needs this: "opening a new one
-// replaces whatever's already showing" (see comment above) must still
-// finalize the replaced action, or replacing it would silently cancel a
-// delete that already happened in the UI — exactly the kind of local/
-// backend drift this pattern exists to avoid, not cause.
-let pendingUndoCommit = null;
-
-function closeUndoToast() {
-  if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
-  const el = document.getElementById("active-undo-toast");
-  if (el) el.remove();
-  if (pendingUndoCommit) {
-    const commit = pendingUndoCommit;
-    pendingUndoCommit = null;
-    commit();
-  }
-}
-
-// message: shown plain text. onUndo(): called if the person taps Undo
-// within the window — nothing else happens. onCommit(): called once the
-// toast expires untouched (or gets superseded by another one — see
-// closeUndoToast above) — this is where the real store.call() actually
-// fires.
-function showUndoToast(message, { onUndo, onCommit }, seconds) {
-  closeUndoToast();
-  pendingUndoCommit = onCommit;
-  const toast = document.createElement("div");
-  toast.className = "undo-toast";
-  toast.id = "active-undo-toast";
-  toast.innerHTML = `<span>${escapeHtml(message)}</span><button type="button" class="btn-link undo-toast-btn">${t("common.undo")}</button>`;
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add("undo-toast-open"));
-
-  undoToastTimeoutId = setTimeout(async () => {
-    undoToastTimeoutId = null;
-    pendingUndoCommit = null;
-    toast.remove();
-    await onCommit();
-  }, (seconds || 6) * 1000);
-
-  toast.querySelector(".undo-toast-btn").addEventListener("click", () => {
-    if (undoToastTimeoutId) { clearTimeout(undoToastTimeoutId); undoToastTimeoutId = null; }
-    pendingUndoCommit = null;
-    toast.remove();
-    onUndo();
-  });
-}
+// Bottom sheets + undo toasts live in js/ui/sheet.js (imported above) — see
+// that file for the optimistic-update-then-commit-on-timeout pattern used
+// everywhere a delete/stop happens in this app.
 
 // MamaCare's 4 tabs — everything else (Visits/Bookings, Settings, the
 // journal, Water history, Countdowns, Contacts/Emergency, Medicines used,
@@ -6874,97 +6794,9 @@ async function loadJson(path) {
   return json;
 }
 
-function genericSkeleton(lines) {
-  return `
-    <div class="card">
-      ${Array.from({ length: lines })
-        .map((_, i) => `<div class="skeleton skeleton-line ${i % 3 === 2 ? "skeleton-line--short" : i % 2 ? "skeleton-line--wide" : "skeleton-line--full"}"></div>`)
-        .join("")}
-    </div>
-  `;
-}
-
-function errorMarkup(err) {
-  return `
-    <div class="card">
-      <p class="error-text">${escapeHtml((err && err.message) || t("common.error"))}</p>
-      <button class="btn btn-secondary" id="retry-btn">${t("common.retry")}</button>
-    </div>
-  `;
-}
-
-function attachRetryHandler(outlet, retryFn) {
-  const btn = outlet.querySelector("#retry-btn");
-  if (btn) btn.addEventListener("click", retryFn);
-}
-
-function attachNavButtons(outlet) {
-  outlet.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.addEventListener("click", () => { location.hash = btn.dataset.nav; });
-  });
-}
-
-// Renders a labeled form field, with an optional small hint line underneath.
-function formField(label, inputHtml, hint) {
-  return `
-    <label class="form-field">
-      <span>${label}</span>
-      ${inputHtml}
-      ${hint ? `<small class="field-hint">${hint}</small>` : ""}
-    </label>
-  `;
-}
-
-// "YYYY-MM-DD" for the given Date, in the browser's local time — used for
-// <input type="date"> values and for comparing against sheet date strings.
-function formatDateInput(date) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-// Normalizes a date-ish value (Date, ISO string, or "YYYY-MM-DD") from the
-// API into a plain "YYYY-MM-DD" string for display and comparison.
-function dateStrOf(value) {
-  if (!value) return "";
-  if (value instanceof Date) return formatDateInput(value);
-  const str = String(value);
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
-  const parsed = new Date(str);
-  return isNaN(parsed.getTime()) ? "" : formatDateInput(parsed);
-}
-
-function formatDisplayDate(dateStr) {
-  try {
-    return new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", year: "numeric" }).format(new Date(dateStr));
-  } catch {
-    return dateStr;
-  }
-}
-
-// All money in the app is ₹ via Intl en-IN — e.g. ₹1,25,000.00, Indian
-// digit grouping, never $/USD. Blank/non-numeric amounts show as "" rather
-// than "₹0" or "₹NaN", so an unset amount stays visibly unset.
-function formatINR(amount) {
-  if (amount === "" || amount === null || amount === undefined) return "";
-  const n = Number(amount);
-  if (isNaN(n)) return "";
-  try {
-    return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n);
-  } catch {
-    return "₹" + n.toFixed(2);
-  }
-}
-
-function escapeHtml(value) {
-  if (value === null || value === undefined) return "";
-  return String(value).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[c]));
-}
+// escapeHtml, genericSkeleton, errorMarkup, attachRetryHandler,
+// attachNavButtons, formField, formatDateInput, dateStrOf, formatDisplayDate
+// and formatINR all live in js/ui/format.js (imported above).
 
 // ---------------------------------------------------------------------------
 // Start the app — deliberately last in the file (see the comment near the

@@ -1,7 +1,7 @@
 // Standalone Node test for js/schedule.js — no DOM, no network, no Apps
 // Script runtime needed, since the module itself has none of those
 // dependencies. Run with: node test/schedule.test.mjs
-import * as schedule from "../js/schedule.js";
+import * as schedule from "../js/core/schedule.js";
 
 let pass = 0, fail = 0;
 function check(label, cond) {
