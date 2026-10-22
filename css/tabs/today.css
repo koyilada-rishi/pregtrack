@@ -1,0 +1,154 @@
+/* Today tab — rebuilt to match the remix prototype's card density: a hero
+   banner, a dedicated baby-size card, a 2-column stat grid, and a 4-tile
+   quick-actions grid, all above the existing medicines/coming-up/pinned
+   cards (unchanged). Uses the same --color- and --mc- tokens as the rest
+   of the app (css/style.css's palette adapter), not a separate palette. */
+
+/* ---------- Baby size card ---------- */
+
+.baby-size-card { padding: 16px; }
+
+.baby-size-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gutter-mobile, 12px);
+}
+
+.baby-size-icon {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--mc-tertiary-fixed);
+  color: var(--mc-on-tertiary-fixed-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.baby-size-text { min-width: 0; flex: 1; }
+
+.baby-size-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.baby-size-head h2 { margin: 0; }
+
+.baby-size-measure { font-size: 0.78rem; white-space: nowrap; }
+
+.baby-size-comparison {
+  margin: 4px 0 2px;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.baby-size-development {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+/* ---------- 2-column stat grid (today's regimen + hydration/kicks) ------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gutter-mobile, 12px);
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.stat-grid > .card { margin-bottom: 0; }
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  background: var(--color-surface);
+  border: none;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.stat-tile-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--mc-primary-fixed);
+  color: var(--mc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stat-tile-label {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.stat-tile-value {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+/* ---------- 4-tile quick actions grid ---------- */
+
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--gutter-mobile, 12px);
+  margin-bottom: 16px;
+}
+
+@media (min-width: 420px) {
+  .quick-actions-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+.quick-action-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--color-surface);
+  border: none;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 12px;
+  min-height: 84px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.quick-action-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-surface-muted);
+  color: var(--mc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-action-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+@media (max-width: 360px) {
+  .stat-grid { grid-template-columns: 1fr; }
+}

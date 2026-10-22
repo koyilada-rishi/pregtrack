@@ -74,6 +74,15 @@ const STRINGS = {
     "home.trimester": "Trimester {n}",
     "home.babySize.title": "This week",
     "home.babySize.comingSoon": "Add your due date in Settings to see this week's baby size and development.",
+    "home.babySize.lengthWeight": "~{length} cm · {weight} g",
+
+    "home.todaysRegimen.title": "Today's regimen",
+    "home.todaysRegimen.count": "{taken} of {total} taken",
+    "home.todaysRegimen.none": "Nothing scheduled today",
+
+    "home.quickActions.food": "Food & diet",
+    "home.quickActions.bookings": "Bookings",
+    "home.greetingName": "{greeting}, {name}!",
     "home.nextAppointment.title": "Next appointment",
     "home.nextAppointment.none": "No upcoming appointment scheduled.",
     "home.apptIn": "in {days}d {hours}h {minutes}m",

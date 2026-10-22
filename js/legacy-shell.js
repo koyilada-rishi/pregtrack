@@ -636,17 +636,16 @@ function homeMarkup(boot, logs, weekEntry, now) {
   const hasAnyDose = Object.values(buckets).some((b) => b.length);
 
   return `
-    ${quickAddCardMarkup()}
-
     ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
 
-    ${checkinCardMarkup()}
+    ${babySizeCardMarkup(weekEntry)}
 
-    ${waterCardMarkup(settings)}
+    <div class="stat-grid">
+      ${todaysRegimenTileMarkup(boot, logs, now)}
+      ${isTruthy(settings.kick_counter_enabled) ? kickCounterCardMarkup(settings) : waterCardMarkup(settings)}
+    </div>
 
-    ${kickCounterCardMarkup(settings)}
-
-    ${foodCardMarkup()}
+    ${quickActionsGridMarkup()}
 
     <div class="card">
       <div class="card-head">
@@ -709,9 +708,13 @@ function homeMarkup(boot, logs, weekEntry, now) {
       <a class="card-link" data-nav="#/countdowns">${t("countdowns.seeAll")}</a>
     </div>
 
+    ${quickAddCardMarkup()}
+
+    ${checkinCardMarkup()}
+
+    ${foodCardMarkup()}
+
     <div class="dashboard-actions">
-      <button class="btn btn-secondary" data-nav="#/scan">${t("home.scanDocument")}</button>
-      <button class="btn btn-secondary" data-nav="#/health/new">${t("home.logVitals")}</button>
       <button class="btn btn-emergency" data-nav="#/emergency">${t("home.emergency")}</button>
     </div>
   `;
@@ -946,12 +949,17 @@ function comingUpCardMarkup(boot, logs, now) {
   `;
 }
 
-function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
+function heroGreetingMarkup(now, settings) {
   const greeting = t(greetingKey(now));
+  const name = (settings.wife_name || "").trim();
+  return name ? t("home.greetingName", { greeting, name: escapeHtml(name) }) : escapeHtml(greeting);
+}
+
+function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
   if (!countdown) {
     return `
       <div class="card hero-countdown-card">
-        <p class="hero-greeting">${escapeHtml(greeting)}</p>
+        <p class="hero-greeting">${heroGreetingMarkup(now, settings)}</p>
         <p class="empty">${t("home.dueDateUnset")}</p>
       </div>
     `;
@@ -968,14 +976,77 @@ function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
 
   return `
     <button type="button" class="card hero-countdown-card" id="hero-countdown-card" data-expanded="${homeState.countdownExpanded ? "1" : "0"}">
-      <p class="hero-greeting">${escapeHtml(greeting)}</p>
+      <p class="hero-greeting">${heroGreetingMarkup(now, settings)}</p>
       <div class="hero-days" id="hero-days">${daysText}</div>
       <p class="hero-week-line">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${weekPct}%"></div></div>
       ${dueDateLabel ? `<p class="hero-due-date">${t("home.dueDateSentence", { date: dueDateLabel })}</p>` : ""}
-      ${weekEntry ? `<p class="hero-baby-size">${t("home.babySize", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>` : ""}
       <div class="hero-detail" id="hero-detail" ${homeState.countdownExpanded ? "" : "hidden"}></div>
     </button>
+  `;
+}
+
+// Separate "growth comparison" card below the hero — gives the baby-size
+// content its own visual weight instead of a single line buried in the
+// countdown card.
+function babySizeCardMarkup(weekEntry) {
+  if (!weekEntry) {
+    return `
+      <div class="card baby-size-card">
+        <h2>${t("home.babySize.title")}</h2>
+        <p class="empty">${t("home.babySize.comingSoon")}</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="card baby-size-card">
+      <div class="baby-size-row">
+        <span class="baby-size-icon" aria-hidden="true">${icon("spa", "icon-lg")}</span>
+        <div class="baby-size-text">
+          <div class="baby-size-head">
+            <h2>${t("home.babySize.title")}</h2>
+            <span class="muted baby-size-measure">${t("home.babySize.lengthWeight", { length: weekEntry.length_cm, weight: weekEntry.weight_g })}</span>
+          </div>
+          <p class="baby-size-comparison">${t("home.babySize", { comparison: escapeHtml(weekEntry.size_comparison) })}</p>
+          ${weekEntry.development ? `<p class="muted baby-size-development">${escapeHtml(weekEntry.development)}</p>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// "X of Y taken" — count only, never a percentage (see the app-wide
+// adherence copy rule). Taps through to the Meds tab for the full list.
+function todaysRegimenTileMarkup(boot, logs, now) {
+  const buckets = todaysMedicineSlots(boot, logs, now);
+  const all = Object.values(buckets).flat();
+  const taken = all.filter((it) => it.slot.status === "taken").length;
+  return `
+    <button type="button" class="stat-tile" data-nav="#/meds">
+      <span class="stat-tile-icon">${icon("medication", "icon-lg")}</span>
+      <span class="stat-tile-label">${t("home.todaysRegimen.title")}</span>
+      <span class="stat-tile-value">${all.length ? t("home.todaysRegimen.count", { taken, total: all.length }) : t("home.todaysRegimen.none")}</span>
+    </button>
+  `;
+}
+
+const QUICK_ACTION_TILES = [
+  { nav: "#/scan", icon: "document_scanner", labelKey: "home.scanDocument" },
+  { nav: "#/health/new", icon: "vital_signs", labelKey: "home.logVitals" },
+  { nav: "#/food", icon: "restaurant", labelKey: "home.quickActions.food" },
+  { nav: "#/bookings", icon: "calendar_clock", labelKey: "home.quickActions.bookings" }
+];
+
+function quickActionsGridMarkup() {
+  return `
+    <div class="quick-actions-grid">
+      ${QUICK_ACTION_TILES.map((it) => `
+        <button type="button" class="quick-action-tile" data-nav="${it.nav}">
+          <span class="quick-action-icon">${icon(it.icon, "icon-lg")}</span>
+          <span class="quick-action-label">${t(it.labelKey)}</span>
+        </button>
+      `).join("")}
+    </div>
   `;
 }
 
