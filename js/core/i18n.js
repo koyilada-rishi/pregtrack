@@ -350,6 +350,8 @@ const STRINGS = {
     "records.type.other": "Other",
     "records.needsSorting": "Needs sorting",
     "records.folderCount": "{n}",
+    "records.episodes.title": "Connected records",
+    "records.episodes.bill": "Bill",
     "records.filter.search": "Search title, doctor, notes",
     "records.filter.doctor": "Doctor",
     "records.filter.allDoctors": "All",

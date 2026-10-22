@@ -34,6 +34,12 @@ const state = {
 // so the upload sheet opens immediately with that category already chosen.
 let pendingAddPreset = null;
 
+// Set by an Episode Chain card in Records (see episodeCardMarkup) right
+// before navigating to #/bookings, so that booking's own detail opens
+// immediately instead of landing on the general bookings list — same
+// one-shot "queue it, consume it once" pattern as pendingAddPreset above.
+let pendingOpenBookingId = null;
+
 // Bottom sheets + undo toasts live in js/ui/sheet.js (imported above) — see
 // that file for the optimistic-update-then-commit-on-timeout pattern used
 // everywhere a delete/stop happens in this app.
@@ -4620,6 +4626,8 @@ const RECORD_TYPE_ICONS = { report: "📄", scan: "🩻", prescription: "💊", 
 
 const recordsState = {
   files: [],
+  bookings: [],
+  bills: [],
   loading: true,
   folderFilter: "", // "" = folder-tile view; a type_v2 or "needs_sorting" = list filtered to it
   search: "",
@@ -4651,7 +4659,14 @@ async function renderRecordsView(outlet) {
   outlet.innerHTML = genericSkeleton(6);
 
   try {
-    recordsState.files = await store.call("files.list", {});
+    const [files, bookings, bills] = await Promise.all([
+      store.call("files.list", {}),
+      store.call("bookings.list", {}),
+      store.call("bills.list", {})
+    ]);
+    recordsState.files = files;
+    recordsState.bookings = bookings;
+    recordsState.bills = bills;
     recordsState.loading = false;
     renderRecordsBody(outlet);
   } catch (err) {
@@ -4659,6 +4674,67 @@ async function renderRecordsView(outlet) {
     outlet.innerHTML = errorMarkup(err);
     attachRetryHandler(outlet, () => renderRecordsView(outlet));
   }
+}
+
+// Episode chains: a booking plus whatever's directly linked to it (lab
+// reports/scans/prescriptions via Files.linked_booking_id, a bill via
+// Bills.booking_id) shown as one connected trail — only for bookings that
+// actually have something linked, sorted most recent first. Neutral
+// labels only: no diagnosis text, no insurance, no OCR/AI badges.
+function recordsEpisodesOf() {
+  return recordsState.bookings
+    .map((b) => ({
+      booking: b,
+      files: recordsState.files.filter((f) => f.linked_booking_id === b.id),
+      bill: recordsState.bills.find((bill) => bill.booking_id === b.id) || null
+    }))
+    .filter((ep) => ep.files.length || ep.bill)
+    .sort((a, b) => String(b.booking.datetime).localeCompare(String(a.booking.datetime)));
+}
+
+function episodeChainsMarkup() {
+  const episodes = recordsEpisodesOf();
+  if (!episodes.length) return "";
+  return `
+    <div class="episodes-section">
+      <h2 class="episodes-heading">${t("records.episodes.title")}</h2>
+      ${episodes.map((ep) => episodeCardMarkup(ep)).join("")}
+    </div>
+  `;
+}
+
+function episodeStepMarkup(icon_, title, subtitle, trailing) {
+  return `
+    <li class="episode-step">
+      <span class="episode-step-icon">${icon_}</span>
+      <span class="episode-step-body">
+        <span class="episode-step-title">${title}</span>
+        ${subtitle ? `<span class="muted episode-step-subtitle">${subtitle}</span>` : ""}
+      </span>
+      ${trailing ? `<span class="episode-step-trailing">${trailing}</span>` : ""}
+    </li>
+  `;
+}
+
+function episodeCardMarkup(ep) {
+  const b = ep.booking;
+  const steps = [
+    episodeStepMarkup(BOOKING_TYPE_ICON[b.type] || "📋", escapeHtml(b.title), escapeHtml(b.provider || ""), escapeHtml(formatApptDateTime(b.datetime)))
+  ];
+  ep.files
+    .slice()
+    .sort((a, c) => String(a.date || "").localeCompare(String(c.date || "")))
+    .forEach((f) => {
+      steps.push(episodeStepMarkup(RECORD_TYPE_V2_ICONS[f.type_v2] || "🗂️", escapeHtml(f.title), t("records.type." + (f.type_v2 || "other")), f.date ? escapeHtml(recordDateLabel(f)) : ""));
+    });
+  if (ep.bill) {
+    steps.push(episodeStepMarkup("🧾", t("records.episodes.bill"), t("bookings.bill." + ep.bill.status), ep.bill.amount ? escapeHtml(formatINR(ep.bill.amount)) : ""));
+  }
+  return `
+    <div class="episode-card" data-open-booking="${escapeHtml(b.id)}">
+      <ul class="episode-steps">${steps.join("")}</ul>
+    </div>
+  `;
 }
 
 // Every distinct doctor name among files in the currently-open folder (not
@@ -4739,6 +4815,7 @@ function recordsTopBodyMarkup() {
         </button>
       `).join("")}
     </div>
+    ${episodeChainsMarkup()}
   `;
 }
 
@@ -4752,6 +4829,12 @@ function renderRecordsTopBody(outlet) {
 function attachRecordsTopBodyHandlers(outlet) {
   outlet.querySelectorAll("[data-open-folder]").forEach((btn) => {
     btn.addEventListener("click", () => { recordsState.folderFilter = btn.dataset.openFolder; renderRecordsBody(outlet); });
+  });
+  outlet.querySelectorAll(".episode-card[data-open-booking]").forEach((card) => {
+    card.addEventListener("click", () => {
+      pendingOpenBookingId = card.dataset.openBooking;
+      location.hash = "#/bookings";
+    });
   });
   attachRecordsResultsHandlers(outlet);
 }
@@ -5334,6 +5417,11 @@ async function renderBookingsView(outlet) {
     bookingsState.bookings = bookings;
     bookingsState.bills = bills;
     bookingsState.loading = false;
+    if (pendingOpenBookingId) {
+      const target = bookings.find((b) => b.id === pendingOpenBookingId);
+      pendingOpenBookingId = null;
+      if (target) { await openBookingDetail(outlet, target); return; }
+    }
     renderBookingsBody(outlet);
   } catch (err) {
     bookingsState.loading = false;
