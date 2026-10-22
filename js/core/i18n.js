@@ -683,6 +683,8 @@ const STRINGS = {
     "episodes.finance.other": "Other",
 
     "episodes.bookings.title": "Bookings",
+    "episodes.bookings.status": "Status",
+    "episodes.bookings.viewFull": "View full",
     "episodes.prescription.title": "Prescription",
     "episodes.prescription.noVisit": "Add a doctor visit booking to this episode to track its prescription here.",
     "episodes.prescription.filesLabel": "Prescription file",
@@ -796,6 +798,8 @@ const STRINGS = {
     "bookings.via.walk_in": "Walk-in",
 
     "bookings.form.titleNew": "Add booking",
+    "bookings.form.titleEdit": "Edit booking",
+    "bookings.confirmDelete": "Delete this booking?",
     "bookings.form.type": "Type",
     "bookings.form.title": "Title",
     "bookings.form.provider": "Provider / lab",

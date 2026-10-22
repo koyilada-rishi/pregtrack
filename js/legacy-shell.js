@@ -17,7 +17,7 @@ import { icon } from "./core/icons.js";
 import { openSheet, closeSheet, showUndoToast } from "./ui/sheet.js";
 import {
   escapeHtml, genericSkeleton, errorMarkup, attachRetryHandler, attachNavButtons,
-  formField, formatDateInput, dateStrOf, formatDisplayDate, formatINR
+  formField, formatDateInput, dateStrOf, formatDisplayDate, formatINR, formatDatetimeLocalInput
 } from "./ui/format.js";
 
 const appRoot = document.getElementById("app");
@@ -5847,6 +5847,126 @@ async function openBookingCreateSheet(onSaved, defaultEpisodeId) {
 const MEDIC_KINDS_LIST = ["vaccine", "shot", "other"];
 const BOOKING_VIA_LIST = ["call", "online", "in_person", "walk_in"];
 
+// Episode Detail Block 5: edit a booking's own fields AND its status
+// (including a reschedule's tentative date) without leaving the episode.
+// A separate, trimmer sheet from openBookingCreateSheet's — no episode
+// picker (the episode never changes here) but with the status control
+// the create sheet intentionally omits (a brand-new booking is always
+// "booked").
+function openBookingEditSheet(booking, onSaved) {
+  const b = booking;
+  openSheet(`
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <h2>${t("bookings.form.titleEdit")}</h2>
+    <form id="booking-edit-form">
+      ${formField(t("bookings.form.type"), `<select class="field" name="type" id="booking-edit-type-select">${BOOKING_TYPES_LIST.map((ty) => `<option value="${ty}" ${b.type === ty ? "selected" : ""}>${t("bookings.type." + ty)}</option>`).join("")}</select>`)}
+      ${formField(t("bookings.form.title"), `<input class="field" name="title" required value="${escapeHtml(b.title)}" />`)}
+      ${formField(t("bookings.form.provider"), `<input class="field" name="provider" value="${escapeHtml(b.provider || "")}" />`)}
+      ${formField(t("bookings.form.datetime"), `<input class="field" type="datetime-local" name="datetime" required value="${escapeHtml(formatDatetimeLocalInput(b.datetime))}" />`)}
+
+      ${formField(t("episodes.bookings.status"), `
+        <select class="field" name="status" id="booking-edit-status-select">${BOOKING_STATUSES_LIST.map((s) => `<option value="${s}" ${b.status === s ? "selected" : ""}>${t("bookings.status." + s)}</option>`).join("")}</select>
+      `)}
+      <div id="booking-edit-tentative-field" ${b.status === "rescheduled" ? "" : "hidden"}>
+        ${formField(t("bookings.tentativeDateField"), `<input class="field" type="date" name="tentative_date" value="${escapeHtml(b.tentative_date || "")}" />`)}
+      </div>
+
+      ${formField(t("bookings.form.reason"), `<input class="field" name="reason" value="${escapeHtml(b.reason || "")}" />`)}
+      ${formField(t("bookings.form.suggestedBy"), `
+        <select class="field" name="suggested_by"><option value="">—</option><option value="doctor" ${b.suggested_by === "doctor" ? "selected" : ""}>${t("bookings.form.suggestedBy.doctor")}</option><option value="patient" ${b.suggested_by === "patient" ? "selected" : ""}>${t("bookings.form.suggestedBy.patient")}</option></select>
+      `)}
+
+      <div id="booking-edit-type-fields-lab" hidden>
+        ${formField(t("bookings.form.labCenterName"), `<input class="field" name="lab_center_name" value="${escapeHtml(b.lab_center_name || "")}" />`)}
+        ${formField(t("bookings.form.labCenterNumber"), `<input class="field" name="lab_center_number" value="${escapeHtml(b.lab_center_number || "")}" />`)}
+      </div>
+      <div id="booking-edit-type-fields-medic" hidden>
+        ${formField(t("bookings.form.medicShopName"), `<input class="field" name="medic_shop_name" value="${escapeHtml(b.medic_shop_name || "")}" />`)}
+        ${formField(t("bookings.form.medicKind"), `<select class="field" name="medic_kind">${MEDIC_KINDS_LIST.map((k) => `<option value="${k}" ${b.medic_kind === k ? "selected" : ""}>${t("bookings.form.medicKind." + k)}</option>`).join("")}</select>`)}
+      </div>
+
+      ${formField(t("bookings.form.bookedVia"), `<select class="field" name="booked_via"><option value="">—</option>${BOOKING_VIA_LIST.map((v) => `<option value="${v}" ${b.booked_via === v ? "selected" : ""}>${t("bookings.via." + v)}</option>`).join("")}</select>`)}
+      ${formField(t("bookings.form.location"), `<input class="field" name="location" value="${escapeHtml(b.location || "")}" />`)}
+      ${formField(t("bookings.form.approxReportDays"), `<input class="field" type="number" min="0" name="approx_report_days" value="${escapeHtml(b.approx_report_days || "")}" />`, t("bookings.form.approxReportDaysHint"))}
+      <p class="error-text" id="booking-edit-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="booking-edit-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary" id="booking-edit-save">${t("common.save")}</button>
+      </div>
+      <button type="button" class="btn-link btn-link--danger" id="booking-edit-delete">${t("common.delete")}</button>
+    </form>
+  `, (sheetEl) => {
+    const typeSelect = sheetEl.querySelector("#booking-edit-type-select");
+    const labFields = sheetEl.querySelector("#booking-edit-type-fields-lab");
+    const medicFields = sheetEl.querySelector("#booking-edit-type-fields-medic");
+    const applyTypeFields = () => {
+      const ty = typeSelect.value;
+      labFields.hidden = !(ty === "scan" || ty === "blood_test");
+      medicFields.hidden = !(ty === "vaccine" || ty === "other");
+    };
+    typeSelect.addEventListener("change", applyTypeFields);
+    applyTypeFields();
+
+    const statusSelect = sheetEl.querySelector("#booking-edit-status-select");
+    const tentativeField = sheetEl.querySelector("#booking-edit-tentative-field");
+    statusSelect.addEventListener("change", () => {
+      tentativeField.hidden = statusSelect.value !== "rescheduled";
+    });
+
+    sheetEl.querySelector("#booking-edit-cancel").addEventListener("click", closeSheet);
+
+    sheetEl.querySelector("#booking-edit-delete").addEventListener("click", async () => {
+      if (!confirm(t("bookings.confirmDelete"))) return;
+      try {
+        await store.call("bookings.delete", { id: b.id });
+        closeSheet();
+        await onSaved();
+      } catch (err) {
+        const errEl = sheetEl.querySelector("#booking-edit-error");
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+
+    sheetEl.querySelector("#booking-edit-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(event.target);
+      const saveBtn = sheetEl.querySelector("#booking-edit-save");
+      const errEl = sheetEl.querySelector("#booking-edit-error");
+      saveBtn.disabled = true;
+      errEl.hidden = true;
+      try {
+        const status = fd.get("status");
+        const payload = {
+          id: b.id,
+          type: fd.get("type"), title: fd.get("title").trim(), provider: fd.get("provider").trim(),
+          datetime: fd.get("datetime") ? new Date(fd.get("datetime")).toISOString() : "",
+          status,
+          tentative_date: status === "rescheduled" ? fd.get("tentative_date") : "",
+          booked_via: fd.get("booked_via") || "", location: fd.get("location").trim(),
+          approx_report_days: fd.get("approx_report_days") || "",
+          reason: fd.get("reason").trim(),
+          suggested_by: fd.get("suggested_by") || "",
+          lab_center_name: fd.get("lab_center_name") || "",
+          lab_center_number: fd.get("lab_center_number") || "",
+          medic_shop_name: fd.get("medic_shop_name") || "",
+          medic_kind: (fd.get("type") === "vaccine" || fd.get("type") === "other") ? (fd.get("medic_kind") || "") : ""
+        };
+        if (status === "rescheduled" && !payload.tentative_date) throw new Error(t("bookings.tentativeDateRequired"));
+        await store.call("bookings.update", payload);
+        closeSheet();
+        await onSaved();
+      } catch (err) {
+        saveBtn.disabled = false;
+        errEl.textContent = err.message || t("common.error");
+        errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  });
+}
+
 async function openBookingDetail(outlet, booking) {
   outlet.innerHTML = genericSkeleton(5);
   try {
@@ -7011,10 +7131,16 @@ function episodeDetailMarkup() {
       ${
         episodesState.detailBookings.length
           ? `<ul class="entity-list">${episodesState.detailBookings.map((b) => `
-              <li class="entity-row tap-row" data-open-episode-booking="${escapeHtml(b.id)}">
+              <li class="entity-row">
                 <div class="entity-main">
                   <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</strong>
                   <span class="muted">${escapeHtml(formatApptDateTime(b.datetime))} · ${t("bookings.status." + b.status)}</span>
+                  ${b.status === "rescheduled" && b.tentative_date ? `<span class="muted">${t("bookings.tentativeDate", { date: formatDisplayDate(b.tentative_date) })}</span>` : ""}
+                </div>
+                <div class="entity-actions">
+                  <button type="button" class="btn-link" data-open-episode-booking="${escapeHtml(b.id)}">${t("episodes.bookings.viewFull")}</button>
+                  <button type="button" class="btn-link" data-edit-episode-booking="${escapeHtml(b.id)}">${t("common.edit")}</button>
+                  <button type="button" class="btn-link btn-link--danger" data-delete-episode-booking="${escapeHtml(b.id)}">${t("common.delete")}</button>
                 </div>
               </li>
             `).join("")}</ul>`
@@ -7177,6 +7303,26 @@ function attachEpisodesHandlers(outlet) {
     row.addEventListener("click", () => {
       pendingOpenBookingId = row.dataset.openEpisodeBooking;
       location.hash = "#/bookings";
+    });
+  });
+
+  outlet.querySelectorAll("[data-edit-episode-booking]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const booking = episodesState.detailBookings.find((b) => b.id === btn.dataset.editEpisodeBooking);
+      if (!booking) return;
+      openBookingEditSheet(booking, () => openEpisodeDetail(outlet, episodesState.detail));
+    });
+  });
+
+  outlet.querySelectorAll("[data-delete-episode-booking]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("bookings.confirmDelete"))) return;
+      try {
+        await store.call("bookings.delete", { id: btn.dataset.deleteEpisodeBooking });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
     });
   });
 

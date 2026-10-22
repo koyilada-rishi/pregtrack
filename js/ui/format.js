@@ -63,6 +63,18 @@ export function formatDateInput(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+// "YYYY-MM-DDTHH:mm" for the given ISO-ish value, in the browser's local
+// time — used to pre-fill an <input type="datetime-local"> when editing an
+// existing record (a plain `.slice(0, 16)` of the ISO string would show UTC
+// instead of local time, shifting the displayed hour).
+export function formatDatetimeLocalInput(isoValue) {
+  if (!isoValue) return "";
+  const date = new Date(isoValue);
+  if (isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 // Normalizes a date-ish value (Date, ISO string, or "YYYY-MM-DD") from the
 // API into a plain "YYYY-MM-DD" string for display and comparison.
 export function dateStrOf(value) {
