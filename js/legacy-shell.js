@@ -6473,7 +6473,10 @@ const episodesState = {
   prescriptionEditingNote: null,
   // Block 2 (Medicines): add/edit form toggle, null editing = "new".
   medicineFormOpen: false,
-  medicineEditing: null
+  medicineEditing: null,
+  // Block 3 (Reports): add/edit form toggle, null editing = "new".
+  reportFormOpen: false,
+  reportEditing: null
 };
 
 const EPISODE_BOOKING_CATEGORY = { doctor_visit: "visits", scan: "labs", blood_test: "labs", vaccine: "medics", other: "medics" };
@@ -6512,6 +6515,8 @@ async function openEpisodeDetail(outlet, episode) {
   episodesState.noteFormOpen = false;
   episodesState.medicineFormOpen = false;
   episodesState.medicineEditing = null;
+  episodesState.reportFormOpen = false;
+  episodesState.reportEditing = null;
   if (episodesState.detail && episodesState.detail.id !== episode.id) {
     episodesState.prescriptionNoteFormOpenFor = null;
     episodesState.prescriptionEditingNote = null;
@@ -6788,6 +6793,83 @@ function episodeMedicineFormMarkup(editing) {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Episode Detail, Block 3: Reports — "+ Add report": type (scan/blood/
+// urine/other), file/photo/PDF, date, amount. Scans live here, not as a
+// separate app section (the old standalone Scan tab/placeholder is gone —
+// see the nav rebuild). Prescription-type files are Block 1's, excluded
+// here so nothing shows twice.
+// ---------------------------------------------------------------------------
+
+function episodeReportFilesOf() {
+  return episodesState.detailFiles.filter((f) => f.type_v2 !== "prescription");
+}
+
+function reportsBlockMarkup() {
+  const files = episodeReportFilesOf();
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${t("episodes.reports.title")}</h2>
+        <button type="button" class="btn-add" id="episode-add-report-btn" aria-label="${t("episodes.reports.add")}">+</button>
+      </div>
+      ${
+        files.length
+          ? `<ul class="entity-list">${files.map((f) => episodeReportRowMarkup(f)).join("")}</ul>`
+          : `<p class="empty">${t("episodes.reports.none")}</p>`
+      }
+      ${episodesState.reportFormOpen ? episodeReportFormMarkup(episodesState.reportEditing) : ""}
+    </div>
+  `;
+}
+
+function episodeReportRowMarkup(f) {
+  return `
+    <li class="entity-row">
+      <div class="entity-main">
+        <strong>${recordIcon(f)} ${escapeHtml(f.title)}</strong>
+        <span class="muted">${f.report_type ? t("episodes.reports.type." + f.report_type) + " · " : ""}${f.date ? escapeHtml(formatDisplayDate(f.date)) : t("records.noDate")}</span>
+      </div>
+      <div class="entity-actions">
+        <button type="button" class="btn-link" data-edit-episode-report="${escapeHtml(f.id)}">${t("common.edit")}</button>
+        <button type="button" class="btn-link btn-link--danger" data-delete-episode-report="${escapeHtml(f.id)}">${t("common.delete")}</button>
+      </div>
+    </li>
+  `;
+}
+
+function episodeReportFormMarkup(editing) {
+  const f = editing || {};
+  const isNew = !editing;
+  return `
+    <form id="episode-report-form">
+      ${isNew ? `
+        <label class="btn btn-secondary">
+          ${t("episodes.reports.chooseFile")}
+          <input type="file" accept="image/*,application/pdf" id="episode-report-file-input" hidden required />
+        </label>
+        <p class="muted" id="episode-report-file-name"></p>
+      ` : ""}
+      ${formField(t("episodes.reports.type"), `
+        <select class="field" name="report_type">
+          <option value="">—</option>
+          <option value="scan" ${f.report_type === "scan" ? "selected" : ""}>${t("episodes.reports.type.scan")}</option>
+          <option value="blood" ${f.report_type === "blood" ? "selected" : ""}>${t("episodes.reports.type.blood")}</option>
+          <option value="urine" ${f.report_type === "urine" ? "selected" : ""}>${t("episodes.reports.type.urine")}</option>
+          <option value="other" ${f.report_type === "other" ? "selected" : ""}>${t("episodes.reports.type.other")}</option>
+        </select>
+      `)}
+      ${formField(t("episodes.reports.date"), `<input class="field" type="date" name="date" value="${escapeHtml(f.date || "")}" />`)}
+      ${isNew ? formField(t("episodes.form.amount"), `<div class="field-with-prefix"><span class="field-prefix">₹</span><input class="field" type="number" min="0" step="0.01" name="amount" /></div>`, t("episodes.form.amountHint")) : ""}
+      <p class="error-text" id="episode-report-form-error" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="episode-report-cancel">${t("common.cancel")}</button>
+        <button type="submit" class="btn btn-primary">${t("common.save")}</button>
+      </div>
+    </form>
+  `;
+}
+
 function episodeDetailMarkup() {
   const ep = episodesState.detail;
   const dateRange = ep.end_date
@@ -6831,23 +6913,7 @@ function episodeDetailMarkup() {
       }
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h2>${t("episodes.reports.title")}</h2>
-        <label class="btn-add" aria-label="${t("episodes.reports.add")}">+<input type="file" accept="image/*,application/pdf" id="episode-report-input" hidden /></label>
-      </div>
-      ${(() => {
-        // Prescription files belong to Block 1 above, not here — exclude
-        // them so the same file never shows twice.
-        const reportFiles = episodesState.detailFiles.filter((f) => f.type_v2 !== "prescription");
-        return reportFiles.length
-          ? `<ul class="entity-list">${reportFiles.map((f) => `
-              <li class="entity-row"><div class="entity-main">${recordIcon(f)} ${escapeHtml(f.title)}</div></li>
-            `).join("")}</ul>`
-          : `<p class="empty">${t("episodes.reports.none")}</p>`;
-      })()}
-      <p class="error-text" id="episode-report-error" hidden></p>
-    </div>
+    ${reportsBlockMarkup()}
 
     <div class="card">
       <div class="card-head">
@@ -7196,25 +7262,89 @@ function attachEpisodesHandlers(outlet) {
     });
   }
 
-  const reportInput = outlet.querySelector("#episode-report-input");
-  if (reportInput) {
-    reportInput.addEventListener("change", async (event) => {
-      const file = event.target.files[0];
+  // --- Block 3: Reports ---
+  const addReportBtn = outlet.querySelector("#episode-add-report-btn");
+  if (addReportBtn) {
+    addReportBtn.addEventListener("click", () => {
+      episodesState.reportFormOpen = true;
+      episodesState.reportEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-edit-episode-report]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const file = episodesState.detailFiles.find((f) => f.id === btn.dataset.editEpisodeReport);
       if (!file) return;
-      const errEl = outlet.querySelector("#episode-report-error");
+      episodesState.reportFormOpen = true;
+      episodesState.reportEditing = file;
+      renderEpisodesBody(outlet);
+    });
+  });
+  const reportCancelBtn = outlet.querySelector("#episode-report-cancel");
+  if (reportCancelBtn) {
+    reportCancelBtn.addEventListener("click", () => {
+      episodesState.reportFormOpen = false;
+      episodesState.reportEditing = null;
+      renderEpisodesBody(outlet);
+    });
+  }
+  outlet.querySelectorAll("[data-delete-episode-report]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(t("episodes.reports.confirmDelete"))) return;
+      try {
+        await store.call("files.delete", { id: btn.dataset.deleteEpisodeReport });
+        await openEpisodeDetail(outlet, episodesState.detail);
+      } catch (err) {
+        alert(err.message || t("common.error"));
+      }
+    });
+  });
+
+  const reportFileInput = outlet.querySelector("#episode-report-file-input");
+  if (reportFileInput) {
+    reportFileInput.addEventListener("change", () => {
+      const file = reportFileInput.files[0];
+      const nameEl = outlet.querySelector("#episode-report-file-name");
+      if (file && nameEl) nameEl.textContent = file.name;
+    });
+  }
+
+  const reportForm = outlet.querySelector("#episode-report-form");
+  if (reportForm) {
+    reportForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(reportForm);
+      const errEl = reportForm.querySelector("#episode-report-form-error");
       errEl.hidden = true;
       try {
-        const dataUrl = await readFileAsDataUrl(file);
-        const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
-        await store.call("files.upload", {
-          title: titleFromFilename(file.name), type: "document", type_v2: "other",
-          episode_id: episodesState.detail.id,
-          filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
-        });
+        const reportType = fd.get("report_type") || "";
+        const date = fd.get("date") || "";
+        if (episodesState.reportEditing) {
+          await store.call("files.update", { id: episodesState.reportEditing.id, report_type: reportType, date });
+        } else {
+          const fileInput = outlet.querySelector("#episode-report-file-input");
+          const file = fileInput && fileInput.files[0];
+          if (!file) throw new Error(t("episodes.reports.fileRequired"));
+          const dataUrl = await readFileAsDataUrl(file);
+          const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl);
+          const type_v2 = reportType === "scan" ? "scan_report" : reportType === "blood" || reportType === "urine" ? "lab_report" : "other";
+          await store.call("files.upload", {
+            title: titleFromFilename(file.name), type: "document", type_v2, report_type: reportType,
+            date, episode_id: episodesState.detail.id,
+            filename: file.name, mimeType: (match && match[1]) || file.type, base64: match ? match[2] : ""
+          });
+          const amount = fd.get("amount");
+          if (amount) {
+            await store.call("bills.create", { episode_id: episodesState.detail.id, amount, status: "pay_on_visit", notes: titleFromFilename(file.name) });
+          }
+        }
+        episodesState.reportFormOpen = false;
+        episodesState.reportEditing = null;
         await openEpisodeDetail(outlet, episodesState.detail);
       } catch (err) {
         errEl.textContent = err.message || t("common.error");
         errEl.hidden = false;
+        errEl.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     });
   }

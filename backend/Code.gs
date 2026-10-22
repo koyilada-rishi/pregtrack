@@ -1518,13 +1518,14 @@ var FILE_TYPES = ['report', 'scan', 'prescription', 'document'];
 var MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // ~8 MB
 
 var FILE_TYPES_V2 = ['prescription', 'lab_report', 'scan_report', 'bill', 'medicine_photo', 'other'];
+var REPORT_TYPES = ['scan', 'blood', 'urine', 'other'];
 
 function filesList(payload) {
   var rows = listRows('Files').map(function (r) {
     return {
       id: r.id, title: r.title, type: r.type, date: dateStrOf(r.date), doctor: r.doctor, notes: r.notes,
       type_v2: r.type_v2 || '', linked_booking_id: r.linked_booking_id || '', linked_file_ids: r.linked_file_ids || '',
-      episode_id: r.episode_id || ''
+      episode_id: r.episode_id || '', report_type: r.report_type || ''
     };
   });
   if (payload) {
@@ -1555,6 +1556,10 @@ function filesUpdate(payload) {
   if (payload.hasOwnProperty('doctor')) fields.doctor = sanitizeText(payload.doctor, 200);
   if (payload.hasOwnProperty('notes')) fields.notes = sanitizeText(payload.notes, 1000);
   if (payload.hasOwnProperty('date')) fields.date = payload.date ? sanitizeDate(payload.date, 'date') : '';
+  if (payload.hasOwnProperty('report_type')) {
+    if (payload.report_type) validateEnum(payload.report_type, REPORT_TYPES, 'report_type');
+    fields.report_type = payload.report_type || '';
+  }
   return updateRowById('Files', payload.id, fields);
 }
 
@@ -1599,6 +1604,7 @@ function filesUpload(payload) {
   requireFields(payload, ['title', 'type', 'base64', 'filename']);
   if (FILE_TYPES.indexOf(payload.type) === -1) throw new Error('Invalid file type: ' + payload.type);
   if (payload.type_v2) validateEnum(payload.type_v2, FILE_TYPES_V2, 'type_v2');
+  if (payload.report_type) validateEnum(payload.report_type, REPORT_TYPES, 'report_type');
 
   var bytes;
   try {
@@ -1632,7 +1638,8 @@ function filesUpload(payload) {
     notes: sanitizeText(payload.notes, 1000),
     type_v2: payload.type_v2 || '',
     linked_booking_id: sanitizeText(payload.linked_booking_id, 100),
-    episode_id: sanitizeText(payload.episode_id, 100)
+    episode_id: sanitizeText(payload.episode_id, 100),
+    report_type: payload.report_type || ''
   });
 }
 
@@ -2396,7 +2403,10 @@ var SHEET_SCHEMA = {
     // kept independent of the booking link since the brief calls for
     // reports/bills to carry their own episode link, not just an implied
     // one through whichever booking they happen to be attached to.
-    'episode_id'
+    // report_type (Episode Detail Block 3): scan/blood/urine/other — a
+    // finer category than type_v2's own lab_report/scan_report, only
+    // meaningful when type_v2 is one of those two.
+    'episode_id', 'report_type'
   ],
   Countdowns: [
     'id', 'title', 'kind', 'target_datetime', 'start_date', 'repeat', 'interval_hours',
