@@ -378,6 +378,7 @@ function mcHeaderMarkup(route) {
           </div>
         </div>
         <div class="mc-header-actions">
+          <button type="button" class="mc-header-btn" id="header-food-btn" aria-label="${t("food.title")}">${icon("restaurant", "icon-lg")}</button>
           <button type="button" class="mc-header-btn" id="header-notifications-btn" aria-label="${t("header.notifications")}">${icon("notifications", "icon-lg")}</button>
           <button type="button" class="mc-header-btn" id="header-profile-btn" aria-label="${t("header.profile")}">${icon("account_circle", "icon-lg")}</button>
         </div>
@@ -387,6 +388,8 @@ function mcHeaderMarkup(route) {
 }
 
 function attachMcHeaderHandlers() {
+  const foodBtn = document.getElementById("header-food-btn");
+  if (foodBtn) foodBtn.addEventListener("click", () => { location.hash = "#/food"; });
   const notifBtn = document.getElementById("header-notifications-btn");
   if (notifBtn) notifBtn.addEventListener("click", openNotificationsSheet);
   const profileBtn = document.getElementById("header-profile-btn");
@@ -494,7 +497,12 @@ const homeState = {
   customSymptomNames: [],
   recentFoods: [],
   selectedMood: null,
-  selectedMeal: null
+  selectedMeal: null,
+  // Dashboard rebuild (Phase 6): the calendar's own data + which month
+  // it's currently showing (defaults to the current month on every fresh
+  // Home load — not persisted across visits).
+  allBookings: [],
+  calendarMonthOffset: 0
 };
 
 async function renderHomeView(outlet) {
@@ -524,7 +532,8 @@ async function renderHomeView(outlet) {
             homeState.todaysHealthEntry = rows.find((r) => dateStrOf(r.date) === todayStr) || null;
           }).catch(() => {})
         : Promise.resolve(),
-      store.call("bookings.list", { status: "waiting_for_report" }).then((rows) => { homeState.pendingReports = rows; }).catch(() => {})
+      store.call("bookings.list", { status: "waiting_for_report" }).then((rows) => { homeState.pendingReports = rows; }).catch(() => {}),
+      store.call("bookings.list", {}).then((rows) => { homeState.allBookings = rows; }).catch(() => {})
     ]);
     renderHomeBody(outlet);
   };
@@ -644,6 +653,10 @@ function homeMarkup(boot, logs, weekEntry, now) {
 
   return `
     ${heroCountdownCardMarkup(countdown, settings, weekEntry, now)}
+
+    ${datingBannersMarkup(settings, now)}
+
+    ${calendarCardMarkup(boot, now)}
 
     ${babySizeCardMarkup(weekEntry)}
 
@@ -962,6 +975,47 @@ function heroGreetingMarkup(now, settings) {
   return name ? t("home.greetingName", { greeting, name: escapeHtml(name) }) : escapeHtml(greeting);
 }
 
+// Dashboard rebuild (Phase 6): two small dating banners shown side by
+// side regardless of which method is "active" in Settings — LMP always
+// computed straight from lmp_date (or due_date - 280 days as a fallback,
+// same as computeCountdown's own fallback), USG always computed by
+// projecting forward from the gestational age recorded at the scan. Pure
+// week/day counts, never a calendar date.
+function lmpWeeksAt(settings, now) {
+  let lmp = settings.lmp_date ? new Date(settings.lmp_date + "T00:00:00") : null;
+  if (!lmp && settings.due_date) lmp = new Date(new Date(settings.due_date + "T00:00:00").getTime() - 280 * 86400000);
+  if (!lmp || isNaN(lmp.getTime())) return null;
+  const daysSince = Math.max(0, Math.floor((now.getTime() - lmp.getTime()) / 86400000));
+  return { weeks: Math.floor(daysSince / 7), days: daysSince % 7 };
+}
+
+function usgWeeksAt(settings, now) {
+  if (!settings.usg_date || settings.usg_weeks === undefined || settings.usg_weeks === "") return null;
+  const usgDate = new Date(settings.usg_date + "T00:00:00");
+  if (isNaN(usgDate.getTime())) return null;
+  const daysSinceUsg = Math.max(0, Math.floor((now.getTime() - usgDate.getTime()) / 86400000));
+  const totalDaysAtUsg = Number(settings.usg_weeks) * 7 + Number(settings.usg_days || 0);
+  const totalDaysNow = totalDaysAtUsg + daysSinceUsg;
+  return { weeks: Math.floor(totalDaysNow / 7), days: totalDaysNow % 7 };
+}
+
+function datingBannersMarkup(settings, now) {
+  const lmp = lmpWeeksAt(settings, now);
+  const usg = usgWeeksAt(settings, now);
+  const banner = (labelKey, computed) => `
+    <div class="dating-banner">
+      <span class="dating-banner-label">${t(labelKey)}</span>
+      <span class="dating-banner-value">${computed ? t("home.weekDayShort", { weeks: computed.weeks, days: computed.days }) : t("home.dating.notSet")}</span>
+    </div>
+  `;
+  return `
+    <div class="dating-banners-row">
+      ${banner("home.dating.byLmp", lmp)}
+      ${banner("home.dating.byUsg", usg)}
+    </div>
+  `;
+}
+
 function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
   if (!countdown) {
     return `
@@ -972,22 +1026,21 @@ function heroCountdownCardMarkup(countdown, settings, weekEntry, now) {
     `;
   }
 
-  const daysText = countdown.isOverdue
-    ? t("home.daysOverdue", { n: Math.abs(Math.ceil(countdown.msToDueDate / 86400000)) })
-    : Math.ceil(countdown.msToDueDate / 86400000) === 0
-      ? t("home.dueToday")
-      : t("home.daysToGo", { n: Math.ceil(countdown.msToDueDate / 86400000) });
-
+  // Dashboard rebuild (Phase 6): "days so far" (how far along, an elapsed
+  // count) replaces "days to go"/due-date countdown as the big headline
+  // number — the brief calls for trimester + days-so-far + week/day, and
+  // explicitly NO calendar dates anywhere in the greeting. The due-date
+  // line is gone entirely (it's a calendar date); LMP/USG-dated banners
+  // elsewhere on the page cover that need separately.
+  const daysSoFar = countdown.weeks * 7 + countdown.days;
   const weekPct = Math.min(100, Math.max(0, (countdown.weeks / 40) * 100));
-  const dueDateLabel = countdown.dueDate ? formatDisplayDate(formatDateInput(countdown.dueDate)) : "";
 
   return `
     <button type="button" class="card hero-countdown-card" id="hero-countdown-card" data-expanded="${homeState.countdownExpanded ? "1" : "0"}">
       <p class="hero-greeting">${heroGreetingMarkup(now, settings)}</p>
-      <div class="hero-days" id="hero-days">${daysText}</div>
+      <div class="hero-days" id="hero-days">${t("home.daysSoFar", { n: daysSoFar })}</div>
       <p class="hero-week-line">${t("home.weekTrimester", { weeks: countdown.weeks, days: countdown.days, trimester: t(`home.trimester.${countdown.trimester}`) })}</p>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${weekPct}%"></div></div>
-      ${dueDateLabel ? `<p class="hero-due-date">${t("home.dueDateSentence", { date: dueDateLabel })}</p>` : ""}
       <div class="hero-detail" id="hero-detail" ${homeState.countdownExpanded ? "" : "hidden"}></div>
     </button>
   `;
@@ -1198,6 +1251,7 @@ function waterCardMarkup(settings) {
       </div>
       <p class="muted">${t("water.progress", { n: todayGlasses, goal })}</p>
       <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="remove-water-btn" ${todayGlasses ? "" : "disabled"}>${t("water.removeGlass")}</button>
         <button type="button" class="btn btn-secondary" id="add-water-btn">${t("water.addGlass")}</button>
       </div>
       <a class="card-link" data-nav="#/water">${t("water.seeHistory")}</a>
@@ -1788,7 +1842,87 @@ function attachQuickAddConfirmHandlers(sheetEl, draft, outlet) {
   });
 }
 
+// Dashboard rebuild (Phase 6): "the most important visual element" — a
+// month calendar marking days with a booking (any non-cancelled one).
+// Tapping a marked day opens a small sheet listing that day's bookings;
+// tapping one jumps to its detail (same pendingOpenBookingId pattern the
+// Episode Chain cards use). Navigable month-to-month via calendarMonthOffset.
+function calendarCardMarkup(boot, now) {
+  const base = new Date(now.getFullYear(), now.getMonth() + homeState.calendarMonthOffset, 1);
+  const year = base.getFullYear();
+  const month = base.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = schedule.formatLocalDate(now);
+  const activeBookings = (homeState.allBookings || []).filter((b) => b.status !== "cancelled");
+  const bookingDatesSet = new Set(activeBookings.map((b) => dateStrOf(b.datetime)));
+  const monthLabel = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(base);
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(`<div class="calendar-cell calendar-cell-empty"></div>`);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const isToday = dateStr === todayStr;
+    const hasBooking = bookingDatesSet.has(dateStr);
+    cells.push(`
+      <button type="button" class="calendar-cell ${isToday ? "calendar-cell-today" : ""}" data-calendar-date="${dateStr}">
+        <span>${d}</span>
+        ${hasBooking ? `<span class="calendar-dot"></span>` : ""}
+      </button>
+    `);
+  }
+
+  return `
+    <div class="card calendar-card">
+      <div class="calendar-header">
+        <button type="button" class="btn-link" id="calendar-prev-month" aria-label="${t("calendar.prevMonth")}">‹</button>
+        <h2>${escapeHtml(monthLabel)}</h2>
+        <button type="button" class="btn-link" id="calendar-next-month" aria-label="${t("calendar.nextMonth")}">›</button>
+      </div>
+      <div class="calendar-weekdays">${["S", "M", "T", "W", "T", "F", "S"].map((d) => `<span>${d}</span>`).join("")}</div>
+      <div class="calendar-grid">${cells.join("")}</div>
+    </div>
+  `;
+}
+
 function attachHomeHandlers(outlet) {
+  const prevMonthBtn = outlet.querySelector("#calendar-prev-month");
+  if (prevMonthBtn) prevMonthBtn.addEventListener("click", () => { homeState.calendarMonthOffset -= 1; renderHomeBody(outlet); });
+  const nextMonthBtn = outlet.querySelector("#calendar-next-month");
+  if (nextMonthBtn) nextMonthBtn.addEventListener("click", () => { homeState.calendarMonthOffset += 1; renderHomeBody(outlet); });
+
+  outlet.querySelectorAll("[data-calendar-date]").forEach((cell) => {
+    cell.addEventListener("click", () => {
+      const dateStr = cell.dataset.calendarDate;
+      const dayBookings = (homeState.allBookings || []).filter((b) => dateStrOf(b.datetime) === dateStr && b.status !== "cancelled");
+      if (!dayBookings.length) return;
+      openSheet(`
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h2>${escapeHtml(formatDisplayDate(dateStr))}</h2>
+        <ul class="entity-list">
+          ${dayBookings.map((b) => `
+            <li class="entity-row tap-row" data-sheet-open-booking="${escapeHtml(b.id)}">
+              <div class="entity-main">
+                <strong>${BOOKING_TYPE_ICON[b.type]} ${escapeHtml(b.title)}</strong>
+                <span class="muted">${escapeHtml(formatApptDateTime(b.datetime))} · ${t("bookings.status." + b.status)}</span>
+              </div>
+            </li>
+          `).join("")}
+        </ul>
+        <button type="button" class="btn btn-secondary" id="calendar-day-close">${t("common.back")}</button>
+      `, (sheetEl) => {
+        sheetEl.querySelector("#calendar-day-close").addEventListener("click", closeSheet);
+        sheetEl.querySelectorAll("[data-sheet-open-booking]").forEach((row) => {
+          row.addEventListener("click", () => {
+            pendingOpenBookingId = row.dataset.sheetOpenBooking;
+            closeSheet();
+            location.hash = "#/bookings";
+          });
+        });
+      });
+    });
+  });
+
   const quickAddInput = outlet.querySelector("#quickadd-input");
   const quickAddSubmitBtn = outlet.querySelector("#quickadd-submit-btn");
   const quickAddMicBtn = outlet.querySelector("#quickadd-mic-btn");
@@ -2020,6 +2154,37 @@ function attachHomeHandlers(outlet) {
   });
   const addCustomSymptomBtn = outlet.querySelector("#add-custom-symptom-btn");
   if (addCustomSymptomBtn) addCustomSymptomBtn.addEventListener("click", () => openSymptomSheet("custom", null));
+
+  // --- Water: remove the most recent glass logged today. If it's still an
+  // unconfirmed optimistic add (undo window not yet expired), this just
+  // cancels that local-only add rather than round-tripping to the server
+  // for something that was never actually saved.
+  const removeWaterBtn = outlet.querySelector("#remove-water-btn");
+  if (removeWaterBtn) {
+    removeWaterBtn.addEventListener("click", () => {
+      const rows = homeState.todaysWater || [];
+      if (!rows.length) return;
+      const last = rows[rows.length - 1];
+      homeState.todaysWater = rows.slice(0, -1);
+      renderHomeBody(outlet);
+      if (String(last.id).startsWith("optimistic-")) return;
+      showUndoToast(t("water.removedToast"), {
+        onUndo: () => {
+          homeState.todaysWater = [...homeState.todaysWater, last];
+          renderHomeBody(outlet);
+        },
+        onCommit: async () => {
+          try {
+            await store.call("water.delete", { id: last.id });
+          } catch (err) {
+            homeState.todaysWater = [...homeState.todaysWater, last];
+            renderHomeBody(outlet);
+            alert(err.message || t("common.error"));
+          }
+        }
+      });
+    });
+  }
 
   // --- Water: optimistic add with a 6s undo, same pattern as delete/stop ---
   const addWaterBtn = outlet.querySelector("#add-water-btn");
