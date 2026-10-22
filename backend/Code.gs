@@ -152,6 +152,13 @@ function routeAction(action, payload) {
     case 'notes.delete':
       return notesDelete(payload);
 
+    case 'notifications.list':
+      return notificationsList(payload);
+    case 'notifications.markRead':
+      return notificationsMarkRead(payload);
+    case 'notifications.markAllRead':
+      return notificationsMarkAllRead(payload);
+
     case 'appointments.list':
       return listRows('Appointments');
     case 'appointments.create':
@@ -517,7 +524,11 @@ function bootstrap() {
     // Most recent *taken* dose per medicine — enough for the frontend to
     // compute "next dose" for interval-kind countdowns pinned to Home,
     // without shipping the full MedicineLog on every load.
-    latest_medicine_doses: getLatestMedicineDoses()
+    latest_medicine_doses: getLatestMedicineDoses(),
+    // The bell's unread badge needs this on every route (the header
+    // renders everywhere), so it rides along with everything else instead
+    // of needing its own round trip.
+    notifications: notificationsList({})
   };
 }
 
@@ -1056,7 +1067,7 @@ function checkinsCreate(payload) {
   var mood = sanitizeNumber(payload.mood, 'mood');
   if (mood < 1 || mood > 5) throw new Error('mood must be between 1 and 5');
   if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
-  return createRow('Checkins', {
+  var row = createRow('Checkins', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     mood: mood,
@@ -1064,6 +1075,8 @@ function checkinsCreate(payload) {
     created_at: new Date().toISOString(),
     alert_level: payload.alert_level || ''
   });
+  maybeNotifyAlert('checkin', row.id, row.alert_level, 'Check-in note', '', '', '', row.note);
+  return row;
 }
 
 function checkinsDelete(payload) {
@@ -1104,7 +1117,7 @@ function symptomsCreate(payload) {
   if (payload.severity) validateEnum(payload.severity, SYMPTOM_SEVERITIES, 'severity');
   if (payload.bleeding_scale) validateEnum(payload.bleeding_scale, BLEEDING_SCALE_VALUES, 'bleeding_scale');
   if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
-  return createRow('Symptoms', {
+  var row = createRow('Symptoms', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     symptom_key: payload.symptom_key,
@@ -1116,6 +1129,13 @@ function symptomsCreate(payload) {
     notify: sanitizeBoolean(payload.notify),
     alert_level: payload.alert_level || ''
   });
+  var symptomLabel = row.symptom_key === 'custom' ? row.custom_name : titleCaseWords(row.symptom_key);
+  maybeNotifyAlert('symptom', row.id, row.alert_level, symptomLabel, '', '', '', row.note);
+  return row;
+}
+
+function titleCaseWords(key) {
+  return String(key || '').split('_').map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
 }
 
 // The only update this supports is attaching/editing a "fix note" after
@@ -1216,6 +1236,56 @@ var NOTE_CATEGORIES = ['note', 'question'];
 // than the person explicitly turning an alert on for one specific note.
 var ALERT_LEVELS = ['red', 'orange', 'green'];
 
+// The shared alert->notification bridge (Part 2 of the alerts rework).
+// Called by every create/update path that can set a non-blank alert_level
+// (checkinsCreate, symptomsCreate, notesCreate, notesUpdate) — always in
+// the SAME request as the source row, so a notification is never possible
+// without its source existing first. Intentionally never called from
+// anywhere else; there is no automatic/computed alert anywhere in this
+// app, only ones a person explicitly set on one entry.
+//
+// dueDate (optional): when set, also creates a one-off 'event' Countdown
+// pinned to Home, so the alerted note "acts as a reminder" per the brief
+// — not just a notification. This is one-way (creating the note creates
+// the countdown); deleting/editing the note later does not touch it.
+function maybeNotifyAlert(sourceType, sourceId, level, title, episodeId, block, dueDate, text) {
+  if (!level) return;
+  createRow('Notifications', {
+    created_at: new Date().toISOString(),
+    level: level,
+    source_type: sourceType,
+    source_id: sourceId,
+    episode_id: episodeId || '',
+    block: block || '',
+    title: title,
+    text: String(text || '').slice(0, 140),
+    read: false,
+    due_date: dueDate || ''
+  });
+  if (dueDate) {
+    try {
+      countdownsAdd({
+        title: title,
+        kind: 'event',
+        target_datetime: dueDate,
+        show_on_home: true
+      });
+    } catch (e) {
+      // A bad due_date shouldn't take down the note/notification that
+      // already saved successfully — the notification itself still
+      // carries due_date for display even if the countdown failed.
+    }
+  }
+}
+
+// Episode name for a notification's title — '' (shown as "Today") when
+// there's no episode_id, e.g. a Today check-in/symptom.
+function episodeNameFor(episodeId) {
+  if (!episodeId) return '';
+  var ep = getRowById('Episodes', episodeId);
+  return ep ? ep.name : '';
+}
+
 function notesList(payload) {
   var rows = sheetToObjects('Notes');
   if (payload && payload.category) rows = rows.filter(function (r) { return r.category === payload.category; });
@@ -1227,12 +1297,25 @@ function notesList(payload) {
   return rows;
 }
 
+// Human-readable label for a Note's block, used only in a notification's
+// title — never shown anywhere else, so it doesn't need full i18n.
+var NOTE_BLOCK_LABELS = {
+  booking: 'Prescription', episode: 'Final note', handover: 'Handover',
+  note: 'Note', report: 'Report', bill: 'Bill', medicine: 'Medicine', '': 'Note'
+};
+
+function noteNotificationTitle(episodeId, block) {
+  var blockLabel = NOTE_BLOCK_LABELS[block] || 'Note';
+  var episodeName = episodeNameFor(episodeId);
+  return episodeName ? (episodeName + ' — ' + blockLabel) : ('Today — ' + blockLabel);
+}
+
 function notesCreate(payload) {
   requireFields(payload, ['date', 'text']);
   var category = payload.category || 'note';
   validateEnum(category, NOTE_CATEGORIES, 'category');
   if (payload.alert_level) validateEnum(payload.alert_level, ALERT_LEVELS, 'alert_level');
-  return createRow('Notes', {
+  var row = createRow('Notes', {
     date: sanitizeDate(payload.date, 'date'),
     time: sanitizeText(payload.time || formatCurrentTime(), 10),
     category: category,
@@ -1242,12 +1325,16 @@ function notesCreate(payload) {
     episode_id: sanitizeText(payload.episode_id, 100),
     block: sanitizeText(payload.block, 30),
     block_ref_id: sanitizeText(payload.block_ref_id, 100),
-    alert_level: payload.alert_level || ''
+    alert_level: payload.alert_level || '',
+    due_date: payload.due_date ? sanitizeDate(payload.due_date, 'due_date') : ''
   });
+  maybeNotifyAlert('note', row.id, row.alert_level, noteNotificationTitle(row.episode_id, row.block), row.episode_id, row.block, row.due_date, row.text);
+  return row;
 }
 
 function notesUpdate(payload) {
   requireId(payload);
+  var existing = getRowById('Notes', payload.id);
   var fields = {};
   if (payload.hasOwnProperty('text')) fields.text = sanitizeText(payload.text, 2000);
   if (payload.hasOwnProperty('category')) { validateEnum(payload.category, NOTE_CATEGORIES, 'category'); fields.category = payload.category; }
@@ -1258,12 +1345,54 @@ function notesUpdate(payload) {
   if (payload.hasOwnProperty('episode_id')) fields.episode_id = sanitizeText(payload.episode_id, 100);
   if (payload.hasOwnProperty('block')) fields.block = sanitizeText(payload.block, 30);
   if (payload.hasOwnProperty('block_ref_id')) fields.block_ref_id = sanitizeText(payload.block_ref_id, 100);
-  return updateRowById('Notes', payload.id, fields);
+  if (payload.hasOwnProperty('due_date')) fields.due_date = payload.due_date ? sanitizeDate(payload.due_date, 'due_date') : '';
+  var row = updateRowById('Notes', payload.id, fields);
+  // Only notify when alert_level is newly set to a non-blank value this
+  // call (editing unrelated fields on an already-alerted note, or turning
+  // the alert back off, must not create a duplicate/phantom notification).
+  var alertJustSet = fields.hasOwnProperty('alert_level') && fields.alert_level && (!existing || existing.alert_level !== fields.alert_level);
+  if (alertJustSet) {
+    maybeNotifyAlert('note', row.id, row.alert_level, noteNotificationTitle(row.episode_id, row.block), row.episode_id, row.block, row.due_date, row.text);
+  }
+  return row;
 }
 
 function notesDelete(payload) {
   requireId(payload);
   return deleteRowById('Notes', payload.id);
+}
+
+// ---------------------------------------------------------------------------
+// Notifications — the shared bell feed (Part 2 of the alerts rework). Rows
+// are only ever created by maybeNotifyAlert(), never directly by the
+// frontend — see that function's comment.
+// ---------------------------------------------------------------------------
+
+var NOTIFICATION_LEVEL_PRIORITY = { red: 0, orange: 1, green: 2 };
+
+function notificationsList(payload) {
+  var rows = listRows('Notifications');
+  if (payload && payload.unread_only) rows = rows.filter(function (r) { return !isTruthy(r.read); });
+  rows.sort(function (a, b) {
+    var pa = NOTIFICATION_LEVEL_PRIORITY.hasOwnProperty(a.level) ? NOTIFICATION_LEVEL_PRIORITY[a.level] : 3;
+    var pb = NOTIFICATION_LEVEL_PRIORITY.hasOwnProperty(b.level) ? NOTIFICATION_LEVEL_PRIORITY[b.level] : 3;
+    if (pa !== pb) return pa - pb;
+    return String(b.created_at).localeCompare(String(a.created_at));
+  });
+  return rows;
+}
+
+function notificationsMarkRead(payload) {
+  requireId(payload);
+  return updateRowById('Notifications', payload.id, { read: true });
+}
+
+function notificationsMarkAllRead() {
+  var rows = listRows('Notifications');
+  rows.forEach(function (r) {
+    if (!isTruthy(r.read)) updateRowById('Notifications', r.id, { read: true });
+  });
+  return { updated: rows.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -2482,7 +2611,27 @@ var SHEET_SCHEMA = {
     // in-app notification and can act as a countdown; this column is the
     // only place alert severity exists anywhere in this schema — it is
     // never computed automatically from any other data.
-    'episode_id', 'block', 'block_ref_id', 'alert_level'
+    // due_date: optional, only meaningful alongside a non-blank
+    // alert_level — when set, the note also gets a linked Countdown row
+    // (see maybeNotifyAlert) so it shows up as a reminder, not just a
+    // notification.
+    'episode_id', 'block', 'block_ref_id', 'alert_level', 'due_date'
+  ],
+
+  // Notifications: one row per alerted entry (a Today check-in/symptom, or
+  // an episode Note, with a red/orange/green alert_level) — the shared,
+  // persisted feed behind the bell. Never written to directly by the
+  // frontend; always created by maybeNotifyAlert() alongside the source
+  // row, in the same request. source_type is 'checkin' | 'symptom' |
+  // 'note'; source_id is that source row's own id. title is the source
+  // label ("Week 24 – Routine checkup — Prescription", "Today — Note");
+  // text is a short snippet of what was actually written, so two alerts
+  // from the same block are still tellable apart in the bell list.
+  // episode_id/block are copied from the source for the deep link on tap;
+  // block is '' for a plain Today check-in/symptom.
+  Notifications: [
+    'id', 'created_at', 'level', 'source_type', 'source_id', 'episode_id',
+    'block', 'title', 'text', 'read', 'due_date'
   ],
 
   // --- Phase 3 (v3): bookings, suggestions, bills -----------------------

@@ -88,3 +88,27 @@ export function showUndoToast(message, { onUndo, onCommit }, seconds) {
     onUndo();
   });
 }
+
+// A plain, no-undo toast — reuses the same visual/positioning as the undo
+// toast (just without its button) — for the alerts rework (Part 2): the
+// "shows an in-app toast immediately" requirement for a saved alert, where
+// there's nothing to undo (the alert/notification already exists either
+// way; closing the toast just dismisses it). Does not touch/replace an
+// in-flight undo toast — the two can coexist since neither cancels the
+// other's pending commit.
+let plainToastTimeoutId = null;
+export function showToast(message, seconds) {
+  if (plainToastTimeoutId) { clearTimeout(plainToastTimeoutId); plainToastTimeoutId = null; }
+  const existing = document.getElementById("active-plain-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.className = "undo-toast";
+  toast.id = "active-plain-toast";
+  toast.innerHTML = `<span>${escapeHtml(message)}</span>`;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("undo-toast-open"));
+  plainToastTimeoutId = setTimeout(() => {
+    plainToastTimeoutId = null;
+    toast.remove();
+  }, (seconds || 4) * 1000);
+}

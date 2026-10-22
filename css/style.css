@@ -237,8 +237,37 @@ a { color: var(--color-primary-dark); }
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  position: relative;
 }
 .mc-header-btn:hover { background: var(--mc-surface-container-high); }
+
+.notif-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: var(--radius-full);
+  background: var(--color-state-rose, #c4454d);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.notif-row { position: relative; }
+.notif-unread-dot {
+  position: absolute;
+  top: 14px;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-state-rose, #c4454d);
+}
+.notif-unread strong { font-weight: 700; }
 
 /* ---------- Bottom tab bar ---------- */
 

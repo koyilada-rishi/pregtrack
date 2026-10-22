@@ -14,7 +14,7 @@ import {
 import * as schedule from "./core/schedule.js";
 import { parseQuickAdd } from "./core/quickadd.js";
 import { icon } from "./core/icons.js";
-import { openSheet, closeSheet, showUndoToast } from "./ui/sheet.js";
+import { openSheet, closeSheet, showUndoToast, showToast } from "./ui/sheet.js";
 import {
   escapeHtml, genericSkeleton, errorMarkup, attachRetryHandler, attachNavButtons,
   formField, formatDateInput, dateStrOf, formatDisplayDate, formatINR, formatDatetimeLocalInput
@@ -39,6 +39,12 @@ let pendingAddPreset = null;
 // immediately instead of landing on the general bookings list — same
 // one-shot "queue it, consume it once" pattern as pendingAddPreset above.
 let pendingOpenBookingId = null;
+
+// Same one-shot pattern, for the bell's "tap a notification -> open the
+// episode it came from" (Part 2 of the alerts rework) — queued before
+// navigating to #/episodes, consumed once renderEpisodesView loads the
+// episode list.
+let pendingOpenEpisodeId = null;
 
 // Bottom sheets + undo toasts live in js/ui/sheet.js (imported above) — see
 // that file for the optimistic-update-then-commit-on-timeout pattern used
@@ -216,7 +222,7 @@ async function enterApp() {
 // re-render if Home or Emergency is the view currently open; other views
 // just pick up the fresh cache next time they're (re)opened.
 function handleVersionChanged() {
-  store.loadBootstrap(null, true).catch(() => {});
+  store.loadBootstrap(null, true).then(refreshNotifBadge).catch(() => {});
   const path = currentPath();
   if (path === "/home" || path === "/emergency") renderRoute();
 }
@@ -343,6 +349,7 @@ function refreshHeaderWeekPill() {
     const pill = headerWeekPillLabel();
     const el = document.querySelector(".mc-week-pill");
     const titles = document.querySelector(".mc-header-titles");
+    refreshNotifBadge();
     if (!pill || !titles) return;
     if (el) {
       el.innerHTML = `<span class="mc-week-pill-dot"></span>${escapeHtml(pill)}`;
@@ -378,7 +385,10 @@ function mcHeaderMarkup(route) {
         </div>
         <div class="mc-header-actions">
           <button type="button" class="mc-header-btn" id="header-food-btn" aria-label="${t("food.title")}">${icon("restaurant", "icon-lg")}</button>
-          <button type="button" class="mc-header-btn" id="header-notifications-btn" aria-label="${t("header.notifications")}">${icon("notifications", "icon-lg")}</button>
+          <button type="button" class="mc-header-btn" id="header-notifications-btn" aria-label="${t("header.notifications")}">
+            ${icon("notifications", "icon-lg")}
+            <span class="notif-badge" id="header-notif-badge" hidden></span>
+          </button>
           <button type="button" class="mc-header-btn" id="header-profile-btn" aria-label="${t("header.profile")}">${icon("account_circle", "icon-lg")}</button>
         </div>
       </div>
@@ -427,20 +437,6 @@ function buildNotificationsList() {
     }
   }
 
-  // Fix #4's "alert toggle that sends an in-app notification" — surfaces
-  // here, in the same bell list, for any of today's symptom entries where
-  // she explicitly picked an alert level. Purely descriptive, same as every
-  // other notification here — never a verdict on the symptom itself.
-  (homeState.todaysSymptoms || []).forEach((s) => {
-    if (!s.alert_level) return;
-    const label = s.symptom_key === "custom" ? s.custom_name : t("symptom." + s.symptom_key);
-    items.push({ icon: "vital_signs", text: t("header.notif.symptom", { name: label, time: s.time }) });
-  });
-  (homeState.todaysCheckins || []).forEach((c) => {
-    if (!c.alert_level) return;
-    items.push({ icon: "vital_signs", text: t("header.notif.checkin", { time: c.time }) });
-  });
-
   return items;
 }
 
@@ -451,21 +447,117 @@ function timeStrToDate(timeStr) {
   return d;
 }
 
-function openNotificationsSheet() {
-  const items = buildNotificationsList();
+function formatNotifTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return `${formatDisplayDate(dateStrOf(iso))} · ${formatTimeHHMM(d)}`;
+}
+
+function notificationRowMarkup(n) {
+  return `
+    <li class="entity-row tap-row notif-row ${n.read ? "" : "notif-unread"}" data-open-notification="${escapeHtml(n.id)}">
+      <div class="entity-main">
+        <span class="badge alert-${n.level}">${t("episodes.alert." + n.level)}</span>
+        <strong>${escapeHtml(n.title)}</strong>
+        ${n.text ? `<span>${escapeHtml(n.text)}</span>` : ""}
+        <span class="muted">${escapeHtml(formatNotifTime(n.created_at))}${n.due_date ? " · " + t("header.notif.due", { date: formatDisplayDate(n.due_date) }) : ""}</span>
+      </div>
+      ${n.read ? "" : `<span class="notif-unread-dot" aria-hidden="true"></span>`}
+    </li>
+  `;
+}
+
+// The bell: the persisted, priority-sorted alert feed (Part 2 of the
+// alerts rework) first, then the existing live/derived reminders (dose
+// due, low stock, appointment soon) below as a separate, non-dismissable
+// section — those were never a persisted entity, so there's nothing to
+// mark read on them; they just reflect current state every time this
+// opens.
+//
+// Fetches notifications.list directly rather than reading the cached
+// bootstrap — a save elsewhere on the same page (no route change) clears
+// that cache but doesn't repopulate it until the next loadBootstrap(),
+// so reading it here could show a stale/empty list right after the save
+// that's the whole reason the bell was tapped.
+async function openNotificationsSheet() {
+  let notifications = [];
+  try { notifications = await store.call("notifications.list", {}); } catch { /* sheet still opens, just empty */ }
+  const liveItems = buildNotificationsList();
   openSheet(`
     <div class="sheet-handle" aria-hidden="true"></div>
-    <h2>${t("header.notifications")}</h2>
-    ${items.length
-      ? `<ul class="entity-list">${items.map((n) => `
-          <li class="entity-row"><div class="entity-main">${icon(n.icon)} <span>${escapeHtml(n.text)}</span></div></li>
-        `).join("")}</ul>`
-      : `<p class="empty">${t("header.notif.none")}</p>`
-    }
+    <div class="card-head">
+      <h2>${t("header.notifications")}</h2>
+      ${notifications.some((n) => !n.read) ? `<button type="button" class="btn-link" id="notif-mark-all-read">${t("header.notif.markAllRead")}</button>` : ""}
+    </div>
+    ${notifications.length ? `<ul class="entity-list">${notifications.map((n) => notificationRowMarkup(n)).join("")}</ul>` : ""}
+    ${liveItems.length ? `
+      <p class="field-label">${t("header.notif.remindersLabel")}</p>
+      <ul class="entity-list">${liveItems.map((n) => `
+        <li class="entity-row"><div class="entity-main">${icon(n.icon)} <span>${escapeHtml(n.text)}</span></div></li>
+      `).join("")}</ul>
+    ` : ""}
+    ${!notifications.length && !liveItems.length ? `<p class="empty">${t("header.notif.none")}</p>` : ""}
     <button type="button" class="btn btn-secondary" id="notif-close">${t("common.back")}</button>
   `, (sheetEl) => {
     sheetEl.querySelector("#notif-close").addEventListener("click", closeSheet);
+
+    const markAllBtn = sheetEl.querySelector("#notif-mark-all-read");
+    if (markAllBtn) {
+      markAllBtn.addEventListener("click", async () => {
+        try {
+          await store.call("notifications.markAllRead", {});
+          closeSheet();
+          await refreshNotifBadge();
+        } catch (err) {
+          alert(err.message || t("common.error"));
+        }
+      });
+    }
+
+    sheetEl.querySelectorAll("[data-open-notification]").forEach((row) => {
+      row.addEventListener("click", async () => {
+        const n = notifications.find((x) => x.id === row.dataset.openNotification);
+        if (!n) return;
+        try {
+          if (!n.read) await store.call("notifications.markRead", { id: n.id });
+        } catch {
+          // Opening the source still works even if marking it read failed —
+          // never block navigation on that.
+        }
+        closeSheet();
+        await refreshNotifBadge();
+        if (n.episode_id) {
+          pendingOpenEpisodeId = n.episode_id;
+          location.hash = "#/episodes";
+        } else {
+          location.hash = "#/home";
+        }
+      });
+    });
   });
+}
+
+// Keeps the bell's unread badge current without a full header re-render —
+// called right after any action that can change read/unread counts
+// (opening the sheet, marking one or all read).
+// Always fetches fresh rather than trusting the cached bootstrap, for the
+// same reason openNotificationsSheet() does — see its comment. Cheap (one
+// small list call) and called right after every action that can change
+// the unread count, so the badge is never more than one request stale.
+async function refreshNotifBadge() {
+  let unread = 0;
+  try {
+    const notifications = await store.call("notifications.list", { unread_only: true });
+    unread = notifications.length;
+  } catch {
+    return;
+  }
+  const badge = document.getElementById("header-notif-badge");
+  if (badge) {
+    badge.textContent = unread > 9 ? "9+" : String(unread);
+    badge.hidden = unread === 0;
+  }
 }
 
 function renderBottomNav(activeKey) {
@@ -2206,6 +2298,8 @@ function attachHomeHandlers(outlet) {
         homeState.selectedIntensity = "";
         homeState.alertLevelDraft = "";
         homeState.checkinNoteDraft = "";
+        if (alertLevel) showToast(t("header.notif.toastSaved"));
+        refreshNotifBadge();
         await refreshHome();
       } catch (err) {
         saveCheckinBtn.disabled = false;
@@ -6625,6 +6719,11 @@ async function renderEpisodesView(outlet) {
     episodesState.episodes = episodes.slice().sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
     episodesState.settings = settings;
     episodesState.loading = false;
+    if (pendingOpenEpisodeId) {
+      const target = episodesState.episodes.find((e) => e.id === pendingOpenEpisodeId);
+      pendingOpenEpisodeId = null;
+      if (target) { await openEpisodeDetail(outlet, target); return; }
+    }
     renderEpisodesBody(outlet);
   } catch (err) {
     episodesState.loading = false;
@@ -6864,13 +6963,16 @@ function prescriptionNoteFormMarkup(bookingId, editingNote) {
     <form class="prescription-note-form" data-booking-id="${escapeHtml(bookingId)}">
       <textarea class="field" name="text" rows="2" required placeholder="${t("episodes.prescription.notePlaceholder")}">${escapeHtml(n.text || "")}</textarea>
       ${formField(t("episodes.alertLevel"), `
-        <select class="field" name="alert_level">
+        <select class="field" name="alert_level" id="prescription-note-alert-level-select">
           <option value="" ${!n.alert_level ? "selected" : ""}>${t("episodes.alert.none")}</option>
           <option value="green" ${n.alert_level === "green" ? "selected" : ""}>${t("episodes.alert.green")}</option>
           <option value="orange" ${n.alert_level === "orange" ? "selected" : ""}>${t("episodes.alert.orange")}</option>
           <option value="red" ${n.alert_level === "red" ? "selected" : ""}>${t("episodes.alert.red")}</option>
         </select>
       `)}
+      <div id="prescription-note-due-date-field" ${n.alert_level ? "" : "hidden"}>
+        ${formField(t("episodes.dueDate"), `<input class="field" type="date" name="due_date" value="${escapeHtml(n.due_date || "")}" />`, t("episodes.dueDateHint"))}
+      </div>
       <p class="error-text" id="prescription-note-error" hidden></p>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" data-prescription-note-cancel="1">${t("common.cancel")}</button>
@@ -7213,6 +7315,7 @@ function episodeDetailMarkup() {
     <div class="card">
       <h2>${t("episodes.finalNote.title")}</h2>
       <textarea class="field" id="episode-final-note-input" rows="3">${escapeHtml(episodeNote ? episodeNote.text : "")}</textarea>
+      ${alertFieldsMarkup("episode-final-note", episodeNote)}
       <div class="form-actions"><button type="button" class="btn btn-secondary" id="episode-final-note-save">${t("common.save")}</button></div>
     </div>
 
@@ -7226,12 +7329,40 @@ function episodeDetailMarkup() {
         </div>
       ` : ""}
       <textarea class="field" id="episode-handover-input" rows="3">${escapeHtml((episodesState.detailNotes.find((n) => n.block === "handover") || {}).text || "")}</textarea>
+      ${alertFieldsMarkup("episode-handover", episodesState.detailNotes.find((n) => n.block === "handover"))}
       <div class="form-actions"><button type="button" class="btn btn-secondary" id="episode-handover-save">${t("common.save")}</button></div>
     </div>
   `;
 }
 
 const ALERT_LEVEL_LIST = ["", "green", "orange", "red"];
+
+// Shared alert_level + due_date fields — reused by the Final note and
+// Handover note forms (Part 2(b) of the alerts rework: "every note in
+// every episode block has an optional alert toggle... and can also act
+// as a countdown or reminder with a due date"). idPrefix keeps element
+// ids unique per form (e.g. "episode-final-note" / "episode-handover").
+function alertFieldsMarkup(idPrefix, note) {
+  const n = note || {};
+  return `
+    ${formField(t("episodes.alertLevel"), `
+      <select class="field" id="${idPrefix}-alert-level-select">
+        ${ALERT_LEVEL_LIST.map((lv) => `<option value="${lv}" ${n.alert_level === lv ? "selected" : ""}>${t("episodes.alert." + (lv || "none"))}</option>`).join("")}
+      </select>
+    `, t("episodes.alertLevelHint"))}
+    <div id="${idPrefix}-due-date-field" ${n.alert_level ? "" : "hidden"}>
+      ${formField(t("episodes.dueDate"), `<input class="field" type="date" id="${idPrefix}-due-date-input" value="${escapeHtml(n.due_date || "")}" />`, t("episodes.dueDateHint"))}
+    </div>
+  `;
+}
+
+function attachAlertFieldsHandlers(outlet, idPrefix) {
+  const select = outlet.querySelector(`#${idPrefix}-alert-level-select`);
+  const dueField = outlet.querySelector(`#${idPrefix}-due-date-field`);
+  if (select && dueField) {
+    select.addEventListener("change", () => { dueField.hidden = !select.value; });
+  }
+}
 
 function episodeNoteRowMarkup(n) {
   return `
@@ -7250,13 +7381,16 @@ function episodeNoteFormMarkup() {
     <form id="episode-note-form">
       <textarea class="field" name="text" rows="2" required placeholder="${t("episodes.notesBlock.placeholder")}"></textarea>
       ${formField(t("episodes.alertLevel"), `
-        <select class="field" name="alert_level">
+        <select class="field" name="alert_level" id="episode-note-alert-level-select">
           <option value="">${t("episodes.alert.none")}</option>
           <option value="green">${t("episodes.alert.green")}</option>
           <option value="orange">${t("episodes.alert.orange")}</option>
           <option value="red">${t("episodes.alert.red")}</option>
         </select>
       `, t("episodes.alertLevelHint"))}
+      <div id="episode-note-due-date-field" hidden>
+        ${formField(t("episodes.dueDate"), `<input class="field" type="date" name="due_date" />`, t("episodes.dueDateHint"))}
+      </div>
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" id="episode-note-cancel">${t("common.cancel")}</button>
         <button type="submit" class="btn btn-primary">${t("common.save")}</button>
@@ -7390,23 +7524,34 @@ function attachEpisodesHandlers(outlet) {
     });
   });
   outlet.querySelectorAll(".prescription-note-form").forEach((form) => {
+    const alertSelect = form.querySelector("#prescription-note-alert-level-select");
+    const dueField = form.querySelector("#prescription-note-due-date-field");
+    if (alertSelect && dueField) {
+      alertSelect.addEventListener("change", () => { dueField.hidden = !alertSelect.value; });
+    }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const fd = new FormData(form);
       const bookingId = form.dataset.bookingId;
       const errEl = form.querySelector("#prescription-note-error");
+      const alertLevel = fd.get("alert_level") || "";
+      const dueDate = alertLevel ? fd.get("due_date") || "" : "";
       errEl.hidden = true;
       try {
         const editing = episodesState.prescriptionEditingNote;
+        let alertJustSet = !!alertLevel;
         if (editing) {
-          await store.call("notes.update", { id: editing.id, text: fd.get("text").trim(), alert_level: fd.get("alert_level") || "" });
+          alertJustSet = alertLevel && editing.alert_level !== alertLevel;
+          await store.call("notes.update", { id: editing.id, text: fd.get("text").trim(), alert_level: alertLevel, due_date: dueDate });
         } else {
           await store.call("notes.create", {
             date: formatDateInput(new Date()), text: fd.get("text").trim(), category: "note",
             episode_id: episodesState.detail.id, block: "booking", block_ref_id: bookingId,
-            alert_level: fd.get("alert_level") || ""
+            alert_level: alertLevel, due_date: dueDate
           });
         }
+        if (alertJustSet) showToast(t("header.notif.toastSaved"));
+        refreshNotifBadge();
         episodesState.prescriptionNoteFormOpenFor = null;
         episodesState.prescriptionEditingNote = null;
         await openEpisodeDetail(outlet, episodesState.detail);
@@ -7737,16 +7882,25 @@ function attachEpisodesHandlers(outlet) {
   }
   const noteCancelBtn = outlet.querySelector("#episode-note-cancel");
   if (noteCancelBtn) noteCancelBtn.addEventListener("click", () => { episodesState.noteFormOpen = false; renderEpisodesBody(outlet); });
+  const noteAlertSelect = outlet.querySelector("#episode-note-alert-level-select");
+  const noteDueDateField = outlet.querySelector("#episode-note-due-date-field");
+  if (noteAlertSelect && noteDueDateField) {
+    noteAlertSelect.addEventListener("change", () => { noteDueDateField.hidden = !noteAlertSelect.value; });
+  }
   const noteForm = outlet.querySelector("#episode-note-form");
   if (noteForm) {
     noteForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const fd = new FormData(noteForm);
+      const alertLevel = fd.get("alert_level") || "";
       try {
         await store.call("notes.create", {
           date: formatDateInput(new Date()), text: fd.get("text").trim(), category: "note",
-          episode_id: episodesState.detail.id, block: "note", alert_level: fd.get("alert_level") || ""
+          episode_id: episodesState.detail.id, block: "note", alert_level: alertLevel,
+          due_date: alertLevel ? fd.get("due_date") || "" : ""
         });
+        if (alertLevel) showToast(t("header.notif.toastSaved"));
+        refreshNotifBadge();
         await openEpisodeDetail(outlet, episodesState.detail);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -7754,17 +7908,26 @@ function attachEpisodesHandlers(outlet) {
     });
   }
 
+  attachAlertFieldsHandlers(outlet, "episode-final-note");
+  attachAlertFieldsHandlers(outlet, "episode-handover");
+
   const finalNoteSaveBtn = outlet.querySelector("#episode-final-note-save");
   if (finalNoteSaveBtn) {
     finalNoteSaveBtn.addEventListener("click", async () => {
       const text = outlet.querySelector("#episode-final-note-input").value.trim();
+      const alertSelect = outlet.querySelector("#episode-final-note-alert-level-select");
+      const dueInput = outlet.querySelector("#episode-final-note-due-date-input");
+      const alertLevel = alertSelect ? alertSelect.value : "";
+      const dueDate = alertLevel && dueInput ? dueInput.value : "";
       const existing = episodesState.detailNotes.find((n) => n.block === "episode");
       try {
         if (existing) {
-          await store.call("notes.update", { id: existing.id, text });
-        } else if (text) {
-          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "episode" });
+          await store.call("notes.update", { id: existing.id, text, alert_level: alertLevel, due_date: dueDate });
+        } else if (text || alertLevel) {
+          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "episode", alert_level: alertLevel, due_date: dueDate });
         }
+        if (alertLevel && (!existing || existing.alert_level !== alertLevel)) showToast(t("header.notif.toastSaved"));
+        refreshNotifBadge();
         await openEpisodeDetail(outlet, episodesState.detail);
       } catch (err) {
         alert(err.message || t("common.error"));
@@ -7776,13 +7939,19 @@ function attachEpisodesHandlers(outlet) {
   if (handoverSaveBtn) {
     handoverSaveBtn.addEventListener("click", async () => {
       const text = outlet.querySelector("#episode-handover-input").value.trim();
+      const alertSelect = outlet.querySelector("#episode-handover-alert-level-select");
+      const dueInput = outlet.querySelector("#episode-handover-due-date-input");
+      const alertLevel = alertSelect ? alertSelect.value : "";
+      const dueDate = alertLevel && dueInput ? dueInput.value : "";
       const existing = episodesState.detailNotes.find((n) => n.block === "handover");
       try {
         if (existing) {
-          await store.call("notes.update", { id: existing.id, text });
-        } else if (text) {
-          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "handover" });
+          await store.call("notes.update", { id: existing.id, text, alert_level: alertLevel, due_date: dueDate });
+        } else if (text || alertLevel) {
+          await store.call("notes.create", { date: formatDateInput(new Date()), text, category: "note", episode_id: episodesState.detail.id, block: "handover", alert_level: alertLevel, due_date: dueDate });
         }
+        if (alertLevel && (!existing || existing.alert_level !== alertLevel)) showToast(t("header.notif.toastSaved"));
+        refreshNotifBadge();
         await openEpisodeDetail(outlet, episodesState.detail);
       } catch (err) {
         alert(err.message || t("common.error"));

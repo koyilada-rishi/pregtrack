@@ -24,8 +24,10 @@ const STRINGS = {
     "header.notif.doseDue": "{name} due at {time}",
     "header.notif.lowStock": "{name}: refill in {days} days",
     "header.notif.appointment": "{name} — {when}",
-    "header.notif.symptom": "{name} — logged at {time}",
-    "header.notif.checkin": "Check-in note — logged at {time}",
+    "header.notif.toastSaved": "Saved — added to your notifications",
+    "header.notif.markAllRead": "Mark all read",
+    "header.notif.remindersLabel": "Reminders",
+    "header.notif.due": "due {date}",
 
     "more.medsHistory": "Medicines used",
 
@@ -750,6 +752,8 @@ const STRINGS = {
     "episodes.alert.green": "Green — fine",
     "episodes.alert.orange": "Orange — watch",
     "episodes.alert.red": "Red — urgent",
+    "episodes.dueDate": "Due date (optional)",
+    "episodes.dueDateHint": "Adds this to your pinned countdowns as a reminder.",
 
     "episodes.finalNote.title": "Final note for this episode",
     "episodes.handover.title": "Handover to next episode",

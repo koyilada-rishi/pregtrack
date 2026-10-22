@@ -105,7 +105,7 @@ function setCached(action, payload, data) {
 // ~30s by the version poll. Clearing it here forces the next loadBootstrap()
 // call (e.g. navigating back to Home right after saving) to actually refetch
 // instead of silently repainting the stale copy.
-const BOOTSTRAP_INVALIDATING_PREFIXES = ["bookings.", "episodes.", "medicines.", "bills."];
+const BOOTSTRAP_INVALIDATING_PREFIXES = ["bookings.", "episodes.", "medicines.", "bills.", "notifications.", "notes.", "checkins.", "symptoms."];
 
 export async function call(action, payload) {
   const data = isMockMode() ? await callMock(action, payload) : await api.call(action, payload);
@@ -385,6 +385,7 @@ const db = {
   notes: [
     { id: "mock-note-1", date: todayStr(-1), time: "19:00", category: "question", text: "Ask about iron levels", created_at: new Date().toISOString() }
   ],
+  notifications: [],
   checkins: [
     { id: "mock-ci-1", date: todayStr(), time: "09:15", mood: 4, note: "Slept well", created_at: new Date().toISOString() }
   ],
@@ -453,6 +454,46 @@ function removeFrom(list, id) {
   if (idx === -1) throw new Error("Not found: " + id);
   list.splice(idx, 1);
   return { id };
+}
+
+// Mirrors the backend's maybeNotifyAlert() exactly — see Code.gs for the
+// full rationale. Called from the same mock cases the backend wires it
+// into (checkins.create, symptoms.create, notes.create, notes.update).
+const NOTE_BLOCK_LABELS = {
+  booking: "Prescription", episode: "Final note", handover: "Handover",
+  note: "Note", report: "Report", bill: "Bill", medicine: "Medicine", "": "Note"
+};
+
+function titleCaseWords(key) {
+  return String(key || "").split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function episodeNameFor(episodeId) {
+  if (!episodeId) return "";
+  const ep = db.episodes.find((e) => e.id === episodeId);
+  return ep ? ep.name : "";
+}
+
+function noteNotificationTitle(episodeId, block) {
+  const blockLabel = NOTE_BLOCK_LABELS[block] || "Note";
+  const episodeName = episodeNameFor(episodeId);
+  return episodeName ? `${episodeName} — ${blockLabel}` : `Today — ${blockLabel}`;
+}
+
+function maybeNotifyAlert(sourceType, sourceId, level, title, episodeId, block, dueDate, text) {
+  if (!level) return;
+  db.notifications.push({
+    id: uid(), created_at: new Date().toISOString(), level, source_type: sourceType,
+    source_id: sourceId, episode_id: episodeId || "", block: block || "",
+    title, text: String(text || "").slice(0, 140), read: false, due_date: dueDate || ""
+  });
+  if (dueDate) {
+    db.countdowns.push({
+      id: uid(), title, kind: "event", target_datetime: dueDate, start_date: "", repeat: "none",
+      interval_hours: "", linked_medicine_id: "", show_on_home: true, pinned_order: 0, notes: "",
+      done: false, created_at: new Date().toISOString()
+    });
+  }
 }
 
 function computeGestationalAge() {
@@ -618,7 +659,14 @@ export async function mockCall(action, payload) {
         files: clone(db.files).map(({ _base64, _mimeType, _filename, ...rest }) => rest),
         countdowns: clone(db.countdowns),
         packs: clone(db.packs),
-        latest_medicine_doses: mockLatestMedicineDoses()
+        latest_medicine_doses: mockLatestMedicineDoses(),
+        notifications: clone(db.notifications).sort((a, b) => {
+          const priority = { red: 0, orange: 1, green: 2 };
+          const pa = priority.hasOwnProperty(a.level) ? priority[a.level] : 3;
+          const pb = priority.hasOwnProperty(b.level) ? priority[b.level] : 3;
+          if (pa !== pb) return pa - pb;
+          return String(b.created_at).localeCompare(String(a.created_at));
+        })
       };
 
     case "medicines.list":
@@ -723,8 +771,9 @@ export async function mockCall(action, payload) {
     }
     case "checkins.create": {
       requireFields(payload, ["date", "mood"]);
-      const row = { id: payload.id || uid(), time: todayTime(), note: "", ...payload, created_at: new Date().toISOString() };
+      const row = { id: payload.id || uid(), time: todayTime(), note: "", alert_level: "", ...payload, created_at: new Date().toISOString() };
       db.checkins.push(row);
+      maybeNotifyAlert("checkin", row.id, row.alert_level, "Check-in note", "", "", "", row.note);
       return clone(row);
     }
     case "checkins.delete":
@@ -740,8 +789,10 @@ export async function mockCall(action, payload) {
     }
     case "symptoms.create": {
       requireFields(payload, ["date", "symptom_key"]);
-      const row = { id: payload.id || uid(), time: todayTime(), custom_name: "", severity: "", bleeding_scale: "", note: "", ...payload, created_at: new Date().toISOString() };
+      const row = { id: payload.id || uid(), time: todayTime(), custom_name: "", severity: "", bleeding_scale: "", note: "", alert_level: "", ...payload, created_at: new Date().toISOString() };
       db.symptoms.push(row);
+      const symptomLabel = row.symptom_key === "custom" ? row.custom_name : titleCaseWords(row.symptom_key);
+      maybeNotifyAlert("symptom", row.id, row.alert_level, symptomLabel, "", "", "", row.note);
       return clone(row);
     }
     case "symptoms.update": {
@@ -802,16 +853,45 @@ export async function mockCall(action, payload) {
     }
     case "notes.create": {
       requireFields(payload, ["date", "text"]);
-      const row = { id: payload.id || uid(), time: todayTime(), category: "note", episode_id: "", block: "", block_ref_id: "", alert_level: "", ...payload, created_at: new Date().toISOString() };
+      const row = { id: payload.id || uid(), time: todayTime(), category: "note", episode_id: "", block: "", block_ref_id: "", alert_level: "", due_date: "", ...payload, created_at: new Date().toISOString() };
       db.notes.push(row);
+      maybeNotifyAlert("note", row.id, row.alert_level, noteNotificationTitle(row.episode_id, row.block), row.episode_id, row.block, row.due_date, row.text);
       return clone(row);
     }
-    case "notes.update":
+    case "notes.update": {
       requireFields(payload, ["id"]);
-      return upsertInto(db.notes, payload.id, payload);
+      const existing = db.notes.find((n) => n.id === payload.id);
+      const alertJustSet = Object.prototype.hasOwnProperty.call(payload, "alert_level") && payload.alert_level &&
+        (!existing || existing.alert_level !== payload.alert_level);
+      const updated = upsertInto(db.notes, payload.id, payload);
+      if (alertJustSet) {
+        maybeNotifyAlert("note", updated.id, updated.alert_level, noteNotificationTitle(updated.episode_id, updated.block), updated.episode_id, updated.block, updated.due_date, updated.text);
+      }
+      return updated;
+    }
     case "notes.delete":
       requireFields(payload, ["id"]);
       return removeFrom(db.notes, payload.id);
+
+    case "notifications.list": {
+      let rows = clone(db.notifications);
+      if (payload.unread_only) rows = rows.filter((n) => !n.read);
+      const priority = { red: 0, orange: 1, green: 2 };
+      rows.sort((a, b) => {
+        const pa = priority.hasOwnProperty(a.level) ? priority[a.level] : 3;
+        const pb = priority.hasOwnProperty(b.level) ? priority[b.level] : 3;
+        if (pa !== pb) return pa - pb;
+        return String(b.created_at).localeCompare(String(a.created_at));
+      });
+      return rows;
+    }
+    case "notifications.markRead":
+      requireFields(payload, ["id"]);
+      return upsertInto(db.notifications, payload.id, { read: true });
+    case "notifications.markAllRead": {
+      db.notifications.forEach((n) => { n.read = true; });
+      return { updated: db.notifications.length };
+    }
 
     case "appointments.list":
       return clone(db.appointments);

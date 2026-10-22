@@ -27,7 +27,7 @@
 // after being deleted elsewhere) — double-check this list whenever a JS
 // file is added, renamed, or removed.
 
-const CACHE_VERSION = "v26";
+const CACHE_VERSION = "v27";
 const CACHE_NAME = "pct-shell-" + CACHE_VERSION;
 
 const APP_SHELL = [
